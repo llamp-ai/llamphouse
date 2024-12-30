@@ -8,6 +8,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Explicitly grant write permissions
 
     steps:
     - name: Checkout code
