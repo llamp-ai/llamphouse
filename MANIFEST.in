@@ -1,0 +1,21 @@
+# Include important files
+include README.md
+include LICENSE
+include requirements.txt
+include setup.py
+
+# Include all files in the docs directory
+recursive-include docs *
+
+# Include tests
+recursive-include tests *
+
+# Include all data files in a specific package directory
+recursive-include llamphouse *
+
+# Include example scripts
+recursive-include examples *
+
+# Exclude unwanted files
+exclude *.pyc
+exclude __pycache__

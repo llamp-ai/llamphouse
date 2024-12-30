@@ -1,13 +1,20 @@
 from setuptools import setup, find_namespace_packages
-from llamphouse import __version__
 
 # Read the contents of requirements.txt
 with open('requirements.txt') as f:
     install_requires = f.read().splitlines()
 
+def get_version():
+    with open("llamphouse/__init__.py", "r") as f:
+        for line in f:
+            if line.startswith("__version__"):
+                delim = '"' if '"' in line else "'"
+                return line.split(delim)[1]
+    raise RuntimeError("Unable to find version string.")
+
 setup(
     name="llamphouse",
-    version=__version__,
+    version=get_version(),
     author="llamp.ai",
     author_email="info@llamp.ai",
     description="LLAMP-House OpenAI Assistant Server",
