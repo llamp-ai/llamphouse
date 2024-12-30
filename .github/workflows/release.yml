@@ -26,7 +26,7 @@ jobs:
     - name: Extract Version
       id: get_version
       run: |
-        echo "VERSION=$(python -c 'from my_package import __version__; print(__version__)')" >> $GITHUB_ENV
+        echo "VERSION=$(python -c 'from llamphouse import __version__; print(__version__)')" >> $GITHUB_ENV
 
     - name: Build the package
       run: |
