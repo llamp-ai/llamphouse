@@ -1,9 +1,8 @@
-# This is the changelog for LLAMPHouse.
+# Changelog LLAMPHouse.
 
 ## v0.0.1
-
-Initial upload of an OpenAI assistant api server.
+- Add initial API server
+- Create threads and messages
 
 ## v0.0.0
-
-Start of the project: December 16
+- Start of the project: December 16

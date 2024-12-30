@@ -37,7 +37,7 @@ jobs:
     - name: Extract changelog
       id: changelog
       run: |
-        RELEASE_NOTES=$(sed -n "/## v${{ env.VERSION }}/,/## v/p" CHANGELOG.md | sed '$d')
+        RELEASE_NOTES=$(sed -n "/## v${{ env.VERSION }}/,/## v/p" CHANGELOG.md | sed '$d' | tr '\n' '\\n')
         echo "RELEASE_BODY=$RELEASE_NOTES" >> $GITHUB_ENV
 
     - name: Create GitHub Release
