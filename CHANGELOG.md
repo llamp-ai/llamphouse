@@ -4,6 +4,6 @@
 
 Initial upload of an OpenAI assistant api server.
 
-## Start of the project
+## v0.0.0
 
-Date: December 16
+Start of the project: December 16
