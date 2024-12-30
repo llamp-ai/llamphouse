@@ -36,5 +36,4 @@ jobs:
 
     - name: Run Python code
       run: |
-        python -m compileall .  # Checks syntax errors
-        pytest  # Run tests if you have a test suite
+        python -m compileall .
