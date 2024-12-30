@@ -34,11 +34,15 @@ jobs:
       run: |
         python -m build
 
-    - name: Extract changelog
-      id: changelog
-      run: |
-        RELEASE_NOTES=$(sed -n "/## v${{ env.VERSION }}/,/## v/p" CHANGELOG.md | sed '$d')
-        echo "RELEASE_BODY=$RELEASE_NOTES" >> $GITHUB_ENV
+    # - name: Extract changelog
+    #   id: changelog
+    #   run: |
+    #     RELEASE_NOTES=$(sed -n "/## v${{ env.VERSION }}/,/## v/p" CHANGELOG.md | sed '$d')
+    #     echo "RELEASE_BODY=$RELEASE_NOTES" >> $GITHUB_ENV
+
+    - name: Extract release notes
+      id: extract-release-notes
+      uses: ffurrer2/extract-release-notes@v2
 
     - name: Create GitHub Release
       id: create_release
@@ -48,7 +52,7 @@ jobs:
       with:
         tag_name: v${{ env.VERSION }}
         release_name: "Release v${{ env.VERSION }}"
-        body: 
+        body: "${{ steps.extract-release-notes.outputs.release_notes }}"
         draft: false
         prerelease: false
 
