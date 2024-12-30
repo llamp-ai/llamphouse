@@ -34,12 +34,11 @@ jobs:
       run: |
         python -m build
 
-    # - name: Publish to PyPI
-    #   env:
-    #     TWINE_USERNAME: "__token__"
-    #     TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
-    #   run: |
-    #     python -m twine upload --repository testpypi dist/*
+    - name: Extract changelog
+      id: changelog
+      run: |
+        RELEASE_NOTES=$(sed -n "/## v${{ env.VERSION }}/,/## v/p" CHANGELOG.md | sed '$d')
+        echo "RELEASE_BODY=$RELEASE_NOTES" >> $GITHUB_ENV
 
     - name: Create GitHub Release
       id: create_release
@@ -49,15 +48,15 @@ jobs:
       with:
         tag_name: v${{ env.VERSION }}
         release_name: "Release v${{ env.VERSION }}"
-        body: |
-          This release was automatically created from a pull request merge to main.
+        body: ${{ env.RELEASE_BODY }}
         draft: false
         prerelease: false
 
-    - name: Upload Release Assets
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: dist/*
-        asset_name: "${{ env.VERSION }}-build"
-        asset_content_type: application/zip
+    # - name: Publish to PyPI
+    #   env:
+    #     TWINE_USERNAME: "__token__"
+    #     TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+    #   run: |
+    #     python -m twine upload dist/*
+
+    

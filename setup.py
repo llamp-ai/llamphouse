@@ -17,7 +17,7 @@ setup(
     version=get_version(),
     author="llamp.ai",
     author_email="info@llamp.ai",
-    description="LLAMP-House OpenAI Assistant Server",
+    description="LLAMPHouse OpenAI Assistant Server",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     packages=find_namespace_packages(include=['llamphouse.core', 'llamphouse.core.*']),
