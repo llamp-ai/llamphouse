@@ -1,15 +1,12 @@
-# Changelog LLAMPHouse.
+# Changelog
 
-## Backlog
+## [Unreleased]
 
-Here all the backlog items are located.
-- [ ] Streaming support
-
-## v0.0.1
+## [0.0.1] - 30/12/2024
 
 - Add initial API server
 - Create threads and messages
 
-## v0.0.0
+## [0.0.0] - 16/12/2024
 
 - Start of the project: December 16
