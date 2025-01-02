@@ -75,7 +75,6 @@ def insert_run(thread_id: str, run: run.RunCreateRequest, assistant: Assistant):
         )
         db.add(item)
         db.commit()
-        db.refresh(item)
         return item
     except Exception as e:
         db.rollback()
@@ -196,6 +195,34 @@ def list_run_steps(thread_id: str, run_id: str):
         print(f"An error occurred while fetching run steps: {e}")
         return []
 
+def update_thread_metadata(thread_id: str, metadata: dict):
+    try:
+        thread = db.query(Thread).filter(Thread.id == thread_id).first()
+        if thread:
+            thread.meta = metadata
+            db.commit()
+            return thread
+        return None
+    except Exception as e:
+        db.rollback()
+        print(f"An error occurred while updating thread metadata: {e}")
+        return None
+
+def update_message_metadata(thread_id: str, message_id: str, metadata: dict):
+    try:
+        message = db.query(Message).filter(Message.thread_id == thread_id, Message.id == message_id).first()
+        
+        if message:
+            message.meta = metadata or {}
+            db.commit()
+            return message
+        else:
+            return None
+    except Exception as e:
+        db.rollback()
+        print(f"An error occurred: {e}")
+        return None
+
 def update_run(run: Run):
     try:
         db.merge(run)
@@ -205,6 +232,19 @@ def update_run(run: Run):
         db.rollback()
         print(f"An error occurred while updating the run: {e}")
         return False
+    
+def update_run_metadata(thread_id: str, run_id: str, metadata: dict):
+    try:
+        run = db.query(Run).filter(Run.thread_id == thread_id, Run.id == run_id).first()
+        if run:
+            run.meta = metadata
+            db.commit()
+            return run
+        return None
+    except Exception as e:
+        db.rollback()
+        print(f"An error occurred while updating thread metadata: {e}")
+        return None
     
 def update_run_status(run_id: str, status: str, error: str = None):
     try:
@@ -271,25 +311,6 @@ def delete_message_by_id(message_id: str):
         db.rollback()
         print(f"An error occurred: {e}")
         return False
-
-def update_message(thread_id: str, message_id: str, request: message.CreateMessageRequest):
-    try:
-        message = db.query(Message).filter(
-            Message.thread_id == thread_id, Message.id == message_id).first()
-        
-        if message:
-            message.content = request.content
-            message.role = request.role
-            message.file_ids = request.file_ids
-            message.meta = request.metadata or {}
-            db.commit()
-            return message
-        else:
-            return None
-    except Exception as e:
-        db.rollback()
-        print(f"An error occurred: {e}")
-        return None
 
 def delete_message(thread_id: str, message_id: str):
     try:

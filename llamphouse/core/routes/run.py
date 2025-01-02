@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, RunListResponse
+from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, RunListResponse, ModifyRunRequest
 from ..assistant import Assistant
 from ..database import database as db
 from typing import List, Optional
@@ -267,5 +267,43 @@ async def retrieve_run(
             response_format=run.response_format,
         )
     
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.post("/threads/{thread_id}/runs/{run_id}", response_model=RunObject)
+async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest):
+    try:
+        run = db.update_run_metadata(thread_id, run_id, request.metadata)
+        if not run:
+            raise HTTPException(status_code=404, detail="Message not found.")
+        
+        return  RunObject(
+            id=run.id,
+            created_at=int(run.created_at.timestamp()),
+            thread_id=thread_id,
+            assistant_id=run.assistant_id,
+            status=run.status,
+            required_action=run.required_action,
+            last_error=run.last_error,
+            expires_at=run.expires_at,
+            started_at=run.started_at,
+            cancelled_at=run.cancelled_at,
+            failed_at=run.failed_at,
+            completed_at=run.completed_at,
+            incomplete_details=run.incomplete_details,
+            model=run.model,
+            instructions=run.instructions,
+            tools=run.tools,
+            metadata=run.meta,
+            usage=run.usage,
+            temperature=run.temperature,
+            top_p=run.top_p,
+            max_prompt_tokens=run.max_prompt_tokens,
+            max_completion_tokens=run.max_completion_tokens,
+            truncation_strategy=run.truncation_strategy,
+            tool_choice=run.tool_choice,
+            parallel_tool_calls=run.parallel_tool_calls,
+            response_format=run.response_format,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -128,3 +128,6 @@ class RunListResponse(BaseModel):
     first_id: Optional[str] = None
     last_id: Optional[str] = None
     has_more: bool
+
+class ModifyRunRequest(BaseModel):
+    metadata: Optional[object] = {}
