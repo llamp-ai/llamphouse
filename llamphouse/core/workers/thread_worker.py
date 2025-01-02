@@ -1,20 +1,17 @@
 from .base_worker import BaseWorker
 from concurrent.futures import ThreadPoolExecutor
+from ..database import database as db
 from ..database.models import Run
 import queue
 import time
+import threading
 
 class ThreadWorker(BaseWorker):
-    def __init__(self, session_factory, assistants, fastapi_state):
-        self.session_factory = session_factory
+    def __init__(self, assistants, fastapi_state, *args, **kwargs):
         self.assistants = assistants
         self.fastapi_state = fastapi_state
-
-    def start(self):
-        session = self.session_factory()
-
-        print("ThreadWorker started")
-
+    def task_execute(self):
+        session = db.SessionLocal()
         while True:
             try:
                 task = (
@@ -50,3 +47,8 @@ class ThreadWorker(BaseWorker):
             except Exception as e:
                 session.rollback()
                 print(f"ThreadWorker error: {e}")
+
+    def start(self):
+        thread = threading.Thread(target=self.task_execute)
+        thread.start()
+        print(f"ThreadWorker started")
