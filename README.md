@@ -15,18 +15,18 @@ This packages creates a server that mimics the OpenAI Assistant behavior. Howeve
     - [x] Create
     - [x] Retrieve
     - [ ] Modify
-    - [ ] Delete
+    - [x] Delete
 - Messages
     - [x] Create
-    - [ ] List
-    - [ ] Retrieve
+    - [x] List
+    - [x] Retrieve
     - [ ] Modify
-    - [ ] Delete
+    - [x] Delete
 - Runs
     - [x] Create
-    - [ ] Create thread and run
-    - [ ] List
-    - [ ] Retrieve
+    - [x] Create thread and run
+    - [x] List
+    - [x] Retrieve
     - [ ] Modify
     - [ ] Submit tool outputs
     - [ ] Cancel

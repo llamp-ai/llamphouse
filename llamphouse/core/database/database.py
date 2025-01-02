@@ -149,6 +149,28 @@ def get_messages_by_thread_id(
     except Exception as e:
         print(f"An error occurred: {e}")
         return []
+    
+def get_runs_by_thread_id(
+        thread_id: str, 
+        limit: int = 20, 
+        order: str = "desc", 
+        after: str = None, 
+        before: str = None
+    ) -> list[Message]:
+    try:
+        query = db.query(Run).filter(Run.thread_id == thread_id)
+        if order == "asc":
+            query = query.order_by(Run.created_at.asc())
+        else:
+            query = query.order_by(Run.created_at.desc())
+        if after:
+            query = query.filter(Run.id > after)
+        if before:
+            query = query.filter(Run.id < before)
+        return query.limit(limit).all()
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return []
 
 def get_pending_runs():
     try:
