@@ -1,7 +1,7 @@
-from glowstick.core import Glowstick, Assistant
+from llamphouse.core import LLAMPHouse, Assistant
 from typing import List, Optional
 from dotenv import load_dotenv
-# from glowstick.core.context import Context
+# from llamphouse.core.context import Context
 
 load_dotenv(override=True)
 
@@ -28,7 +28,7 @@ class CustomAssistant(Assistant):
             tools=tools
         )
 
-    def run(self, assistant_id: str, thread_id: str, **kwargs):
+    def run(self, assistant_id: str, thread_id: str, *args, **kwargs):
         print(f"thread: {thread_id} ")
         print(f"assistant: {assistant_id} ")
 
@@ -64,8 +64,8 @@ assistant3 = CustomAssistant(
 )
 
 def main():
-    glowstick = Glowstick(assistants=[assistant1, assistant2, assistant3])
-    glowstick.ignite(host="127.0.0.1", port=8000)
+    llamphouse = LLAMPHouse(assistants=[assistant1, assistant2, assistant3])
+    llamphouse.ignite(host="127.0.0.1", port=8000)
 
 if __name__ == "__main__":
     main()

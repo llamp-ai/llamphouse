@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from llamphouse.core.database import database as db
-from ..types.message import DeleteMessageResponse, CreateMessageRequest, MessageListResponse, Attachment, MessageObject, TextContent, ImageFileContent
+from ..types.message import DeleteMessageResponse, CreateMessageRequest, MessageListResponse, Attachment, MessageObject, TextContent, ImageFileContent, ModifyMessageRequest
 from typing import List, Optional
 
 
@@ -37,7 +37,6 @@ async def create_message(thread_id: str, request: CreateMessageRequest):
 @router.get("/threads/{thread_id}/messages", response_model=MessageListResponse)
 async def list_messages(thread_id: str, limit: int = 20, order: str = "desc", after: Optional[str] = None, before: Optional[str] = None):
     try:
-        print(thread_id)
         messages = db.get_messages_by_thread_id(
             thread_id=thread_id,
             limit=limit + 1,
@@ -111,10 +110,10 @@ async def retrieve_message(thread_id: str, message_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.put("/threads/{thread_id}/messages/{message_id}", response_model=MessageObject)
-async def modify_message(thread_id: str, message_id: str, request: CreateMessageRequest):
+@router.post("/threads/{thread_id}/messages/{message_id}", response_model=MessageObject)
+async def modify_message(thread_id: str, message_id: str, request: ModifyMessageRequest):
     try:
-        message = db.update_message(thread_id, message_id, request)
+        message = db.update_message_metadata(thread_id, message_id, request.metadata)
         if not message:
             raise HTTPException(status_code=404, detail="Message not found.")
         

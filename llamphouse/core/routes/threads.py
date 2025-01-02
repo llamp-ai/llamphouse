@@ -36,22 +36,14 @@ async def retrieve_thread(thread_id: str):
         metadata=thread.meta
     )
 
-@router.put("/threads/{thread_id}", response_model=ThreadObject)
+@router.post("/threads/{thread_id}", response_model=ThreadObject)
 async def modify_thread(thread_id: str, request: ModifyThreadRequest):
     thread = db.get_thread_by_id(thread_id)
     
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found.")
     
-    if request.messages:
-        for msg in request.messages:
-            if msg.role not in ["user", "assistant"]:
-                raise HTTPException(status_code=400, detail="Invalid role. Must be 'user' or 'assistant'.")
-            
-        db.insert_message(thread_id, request.messages)
-    
-    thread.name = request.name if request.name else thread.name
-    db.commit()
+    thread = db.update_thread_metadata(thread_id, request.metadata)
     
     return ThreadObject(
         id=thread.id,

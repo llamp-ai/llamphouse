@@ -121,3 +121,13 @@ class CreateThreadAndRunRequest(BaseModel):
     tool_choice: Optional[Union[str, ToolChoice]] = None
     parallel_tool_calls: Optional[bool] = True
     response_format: Optional[Union[str, Dict]] = "auto"
+
+class RunListResponse(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[RunObject]
+    first_id: Optional[str] = None
+    last_id: Optional[str] = None
+    has_more: bool
+
+class ModifyRunRequest(BaseModel):
+    metadata: Optional[object] = {}
