@@ -49,7 +49,10 @@ class AsyncWorker(BaseWorker):
                     assistant = next((assistant for assistant in self.assistants if assistant.id == run.assistant_id), None)
                     if not assistant:
                         run.status = run_status.FAILED
-                        run.last_error = "Assistant not found"
+                        run.last_error = {
+                            "code": "server_error",
+                            "message": "Assistant not found"
+                        }
                         session.commit()
                         continue
 
@@ -74,14 +77,20 @@ class AsyncWorker(BaseWorker):
                     except asyncio.TimeoutError:
                         print(f"Run {run.id} timed out.")
                         run.status = run_status.INCOMPLETE
-                        run.last_error = "Run timeout"
+                        run.last_error = {
+                            "code": "server_error",
+                            "message": "Run timeout"
+                        }
                         session.commit()
 
 
                     except Exception as e:
                         print(f"Error executing run {run.id}: {e}")
                         run.status = run_status.FAILED
-                        run.last_error = str(e)
+                        run.last_error = {
+                            "code": "server_error",
+                            "message": str(e)
+                        }
                         session.commit()
 
                     print(f"Run {run.id} completed.")
