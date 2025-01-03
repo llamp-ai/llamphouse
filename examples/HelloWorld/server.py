@@ -1,7 +1,7 @@
 from llamphouse.core import LLAMPHouse, Assistant
 from typing import List, Optional
 from dotenv import load_dotenv
-# from llamphouse.core.context import Context
+from llamphouse.core.context import Context
 
 load_dotenv(override=True)
 
@@ -28,9 +28,9 @@ class CustomAssistant(Assistant):
             tools=tools
         )
 
-    def run(self, assistant_id: str, thread_id: str, *args, **kwargs):
-        print(f"thread: {thread_id} ")
-        print(f"assistant: {assistant_id} ")
+    def run(self, context: Context, *args, **kwargs):
+        print(f"thread: {context.thread_id} ")
+        print(f"assistant: {context.assistant_id} ")
 
 assistant1 = CustomAssistant(
     id="Chatbot1",
