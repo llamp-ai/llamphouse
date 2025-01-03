@@ -33,14 +33,15 @@ async def list_assistants(
             after=after,
             before=before
         )
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
 @router.get("/assistants/{assistant_id}", response_model=AssistantObject)
 async def retrieve_assistant(req: Request, assistant_id: str):
     try:
         assistant = next((a for a in req.app.state.assistants if a.id == assistant_id), None)
-
         if assistant is None:
             raise HTTPException(status_code=404, detail="Assistant not found")
 
@@ -54,5 +55,7 @@ async def retrieve_assistant(req: Request, assistant_id: str):
             top_p=assistant.top_p,
             tools=assistant.tools
         )
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")

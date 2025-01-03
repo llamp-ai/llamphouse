@@ -1,5 +1,5 @@
 from typing import Optional, List, Literal, Dict
-from ..types.message import MessageObject
+from ..types.message import MessageObject, InitialMessage
 from pydantic import BaseModel
 
 
@@ -19,7 +19,7 @@ class ThreadObject(BaseModel):
 class CreateThreadRequest(BaseModel):
     tool_resources: Optional[ToolResources] = None
     metadata: Optional[object] = {}
-    messages: Optional[List[MessageObject]] = None
+    messages: Optional[List[InitialMessage]] = None
 
 
 class ModifyThreadRequest(BaseModel):

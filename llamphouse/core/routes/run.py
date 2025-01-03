@@ -83,8 +83,10 @@ async def create_run(
             parallel_tool_calls=run.parallel_tool_calls,
             response_format=run.response_format,
         )
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.post("/threads/runs", response_model=RunObject)
 async def create_thread_and_run(request: CreateThreadAndRunRequest, req: Request):
@@ -162,8 +164,10 @@ async def create_thread_and_run(request: CreateThreadAndRunRequest, req: Request
             parallel_tool_calls=run.parallel_tool_calls,
             response_format=run.response_format,
         )
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
   
 def get_assistant_by_id(assistants: List[Assistant], assistant_id: str) -> Assistant:
     assistant = next((assistant for assistant in assistants if assistant.id == assistant_id), None)
@@ -221,8 +225,10 @@ async def list_runs(thread_id: str, limit: int = 20, order: str = "desc", after:
                     last_id=last_id,
                     has_more=has_more
                 )
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.get("/threads/{thread_id}/runs/{run_id}", response_model=RunObject)
 async def retrieve_run(
@@ -266,9 +272,10 @@ async def retrieve_run(
             parallel_tool_calls=run.parallel_tool_calls,
             response_format=run.response_format,
         )
-    
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
     
 @router.post("/threads/{thread_id}/runs/{run_id}", response_model=RunObject)
 async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest):
@@ -305,5 +312,7 @@ async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest):
             parallel_tool_calls=run.parallel_tool_calls,
             response_format=run.response_format,
         )
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")

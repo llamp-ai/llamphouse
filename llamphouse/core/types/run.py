@@ -1,6 +1,6 @@
 from typing import Optional, Union, List, Dict , Literal
 from pydantic import BaseModel
-from .message import Attachment, ImageFileContent, MessageObject, ImageURLContent, RefusalContent, TextContent
+from .message import Attachment, ImageFileContent, AdditionalMessage, ImageURLContent, RefusalContent, TextContent
 
 
 class ToolResources(BaseModel):
@@ -90,7 +90,7 @@ class RunCreateRequest(BaseModel):
     model: Optional[str] = None
     instructions: Optional[Union[str, None]] = None
     additional_instructions: Optional[Union[str, None]] = None
-    additional_messages: Optional[Union[List[str], None]] = None
+    additional_messages: Optional[Union[List[AdditionalMessage], None]] = None
     tools: Optional[Union[List[ToolCall], None]] = None
     metadata: Optional[object] = {}
     temperature: Optional[float] = 1.0
