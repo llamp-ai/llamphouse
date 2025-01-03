@@ -2,6 +2,7 @@ from .base_worker import BaseWorker
 from concurrent.futures import ThreadPoolExecutor
 from ..database import database as db
 from ..database.models import Run
+from ..context import Context
 import queue
 import time
 import threading
@@ -32,9 +33,9 @@ class ThreadWorker(BaseWorker):
                     task_key = f"{task.assistant_id}:{task.thread_id}"
                     output_queue = queue.Queue()
                     self.fastapi_state.task_queues[task_key] = output_queue
-
+                    context = Context(assistant=assistant, assistant_id=task.assistant_id, thread_id=task.thread_id, run_id=task.id, run=task, queue=output_queue)
                     with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(assistant.run, task.assistant_id, task.thread_id, output_queue)
+                        future = executor.submit(assistant.run, context)
                         try:
                             future.result(timeout=10)
                             task.status = "completed"
