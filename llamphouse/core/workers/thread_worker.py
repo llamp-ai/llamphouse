@@ -1,6 +1,7 @@
 from .base_worker import BaseWorker
 from concurrent.futures import ThreadPoolExecutor
 from ..database import database as db
+from ..types.enum import run_status
 from ..database.models import Run
 from ..context import Context
 import queue
@@ -17,19 +18,28 @@ class ThreadWorker(BaseWorker):
             try:
                 task = (
                     session.query(Run)
-                    .filter(Run.status == "queued")
+                    .filter(Run.status == run_status.QUEUED)
                     .with_for_update(skip_locked=True)
                     .first()
                 )
 
                 if task:
-                    task.status = "in_progress"
+                    task.status = run_status.IN_PROGRESS
                     session.commit()
 
                     assistant = next(
                         (assistant for assistant in self.assistants if assistant.id == task.assistant_id),
                         None
                     )
+                    if not assistant:
+                        task.status = run_status.FAILED
+                        task.last_error = {
+                            "code": "server_error",
+                            "message": "Assistant not found"
+                        }
+                        session.commit()
+                        continue
+                    
                     task_key = f"{task.assistant_id}:{task.thread_id}"
                     output_queue = queue.Queue()
                     self.fastapi_state.task_queues[task_key] = output_queue
@@ -38,11 +48,15 @@ class ThreadWorker(BaseWorker):
                         future = executor.submit(assistant.run, context)
                         try:
                             future.result(timeout=10)
-                            task.status = "completed"
+                            task.status = run_status.COMPLETED
                             session.commit()
                         except Exception as e:
-                            task.status = "failed"
-                            session.rollback()
+                            task.status = run_status.FAILED
+                            task.last_error = {
+                                "code": "server_error",
+                                "message": str(e)
+                            }
+                            session.commit()
                 else:
                     time.sleep(1)
             except Exception as e:
