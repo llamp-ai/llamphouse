@@ -7,14 +7,14 @@ import json
 import asyncio
 
 class Context:
-    def __init__(self, assistant, assistant_id: str, run_id: str, thread_id: str = None, queue: asyncio.Queue = None):
+    def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: asyncio.Queue = None):
         self.assistant_id = assistant_id
         self.thread_id = thread_id
         self.run_id = run_id
         self.assistant = assistant
         self.thread = self._get_thread_by_id(thread_id)
         self.messages = self._get_messages_by_thread_id(thread_id)
-        self.run = self._get_run_by_id(run_id)
+        self.run = run
         self.__queue = queue
         
     def create_message(self, content: str, attachment: Attachment = None, metadata: Dict[str, str] = {}):
@@ -58,12 +58,6 @@ class Context:
         if not messages:
             print(f"No messages found in thread {thread_id}.")
         return messages
-    
-    def _get_run_by_id(self, run_id):
-        run = db.get_run_by_id(run_id)
-        if not run:
-            print(f"Run with ID {run_id} not found.")
-        return run
     
     def _get_function_from_tools(self, function_name: str):
         for tool in self.assistant.tools:
