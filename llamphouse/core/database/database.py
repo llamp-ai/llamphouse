@@ -246,7 +246,7 @@ def update_run_metadata(thread_id: str, run_id: str, metadata: dict):
         print(f"An error occurred while updating thread metadata: {e}")
         return None
     
-def update_run_status(run_id: str, status: str, error: str = None):
+def update_run_status(run_id: str, status: str, error: dict = None):
     try:
         run = db.query(Run).filter(Run.id == run_id).first()
         if run:
