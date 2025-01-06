@@ -23,8 +23,8 @@ class CreateThreadRequest(BaseModel):
 
 
 class ModifyThreadRequest(BaseModel):
-    name: Optional[str] = None
-    messages: Optional[List[MessageObject]] = None
+    tool_resources: Optional[ToolResources] = None
+    metadata: Optional[object] = {}
 
 
 class DeleteThreadResponse(BaseModel):

@@ -61,6 +61,9 @@ class MessageListResponse(BaseModel):
     last_id: Optional[str] = None
     has_more: bool
 
+class ModifyMessageRequest(BaseModel):
+    metadata: Optional[object] = {}
+
 class DeleteMessageResponse(BaseModel):
     id: str
     deleted: bool
