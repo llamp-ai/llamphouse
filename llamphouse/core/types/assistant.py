@@ -5,11 +5,11 @@ class AssistantObject(BaseModel):
     id: str
     object: Literal["assistant"] = "assistant"
     model: str
-    name: Optional[str] = None, 
-    description: Optional[str] = None, 
-    temperature: Optional[float] = 0.7, 
-    top_p: Optional[float] = 1.0, 
-    instruction: Optional[str] = None,
+    name: Optional[str] = None
+    description: Optional[str] = None
+    temperature: Optional[float] = 0.7 
+    top_p: Optional[float] = 1.0
+    instruction: Optional[str] = None
     tools: Optional[List[str]] = None
 
 class AssistantListResponse(BaseModel):

@@ -25,6 +25,18 @@ class RefusalContent(BaseModel):
     type: Literal["refusal"] = "refusal"
     refusal_text: str
 
+class InitialMessage(BaseModel):
+    role: str
+    content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]]
+    attachments: Optional[List[Attachment]] = None
+    metadata: Optional[Dict[str, str]] = None
+
+class AdditionalMessage(BaseModel):
+    role: str
+    content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]]
+    attachments: Optional[List[Attachment]] = None
+    metadata: Optional[Dict[str, str]] = None
+
 class MessageObject(BaseModel):
     id: str
     object: Literal["thread.message"] = "thread.message"
