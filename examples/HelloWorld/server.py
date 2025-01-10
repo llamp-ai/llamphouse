@@ -64,7 +64,7 @@ assistant3 = CustomAssistant(
 )
 
 def main():
-    llamphouse = LLAMPHouse(assistants=[assistant1, assistant2, assistant3])
+    llamphouse = LLAMPHouse(assistants=[assistant1, assistant2, assistant3], api_key="123")
     llamphouse.ignite(host="127.0.0.1", port=8000)
 
 if __name__ == "__main__":
