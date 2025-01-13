@@ -1,23 +1,24 @@
 import sys
-from typing import List
+from typing import List, Optional
 import uvicorn
 from fastapi import FastAPI
-import threading
 from .routes import all_routes
 from .assistant import Assistant
-from .database.database import SessionLocal, db
+from fastapi.middleware.cors import CORSMiddleware
+from llamphouse.core.middlewares.api_key_middleware import APIKeyMiddleware
 import asyncio
 from .workers.factory import WorkerFactory
-from .types.enum import run_status
-import queue
 
 class LLAMPHouse:
-    def __init__(self, assistants: List[Assistant] = [], worker_type = "thread"):
+    def __init__(self, assistants: List[Assistant] = [], worker_type = "thread", api_key: Optional[str] = None):
         self.assistants = assistants
         self.worker_type = worker_type
+        self.api_key = api_key
         self.fastapi = FastAPI(title="LLAMPHouse API Server")
         self.fastapi.state.assistants = assistants
         self.fastapi.state.task_queues = {}
+        if self.api_key:
+            self.fastapi.add_middleware(APIKeyMiddleware, api_key=self.api_key)
         self._register_routes()
 
     def __print_ignite(self, host, port):
