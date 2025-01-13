@@ -29,17 +29,16 @@ class InitialMessage(BaseModel):
     role: str
     content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]]
     attachments: Optional[List[Attachment]] = None
-    metadata: Optional[Dict[str, str]] = None
+    metadata: Optional[object] = None
 
 class AdditionalMessage(BaseModel):
     role: str
     content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]]
     attachments: Optional[List[Attachment]] = None
-    metadata: Optional[Dict[str, str]] = None
+    metadata: Optional[object] = None
 
 class MessageObject(BaseModel):
     id: str
-    object: Literal["thread.message"] = "thread.message"
     created_at: int
     thread_id: str
     status: str = "in_progress"
@@ -51,13 +50,14 @@ class MessageObject(BaseModel):
     assistant_id: Optional[str] = None
     run_id: Optional[str] = None
     attachments: Optional[List[Attachment]] = None
-    metadata: Optional[Dict[str, str]] = None
+    metadata: Optional[object] = None
+    object: Literal["thread.message"] = "thread.message"
 
 class CreateMessageRequest(BaseModel):
     role: str
     content: str
     attachments: Optional[Attachment] = None
-    metadata: Optional[Dict[str, str]] = None
+    metadata: Optional[object] = None
 
 class MessagesListRequest(BaseModel):
     limit: Optional[int] = 20
