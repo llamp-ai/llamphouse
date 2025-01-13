@@ -46,13 +46,13 @@ class InitialMessage(BaseModel):
     role: str
     content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]]
     attachments: Optional[List[Attachment]] = None
-    metadata: Optional[Dict[str, str]] = None
+    metadata: Optional[object] = None
 
 
 class ThreadObject(BaseModel):
     messages: Optional[List[InitialMessage]]
     tool_resources: Optional[ToolResources] = None
-    metadata: Optional[Dict[str, str]] = {}
+    metadata: Optional[object] = {}
 
 
 class RunObject(BaseModel):
