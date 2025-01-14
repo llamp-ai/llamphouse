@@ -58,3 +58,9 @@ jobs:
         python -m twine upload dist/*
 
     
+    - name: Merge main into dev
+      run: |
+        git checkout dev
+        git pull origin dev
+        git merge main --no-edit
+        git push origin dev
