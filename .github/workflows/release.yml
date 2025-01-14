@@ -57,4 +57,13 @@ jobs:
       run: |
         python -m twine upload dist/*
 
+    # Sync dev with main
+    - name: Merge main into dev
+      run: |
+        git checkout dev
+        git pull origin dev
+        git merge main --no-edit
+        git push origin dev
+
+
     
