@@ -19,7 +19,13 @@ db = SessionLocal()
 
 def insert_thread(threads: thread.CreateThreadRequest):
     try:
-        thread_id = str(uuid.uuid4())
+        custom_thread_id = None
+        if threads.metadata:
+            custom_thread_id = threads.metadata.get("thread_id")
+        if custom_thread_id:
+            thread_id = custom_thread_id
+        else:
+            thread_id = str(uuid.uuid4())
         item = Thread(
             id=thread_id,
             name=thread_id,
@@ -36,7 +42,13 @@ def insert_thread(threads: thread.CreateThreadRequest):
     
 def insert_message(thread_id: str, message: message.CreateMessageRequest):
     try:
-        message_id = str(uuid.uuid4())
+        custom_message_id = None
+        if message.metadata:
+            custom_message_id = message.metadata.get("message_id")
+        if custom_message_id:
+            message_id = custom_message_id
+        else:
+            message_id = str(uuid.uuid4())
         item = Message(
             id=message_id,
             role=message.role,
@@ -55,7 +67,13 @@ def insert_message(thread_id: str, message: message.CreateMessageRequest):
     
 def insert_run(thread_id: str, run: run.RunCreateRequest, assistant: Assistant):
     try:
-        run_id = str(uuid.uuid4())
+        custom_run_id = None
+        if run.metadata:
+            custom_run_id = run.metadata.get("run_id")
+        if custom_run_id:
+            run_id = custom_run_id
+        else:
+            run_id = str(uuid.uuid4())
         item = Run(
             id=run_id,
             thread_id=thread_id,
