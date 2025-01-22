@@ -32,6 +32,54 @@ class Context:
         self.messages = self._get_messages_by_thread_id(self.thread_id)
         return new_message
     
+    def update_thread_details(self, **kwargs):
+        if not self.thread:
+            raise ValueError("Thread object is not initialized.")
+
+        for key, value in kwargs.items():
+            if hasattr(self.thread, key):
+                setattr(self.thread, key, value)
+            else:
+                raise AttributeError(f"Thread object has no attribute '{key}'")
+        try:
+            updated_thread = db.update_thread(self.thread)
+            return updated_thread
+        except Exception as e:
+            raise Exception(f"Failed to update thread in the database: {e}")
+
+    def update_message_details(self, message_id: str, **kwargs):
+        message = next((msg for msg in self.messages if msg["id"] == message_id), None)
+        if not message:
+            raise ValueError(f"Message with ID '{message_id}' not found in thread.")
+
+        for key, value in kwargs.items():
+            if key in message:
+                message[key] = value
+            else:
+                raise AttributeError(f"Message object has no attribute '{key}'")
+
+        try:
+            db.update_message(message)
+            self.messages = self._get_messages_by_thread_id(self.thread_id)
+            return message
+        except Exception as e:
+            raise Exception(f"Failed to update message: {e}")
+
+    def update_run_details(self, **kwargs):
+        if not self.run:
+            raise ValueError("Run object is not initialized.")
+
+        for key, value in kwargs.items():
+            if hasattr(self.run, key):
+                setattr(self.run, key, value)
+            else:
+                raise AttributeError(f"Run object has no attribute '{key}'")
+        try:
+            updated_run = db.update_run(self.run)
+            return updated_run
+        except Exception as e:
+            raise Exception(f"Failed to update run in the database: {e}")
+
     async def call_function(self, function_name: str, *args, **kwargs):
         function = self._get_function_from_tools(function_name)
         if not function:
