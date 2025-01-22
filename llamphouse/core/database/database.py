@@ -241,15 +241,35 @@ def update_message_metadata(thread_id: str, message_id: str, metadata: dict):
         print(f"An error occurred: {e}")
         return None
 
+def update_thread(thread: Thread):
+    try:
+        db.merge(thread)
+        db.commit()
+        return thread
+    except Exception as e:
+        db.rollback()
+        print(f"An error occurred while updating the thread: {e}")
+        return None 
+
+def update_message(message: Message):
+    try:
+        db.merge(message)
+        db.commit()
+        return message
+    except Exception as e:
+        db.rollback()
+        print(f"An error occurred while updating the message: {e}")
+        return None
+
 def update_run(run: Run):
     try:
         db.merge(run)
         db.commit()
-        return True
+        return run
     except Exception as e:
         db.rollback()
         print(f"An error occurred while updating the run: {e}")
-        return False
+        return None
     
 def update_run_metadata(thread_id: str, run_id: str, metadata: dict):
     try:
