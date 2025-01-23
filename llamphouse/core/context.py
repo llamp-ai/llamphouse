@@ -1,4 +1,4 @@
-from .database import database as db
+from .database.database import DatabaseManager, SessionGlobal
 from typing import Dict
 from .types.message import Attachment, CreateMessageRequest
 from .types.enum import run_step_status
@@ -7,11 +7,12 @@ import json
 import asyncio
 
 class Context:
-    def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: asyncio.Queue = None):
+    def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: asyncio.Queue = None, db_session = None):
         self.assistant_id = assistant_id
         self.thread_id = thread_id
         self.run_id = run_id
         self.assistant = assistant
+        self.db = DatabaseManager(db_session=db_session or SessionGlobal())
         self.thread = self._get_thread_by_id(thread_id)
         self.messages = self._get_messages_by_thread_id(thread_id)
         self.run = run
@@ -24,9 +25,9 @@ class Context:
             attachment=attachment,
             metadata=metadata
         )
-        new_message = db.insert_message(self.thread_id, messageRequest)
+        new_message = self.db.insert_message(self.thread_id, messageRequest)
         step_details = self._message_step_details(new_message.id)
-        db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="message_creation", step_details=step_details, status=run_step_status.COMPLETED)
+        self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="message_creation", step_details=step_details, status=run_step_status.COMPLETED)
 
         # Update context.message
         self.messages = self._get_messages_by_thread_id(self.thread_id)
@@ -42,7 +43,7 @@ class Context:
             else:
                 raise AttributeError(f"Thread object has no attribute '{key}'")
         try:
-            updated_thread = db.update_thread(self.thread)
+            updated_thread = self.db.update_thread(self.thread)
             return updated_thread
         except Exception as e:
             raise Exception(f"Failed to update thread in the database: {e}")
@@ -59,7 +60,7 @@ class Context:
                 raise AttributeError(f"Message object has no attribute '{key}'")
 
         try:
-            db.update_message(message)
+            self.db.update_message(message)
             self.messages = self._get_messages_by_thread_id(self.thread_id)
             return message
         except Exception as e:
@@ -75,7 +76,7 @@ class Context:
             else:
                 raise AttributeError(f"Run object has no attribute '{key}'")
         try:
-            updated_run = db.update_run(self.run)
+            updated_run = self.db.update_run(self.run)
             return updated_run
         except Exception as e:
             raise Exception(f"Failed to update run in the database: {e}")
@@ -86,23 +87,23 @@ class Context:
             raise ValueError(f"Function {function_name} not found in assistant's tools.")
         
         step_details = self._function_call_step_details(function_name, args, kwargs)
-        step = db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="tool_calls", step_details=step_details, status=run_step_status.IN_PROGRESS)
+        step = self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="tool_calls", step_details=step_details, status=run_step_status.IN_PROGRESS)
         try:
             result = await function(*args, **kwargs)
-            db.update_run_step_status(run_step_id=step.id, status=run_step_status.COMPLETED, output=result)
+            self.db.update_run_step_status(run_step_id=step.id, status=run_step_status.COMPLETED, output=result)
             return result
         except Exception as e:
-            db.update_run_step_status(run_step_id=step.id, status=run_step_status.FAILED, error=str(e))
+            self.db.update_run_step_status(run_step_id=step.id, status=run_step_status.FAILED, error=str(e))
             raise e
 
     def _get_thread_by_id(self, thread_id):
-        thread = db.get_thread_by_id(thread_id)
+        thread = self.db.get_thread_by_id(thread_id)
         if not thread:
             print(f"Thread with ID {thread_id} not found.")
         return thread
 
     def _get_messages_by_thread_id(self, thread_id):
-        messages = db.get_messages_by_thread_id(thread_id)
+        messages = self.db.get_messages_by_thread_id(thread_id)
         if not messages:
             print(f"No messages found in thread {thread_id}.")
         return messages

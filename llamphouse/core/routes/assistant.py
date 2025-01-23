@@ -1,5 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Request
-from llamphouse.core.database import database as db
+from fastapi import APIRouter, HTTPException, Request
 from ..types.assistant import AssistantListResponse, AssistantObject
 from typing import Optional
 
