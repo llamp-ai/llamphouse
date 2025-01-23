@@ -1,15 +1,15 @@
 from fastapi import APIRouter, HTTPException, Request
+from llamphouse.core.database.database import DatabaseManager
 from fastapi.responses import StreamingResponse
 from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, RunListResponse, ModifyRunRequest
 from ..assistant import Assistant
-from ..database import database as db
 from typing import List, Optional
 import time
 import asyncio
 import json
 
 router = APIRouter()
-
+db = DatabaseManager()
 
 @router.post("/threads/{thread_id}/runs", response_model=RunObject)
 async def create_run(

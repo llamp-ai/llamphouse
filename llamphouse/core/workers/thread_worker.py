@@ -1,6 +1,6 @@
 from .base_worker import BaseWorker
 from concurrent.futures import ThreadPoolExecutor
-from ..database import database as db
+from ..database.database import sessionmaker, engine
 from ..types.enum import run_status
 from ..database.models import Run
 from ..context import Context
@@ -9,11 +9,13 @@ import time
 import threading
 
 class ThreadWorker(BaseWorker):
-    def __init__(self, assistants, fastapi_state, *args, **kwargs):
+    def __init__(self, assistants, fastapi_state, thread_count, loop, *args, **kwargs):
         self.assistants = assistants
         self.fastapi_state = fastapi_state
+        self.thread_count = thread_count
     def task_execute(self):
-        session = db.SessionLocal()
+        SessionLocal = sessionmaker(autocommit=False, bind=engine)
+        session = SessionLocal()
         while True:
             try:
                 task = (
@@ -43,7 +45,7 @@ class ThreadWorker(BaseWorker):
                     task_key = f"{task.assistant_id}:{task.thread_id}"
                     output_queue = queue.Queue()
                     self.fastapi_state.task_queues[task_key] = output_queue
-                    context = Context(assistant=assistant, assistant_id=task.assistant_id, thread_id=task.thread_id, run_id=task.id, run=task, queue=output_queue)
+                    context = Context(assistant=assistant, assistant_id=task.assistant_id, thread_id=task.thread_id, run_id=task.id, run=task, queue=output_queue, db_session=session)
                     with ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(assistant.run, context)
                         try:
@@ -62,8 +64,11 @@ class ThreadWorker(BaseWorker):
             except Exception as e:
                 session.rollback()
                 print(f"ThreadWorker error: {e}")
+            finally:
+                session.close()
 
     def start(self):
-        thread = threading.Thread(target=self.task_execute)
-        thread.start()
-        print(f"ThreadWorker started")
+        for i in range(self.thread_count):
+            thread = threading.Thread(target=self.task_execute)
+            thread.start()
+            print(f"ThreadWorker thread {i} started")
