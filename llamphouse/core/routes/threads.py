@@ -1,9 +1,10 @@
 from fastapi import APIRouter, HTTPException
 from ..types.thread import ThreadObject, CreateThreadRequest, ModifyThreadRequest, DeleteThreadResponse
-from llamphouse.core.database import database as db
+from llamphouse.core.database.database import DatabaseManager
 import time
 
 router = APIRouter()
+db = DatabaseManager()
 
 @router.post("/threads", response_model=ThreadObject)
 async def create_thread(request: CreateThreadRequest):
