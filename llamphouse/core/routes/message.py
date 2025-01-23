@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException
-from llamphouse.core.database import database as db
+from llamphouse.core.database.database import DatabaseManager
 from ..types.message import DeleteMessageResponse, CreateMessageRequest, MessageListResponse, Attachment, MessageObject, TextContent, ImageFileContent, ModifyMessageRequest
 from typing import List, Optional
 
-
 router = APIRouter()
+db = DatabaseManager()
 
 @router.post("/threads/{thread_id}/messages", response_model=MessageObject)
 async def create_message(thread_id: str, request: CreateMessageRequest):

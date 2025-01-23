@@ -1,5 +1,6 @@
 import asyncio
-from ..database import database as db
+from ..database.database import engine
+from sqlalchemy.orm import sessionmaker
 from ..types.enum import run_status
 from .base_worker import BaseWorker
 from ..assistant import Assistant
@@ -8,7 +9,7 @@ from ..context import Context
 from typing import List
 
 class AsyncWorker(BaseWorker):
-    def __init__(self, assistants, fastapi_state, loop, timeout=30, sleep_interval=2):
+    def __init__(self, assistants, fastapi_state, time_out, thread_count, loop, timeout=30, sleep_interval=2):
         """
         Initialize the AsyncWorker.
 
@@ -25,11 +26,13 @@ class AsyncWorker(BaseWorker):
         self.fastapi_state = fastapi_state
         self.task = None
         self.loop = loop
+        self.time_out = time_out
 
         print("AsyncWorker initialized")
 
     async def process_run_queue(self):
-        session = db.SessionLocal()
+        SessionLocal = sessionmaker(autocommit=False, bind=engine)
+        session = SessionLocal()
         """
         Continuously process the run queue, fetching and handling pending runs.
         """
@@ -64,12 +67,12 @@ class AsyncWorker(BaseWorker):
 
                     output_queue = self.fastapi_state.task_queues[task_key]
 
-                    context = Context(assistant=assistant, assistant_id=run.assistant_id, run_id=run.id, run=run, thread_id=run.thread_id, queue=output_queue)
+                    context = Context(assistant=assistant, assistant_id=run.assistant_id, run_id=run.id, run=run, thread_id=run.thread_id, queue=output_queue, db_session=session)
 
                     try:
                         await asyncio.wait_for(
                             asyncio.to_thread(assistant.run, context),
-                            timeout=60
+                            timeout=self.time_out
                         )
                         run.status = run_status.COMPLETED
                         session.commit()

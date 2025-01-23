@@ -10,9 +10,11 @@ import asyncio
 from .workers.factory import WorkerFactory
 
 class LLAMPHouse:
-    def __init__(self, assistants: List[Assistant] = [], worker_type = "thread", api_key: Optional[str] = None):
+    def __init__(self, assistants: List[Assistant] = [], worker_type = "thread", api_key: Optional[str] = None, time_out: int = 60, thread_count: int = 1):
         self.assistants = assistants
         self.worker_type = worker_type
+        self.time_out = time_out
+        self.thread_count = thread_count
         self.api_key = api_key
         self.fastapi = FastAPI(title="LLAMPHouse API Server")
         self.fastapi.state.assistants = assistants
@@ -44,7 +46,7 @@ ______[===]______
         async def startup_event():
             loop = asyncio.get_running_loop()
             # create a worker and start it
-            worker = WorkerFactory.create_worker(self.worker_type, self.assistants, self.fastapi.state, loop)
+            worker = WorkerFactory.create_worker(self.worker_type, self.assistants, self.fastapi.state, self.time_out, self.thread_count, loop)
             worker.start()
 
         self.__print_ignite(host, port)
