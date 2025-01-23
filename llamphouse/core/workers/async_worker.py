@@ -9,7 +9,7 @@ from ..context import Context
 from typing import List
 
 class AsyncWorker(BaseWorker):
-    def __init__(self, assistants, fastapi_state, thread_count, loop, timeout=30, sleep_interval=2):
+    def __init__(self, assistants, fastapi_state, time_out, thread_count, loop, timeout=30, sleep_interval=2):
         """
         Initialize the AsyncWorker.
 
@@ -26,6 +26,7 @@ class AsyncWorker(BaseWorker):
         self.fastapi_state = fastapi_state
         self.task = None
         self.loop = loop
+        self.time_out = time_out
 
         print("AsyncWorker initialized")
 
@@ -71,7 +72,7 @@ class AsyncWorker(BaseWorker):
                     try:
                         await asyncio.wait_for(
                             asyncio.to_thread(assistant.run, context),
-                            timeout=60
+                            timeout=self.time_out
                         )
                         run.status = run_status.COMPLETED
                         session.commit()

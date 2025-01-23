@@ -9,10 +9,11 @@ import time
 import threading
 
 class ThreadWorker(BaseWorker):
-    def __init__(self, assistants, fastapi_state, thread_count, loop, *args, **kwargs):
+    def __init__(self, assistants, fastapi_state, time_out, thread_count, loop, *args, **kwargs):
         self.assistants = assistants
         self.fastapi_state = fastapi_state
         self.thread_count = thread_count
+        self.time_out = time_out
     def task_execute(self):
         SessionLocal = sessionmaker(autocommit=False, bind=engine)
         session = SessionLocal()
@@ -49,8 +50,15 @@ class ThreadWorker(BaseWorker):
                     with ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(assistant.run, context)
                         try:
-                            future.result(timeout=10)
+                            future.result(timeout=self.time_out)
                             task.status = run_status.COMPLETED
+                            session.commit()
+                        except TimeoutError:
+                            task.status = run_status.FAILED
+                            task.last_error = {
+                                "code": "timeout_error",
+                                "message": f"Task execution exceeded the {self.time_out}-second timeout."
+                            }
                             session.commit()
                         except Exception as e:
                             task.status = run_status.FAILED
