@@ -15,10 +15,10 @@ class ThreadWorker(BaseWorker):
         self.thread_count = thread_count
         self.time_out = time_out
     def task_execute(self):
-        SessionLocal = sessionmaker(autocommit=False, bind=engine)
-        session = SessionLocal()
         while True:
             try:
+                SessionLocal = sessionmaker(autocommit=False, bind=engine)
+                session = SessionLocal()
                 task = (
                     session.query(Run)
                     .filter(Run.status == run_status.QUEUED)
@@ -46,6 +46,7 @@ class ThreadWorker(BaseWorker):
                     task_key = f"{task.assistant_id}:{task.thread_id}"
                     output_queue = queue.Queue()
                     self.fastapi_state.task_queues[task_key] = output_queue
+                    context = Context(assistant=assistant, assistant_id=task.assistant_id, thread_id=task.thread_id, run_id=task.id, run=task, queue=output_queue, db_session=session)
                     context = Context(assistant=assistant, assistant_id=task.assistant_id, thread_id=task.thread_id, run_id=task.id, run=task, queue=output_queue, db_session=session)
                     with ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(assistant.run, context)

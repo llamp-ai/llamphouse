@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
-from llamphouse.core.database.database import DatabaseManager
+from llamphouse.core.database.database import DatabaseManager, SessionLocal
 from fastapi.responses import StreamingResponse
 from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, RunListResponse, ModifyRunRequest
 from ..assistant import Assistant
@@ -7,9 +7,7 @@ from typing import List, Optional
 import time
 import asyncio
 import json
-
 router = APIRouter()
-db = DatabaseManager()
 
 @router.post("/threads/{thread_id}/runs", response_model=RunObject)
 async def create_run(
@@ -18,6 +16,7 @@ async def create_run(
     req: Request
 ) -> RunObject:
     try:
+        db = DatabaseManager()
         assistants = req.app.state.assistants
         assistant = get_assistant_by_id(assistants, request.assistant_id)
         # store run in db
@@ -87,10 +86,13 @@ async def create_run(
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.post("/threads/runs", response_model=RunObject)
 async def create_thread_and_run(request: CreateThreadAndRunRequest, req: Request):
     try:
+        db = DatabaseManager()
         thread = db.insert_thread(request.thread)
 
         for msg in request.thread.messages:
@@ -168,6 +170,8 @@ async def create_thread_and_run(request: CreateThreadAndRunRequest, req: Request
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
   
 def get_assistant_by_id(assistants: List[Assistant], assistant_id: str) -> Assistant:
     assistant = next((assistant for assistant in assistants if assistant.id == assistant_id), None)
@@ -178,6 +182,7 @@ def get_assistant_by_id(assistants: List[Assistant], assistant_id: str) -> Assis
 @router.get("/threads/{thread_id}/runs", response_model=RunListResponse)
 async def list_runs(thread_id: str, limit: int = 20, order: str = "desc", after: Optional[str] = None, before: Optional[str] = None) -> RunObject:
     try:
+        db = DatabaseManager()
         runs = db.get_runs_by_thread_id(
             thread_id=thread_id,
             limit=limit + 1,
@@ -229,6 +234,8 @@ async def list_runs(thread_id: str, limit: int = 20, order: str = "desc", after:
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.get("/threads/{thread_id}/runs/{run_id}", response_model=RunObject)
 async def retrieve_run(
@@ -236,6 +243,7 @@ async def retrieve_run(
     run_id: str,
 ) -> RunObject:
     try:
+        db = DatabaseManager()
         thread = db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
@@ -276,10 +284,13 @@ async def retrieve_run(
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
     
 @router.post("/threads/{thread_id}/runs/{run_id}", response_model=RunObject)
 async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest):
     try:
+        db = DatabaseManager()
         run = db.update_run_metadata(thread_id, run_id, request.metadata)
         if not run:
             raise HTTPException(status_code=404, detail="Message not found.")
@@ -316,3 +327,5 @@ async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
