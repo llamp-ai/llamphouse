@@ -1,4 +1,4 @@
-from .database.database import DatabaseManager, SessionGlobal
+from .database.database import DatabaseManager, SessionLocal
 from typing import Dict
 from .types.message import Attachment, CreateMessageRequest
 from .types.enum import run_step_status
@@ -12,7 +12,7 @@ class Context:
         self.thread_id = thread_id
         self.run_id = run_id
         self.assistant = assistant
-        self.db = DatabaseManager(db_session=db_session or SessionGlobal())
+        self.db = DatabaseManager(db_session=db_session or SessionLocal())
         self.thread = self._get_thread_by_id(thread_id)
         self.messages = self._get_messages_by_thread_id(thread_id)
         self.run = run

@@ -4,11 +4,11 @@ from ..types.message import DeleteMessageResponse, CreateMessageRequest, Message
 from typing import List, Optional
 
 router = APIRouter()
-db = DatabaseManager()
 
 @router.post("/threads/{thread_id}/messages", response_model=MessageObject)
 async def create_message(thread_id: str, request: CreateMessageRequest):
     try:
+        db = DatabaseManager()
         thread = db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
@@ -39,10 +39,13 @@ async def create_message(thread_id: str, request: CreateMessageRequest):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.get("/threads/{thread_id}/messages", response_model=MessageListResponse)
 async def list_messages(thread_id: str, limit: int = 20, order: str = "desc", after: Optional[str] = None, before: Optional[str] = None):
     try:
+        db = DatabaseManager()
         thread = db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
@@ -91,10 +94,13 @@ async def list_messages(thread_id: str, limit: int = 20, order: str = "desc", af
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.get("/threads/{thread_id}/messages/{message_id}", response_model=MessageObject)
 async def retrieve_message(thread_id: str, message_id: str):
     try:
+        db = DatabaseManager()
         thread = db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
@@ -127,10 +133,13 @@ async def retrieve_message(thread_id: str, message_id: str):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.post("/threads/{thread_id}/messages/{message_id}", response_model=MessageObject)
 async def modify_message(thread_id: str, message_id: str, request: ModifyMessageRequest):
     try:
+        db = DatabaseManager()
         message = db.update_message_metadata(thread_id, message_id, request.metadata)
         if not message:
             raise HTTPException(status_code=404, detail="Message not found.")
@@ -159,10 +168,13 @@ async def modify_message(thread_id: str, message_id: str, request: ModifyMessage
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.delete("/threads/{thread_id}/messages/{message_id}", response_model=DeleteMessageResponse)
 async def delete_message(thread_id: str, message_id: str):
     try:
+        db = DatabaseManager()
         thread = db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
@@ -186,3 +198,5 @@ async def delete_message(thread_id: str, message_id: str):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
