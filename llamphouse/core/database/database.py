@@ -11,11 +11,11 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost/llamphouse")
 engine = create_engine(DATABASE_URL)
-SessionGlobal = sessionmaker(autocommit=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, bind=engine)
 
 class DatabaseManager:
     def __init__(self, db_session: Session = None):
-        self.db = db_session if db_session else SessionGlobal()
+        self.session = db_session if db_session else SessionLocal()
 
     def insert_thread(self, threads: thread.CreateThreadRequest):
         try:
@@ -32,11 +32,11 @@ class DatabaseManager:
                 tool_resources=threads.tool_resources,
                 meta=threads.metadata
             )
-            self.db.add(item)
-            self.db.commit()
+            self.session.add(item)
+            self.session.commit()
             return item
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return None
         
@@ -57,11 +57,11 @@ class DatabaseManager:
                 meta=message.metadata or {},
                 thread_id=thread_id
             )
-            self.db.add(item)
-            self.db.commit()
+            self.session.add(item)
+            self.session.commit()
             return item
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return None
         
@@ -91,11 +91,11 @@ class DatabaseManager:
                 parallel_tool_calls=run.parallel_tool_calls,
                 response_format=run.response_format,
             )
-            self.db.add(item)
-            self.db.commit()
+            self.session.add(item)
+            self.session.commit()
             return item
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return None
 
@@ -112,18 +112,18 @@ class DatabaseManager:
                 status=status,
                 step_details=step_details
             )
-            self.db.add(item)
-            self.db.commit()
-            self.db.refresh(item)
+            self.session.add(item)
+            self.session.commit()
+            self.session.refresh(item)
             return item
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return None
         
     def get_run_by_id(self, run_id: str):
         try:
-            run = self.db.query(Run).filter(Run.id == run_id).first()
+            run = self.session.query(Run).filter(Run.id == run_id).first()
             return run
         except Exception as e:
             print(f"An error occurred: {e}")
@@ -131,7 +131,7 @@ class DatabaseManager:
 
     def get_thread_by_id(self, thread_id: str):
         try:
-            thread = self.db.query(Thread).filter(Thread.id == thread_id).first()
+            thread = self.session.query(Thread).filter(Thread.id == thread_id).first()
             return thread
         except Exception as e:
             print(f"An error occurred: {e}")
@@ -139,7 +139,7 @@ class DatabaseManager:
 
     def get_message_by_id(self, message_id: str):
         try:
-            message = self.db.query(Message).filter(Message.id == message_id).first()
+            message = self.session.query(Message).filter(Message.id == message_id).first()
             return message
         except Exception as e:
             print(f"An error occurred: {e}")
@@ -154,7 +154,7 @@ class DatabaseManager:
             before: str = None
         ) -> list[Message]:
         try:
-            query = self.db.query(Message).filter(Message.thread_id == thread_id)
+            query = self.session.query(Message).filter(Message.thread_id == thread_id)
             if order == "asc":
                 query = query.order_by(Message.created_at.asc())
             else:
@@ -177,7 +177,7 @@ class DatabaseManager:
             before: str = None
         ) -> list[Message]:
         try:
-            query = self.db.query(Run).filter(Run.thread_id == thread_id)
+            query = self.session.query(Run).filter(Run.thread_id == thread_id)
             if order == "asc":
                 query = query.order_by(Run.created_at.asc())
             else:
@@ -193,7 +193,7 @@ class DatabaseManager:
 
     def get_pending_runs(self):
         try:
-            pending_runs = self.db.query(Run).filter(Run.status == run_status.QUEUED).all()
+            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).all()
             return pending_runs
         except Exception as e:
             print(f"An error occurred while fetching pending runs: {e}")
@@ -201,7 +201,7 @@ class DatabaseManager:
         
     def get_pending_run(self):
         try:
-            pending_runs = self.db.query(Run).filter(Run.status == run_status.QUEUED).with_for_update().first()
+            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).with_for_update().first()
             return pending_runs
         except Exception as e:
             print(f"An error occurred while fetching pending runs: {e}")
@@ -209,7 +209,7 @@ class DatabaseManager:
 
     def list_run_steps(self, thread_id: str, run_id: str):
         try:
-            run_steps = self.db.query(RunStep).filter(RunStep.run_id == run_id, RunStep.thread_id == thread_id)
+            run_steps = self.session.query(RunStep).filter(RunStep.run_id == run_id, RunStep.thread_id == thread_id)
             return run_steps
         except Exception as e:
             print(f"An error occurred while fetching run steps: {e}")
@@ -217,153 +217,153 @@ class DatabaseManager:
 
     def update_thread_metadata(self, thread_id: str, metadata: dict):
         try:
-            thread = self.db.query(Thread).filter(Thread.id == thread_id).first()
+            thread = self.session.query(Thread).filter(Thread.id == thread_id).first()
             if thread:
                 thread.meta = metadata
-                self.db.commit()
+                self.session.commit()
                 return thread
             return None
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred while updating thread metadata: {e}")
             return None
 
     def update_message_metadata(self, thread_id: str, message_id: str, metadata: dict):
         try:
-            message = self.db.query(Message).filter(Message.thread_id == thread_id, Message.id == message_id).first()
+            message = self.session.query(Message).filter(Message.thread_id == thread_id, Message.id == message_id).first()
             
             if message:
                 message.meta = metadata or {}
-                self.db.commit()
+                self.session.commit()
                 return message
             else:
                 return None
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return None
 
     def update_thread(self, thread: Thread):
         try:
-            self.db.merge(thread)
-            self.db.commit()
+            self.session.merge(thread)
+            self.session.commit()
             return thread
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred while updating the thread: {e}")
             return None 
 
     def update_message(self, message: Message):
         try:
-            self.db.merge(message)
-            self.db.commit()
+            self.session.merge(message)
+            self.session.commit()
             return message
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred while updating the message: {e}")
             return None
 
     def update_run(self, run: Run):
         try:
-            self.db.merge(run)
-            self.db.commit()
+            self.session.merge(run)
+            self.session.commit()
             return run
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred while updating the run: {e}")
             return None
         
     def update_run_metadata(self, thread_id: str, run_id: str, metadata: dict):
         try:
-            run = self.db.query(Run).filter(Run.thread_id == thread_id, Run.id == run_id).first()
+            run = self.session.query(Run).filter(Run.thread_id == thread_id, Run.id == run_id).first()
             if run:
                 run.meta = metadata
-                self.db.commit()
+                self.session.commit()
                 return run
             return None
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred while updating thread metadata: {e}")
             return None
         
     def update_run_status(self, run_id: str, status: str, error: dict = None):
         try:
-            run = self.db.query(Run).filter(Run.id == run_id).first()
+            run = self.session.query(Run).filter(Run.id == run_id).first()
             if run:
                 run.status = status
                 run.last_error = error
-                self.db.commit()
+                self.session.commit()
                 return run
             return None
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred while updating the run: {e}")
             return None
         
     def update_run_step_status(self, run_step_id: str, status: str, output = None, error: str = None):
         try:
-            run_step = self.db.query(RunStep).filter(RunStep.id == run_step_id).first()
+            run_step = self.session.query(RunStep).filter(RunStep.id == run_step_id).first()
             if run_step:
                 run_step.status = status
                 run_step.last_error = error
                 if output:
                     run_step.step_details["tool_calls"][0]["function"]["output"] = output
-                self.db.commit()
+                self.session.commit()
                 return run_step
             return None
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred while updating the run step: {e}")
             return None
 
     def delete_thread_by_id(self, thread_id: str):
         try:
-            thread = self.db.query(Thread).filter(Thread.id == thread_id).first()
+            thread = self.session.query(Thread).filter(Thread.id == thread_id).first()
             if thread:
-                self.db.delete(thread)
-                self.db.commit()
+                self.session.delete(thread)
+                self.session.commit()
                 return True
             return False
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return False
 
     def delete_messages_by_thread_id(self, thread_id: str):
         try:
-            self.db.query(Message).filter(Message.thread_id == thread_id).delete()
-            self.db.commit()
+            self.session.query(Message).filter(Message.thread_id == thread_id).delete()
+            self.session.commit()
             return True
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return False
 
     def delete_message_by_id(self, message_id: str):
         try:
-            message = self.db.query(Message).filter(Message.id == message_id).first()
+            message = self.session.query(Message).filter(Message.id == message_id).first()
             if message:
-                self.db.delete(message)
-                self.db.commit()
+                self.session.delete(message)
+                self.session.commit()
                 return True
             return False
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return False
 
     def delete_message(self, thread_id: str, message_id: str):
         try:
-            message = self.db.query(Message).filter(
+            message = self.session.query(Message).filter(
                 Message.thread_id == thread_id, Message.id == message_id).first()
             
             if message:
-                self.db.delete(message)
-                self.db.commit()
+                self.session.delete(message)
+                self.session.commit()
                 return True
             else:
                 return False
         except Exception as e:
-            self.db.rollback()
+            self.session.rollback()
             print(f"An error occurred: {e}")
             return False

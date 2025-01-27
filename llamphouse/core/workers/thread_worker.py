@@ -15,10 +15,10 @@ class ThreadWorker(BaseWorker):
         self.thread_count = thread_count
         self.time_out = time_out
     def task_execute(self):
-        SessionLocal = sessionmaker(autocommit=False, bind=engine)
-        session = SessionLocal()
         while True:
             try:
+                SessionLocal = sessionmaker(autocommit=False, bind=engine)
+                session = SessionLocal()
                 task = (
                     session.query(Run)
                     .filter(Run.status == run_status.QUEUED)
