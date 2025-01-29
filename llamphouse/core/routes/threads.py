@@ -4,11 +4,11 @@ from llamphouse.core.database.database import DatabaseManager
 import time
 
 router = APIRouter()
-db = DatabaseManager()
 
 @router.post("/threads", response_model=ThreadObject)
 async def create_thread(request: CreateThreadRequest):
     try:
+        db = DatabaseManager()
         thread = db.insert_thread(request)
         if request.messages:
             for msg in request.messages:
@@ -27,10 +27,13 @@ async def create_thread(request: CreateThreadRequest):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.get("/threads/{thread_id}", response_model=ThreadObject)
 async def retrieve_thread(thread_id: str):
     try:
+        db = DatabaseManager()
         thread = db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
@@ -45,10 +48,13 @@ async def retrieve_thread(thread_id: str):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.post("/threads/{thread_id}", response_model=ThreadObject)
 async def modify_thread(thread_id: str, request: ModifyThreadRequest):
     try:
+        db = DatabaseManager()
         thread = db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
@@ -65,10 +71,13 @@ async def modify_thread(thread_id: str, request: ModifyThreadRequest):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
 
 @router.delete("/threads/{thread_id}", response_model=DeleteThreadResponse)
 async def delete_thread(thread_id: str):
     try:
+        db = DatabaseManager()
         thread = db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
@@ -90,3 +99,5 @@ async def delete_thread(thread_id: str):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()

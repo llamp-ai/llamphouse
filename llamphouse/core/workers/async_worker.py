@@ -1,6 +1,8 @@
 import asyncio
 from ..database.database import engine
 from sqlalchemy.orm import sessionmaker
+from ..database.database import engine
+from sqlalchemy.orm import sessionmaker
 from ..types.enum import run_status
 from .base_worker import BaseWorker
 from ..assistant import Assistant
@@ -27,17 +29,17 @@ class AsyncWorker(BaseWorker):
         self.task = None
         self.loop = loop
         self.time_out = time_out
+        self.SessionLocal = sessionmaker(autocommit=False, bind=engine)
 
         print("AsyncWorker initialized")
 
     async def process_run_queue(self):
-        SessionLocal = sessionmaker(autocommit=False, bind=engine)
-        session = SessionLocal()
         """
         Continuously process the run queue, fetching and handling pending runs.
         """
         while True:
             try:
+                session = self.SessionLocal()
                 run = (
                     session.query(Run)
                     .filter(Run.status == run_status.QUEUED)
@@ -102,6 +104,7 @@ class AsyncWorker(BaseWorker):
                 print(f"Error processing run queue: {e}")
 
             finally:
+                session.close()
                 # Sleep for a short period to avoid tight loops if there are no pending runs
                 await asyncio.sleep(2)
 
