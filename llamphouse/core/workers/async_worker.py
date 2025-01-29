@@ -29,6 +29,7 @@ class AsyncWorker(BaseWorker):
         self.task = None
         self.loop = loop
         self.time_out = time_out
+        self.SessionLocal = sessionmaker(autocommit=False, bind=engine)
 
         print("AsyncWorker initialized")
 
@@ -38,8 +39,7 @@ class AsyncWorker(BaseWorker):
         """
         while True:
             try:
-                SessionLocal = sessionmaker(autocommit=False, bind=engine)
-                session = SessionLocal()
+                session = self.SessionLocal()
                 run = (
                     session.query(Run)
                     .filter(Run.status == run_status.QUEUED)
@@ -69,7 +69,6 @@ class AsyncWorker(BaseWorker):
 
                     output_queue = self.fastapi_state.task_queues[task_key]
 
-                    context = Context(assistant=assistant, assistant_id=run.assistant_id, run_id=run.id, run=run, thread_id=run.thread_id, queue=output_queue, db_session=session)
                     context = Context(assistant=assistant, assistant_id=run.assistant_id, run_id=run.id, run=run, thread_id=run.thread_id, queue=output_queue, db_session=session)
 
                     try:
