@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.0.5] - 29/01/2025
+
+- Fixed issue with created_at field causing incorrect ordering by using a separate session for each FastAPI request.
+- Ensured sessions are properly closed after each request.
+- Moved session maker to the class initialization part to manage sessions more effectively.
+
 ## [0.0.4] - 23/01/2025
 
 - Enhanced `Context` class with the ability to update thread, messages, and run details.
