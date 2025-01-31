@@ -1,36 +1,37 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from .models import Thread, Message, Run, RunStep
 from ..types import thread, message, run
 from ..types.enum import run_status, run_step_status
+from .._utils._utils import get_max_db_connections
 from dotenv import load_dotenv
 import uuid
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost/llamphouse")
-engine = create_engine(DATABASE_URL)
+POOL_SIZE = int(os.getenv("POOL_SIZE", "100"))
+engine = create_engine(DATABASE_URL, pool_size=int(POOL_SIZE))
 SessionLocal = sessionmaker(autocommit=False, bind=engine)
+MAX_POOL_SIZE = get_max_db_connections(engine)
+
+if MAX_POOL_SIZE and POOL_SIZE > MAX_POOL_SIZE:
+    raise ValueError(f"Input POOL_SIZE ({POOL_SIZE}) exceeds the database's maximum allowed ({MAX_POOL_SIZE}).")
 
 class DatabaseManager:
     def __init__(self, db_session: Session = None):
         self.session = db_session if db_session else SessionLocal()
 
-    def insert_thread(self, threads: thread.CreateThreadRequest):
+    def insert_thread(self, thread: thread.CreateThreadRequest):
         try:
-            custom_thread_id = None
-            if threads.metadata:
-                custom_thread_id = threads.metadata.get("thread_id")
-            if custom_thread_id:
-                thread_id = custom_thread_id
-            else:
-                thread_id = str(uuid.uuid4())
+            metadata = thread.metadata if thread.metadata else {}
+            thread_id = metadata.get("thread_id", str(uuid.uuid4()))
             item = Thread(
                 id=thread_id,
                 name=thread_id,
-                tool_resources=threads.tool_resources,
-                meta=threads.metadata
+                tool_resources=thread.tool_resources,
+                meta=thread.metadata
             )
             self.session.add(item)
             self.session.commit()
@@ -42,13 +43,8 @@ class DatabaseManager:
         
     def insert_message(self, thread_id: str, message: message.CreateMessageRequest):
         try:
-            custom_message_id = None
-            if message.metadata:
-                custom_message_id = message.metadata.get("message_id")
-            if custom_message_id:
-                message_id = custom_message_id
-            else:
-                message_id = str(uuid.uuid4())
+            metadata = message.metadata if message.metadata else {}
+            message_id = metadata.get("message_id", str(uuid.uuid4()))
             item = Message(
                 id=message_id,
                 role=message.role,
@@ -67,13 +63,8 @@ class DatabaseManager:
         
     def insert_run(self, thread_id: str, run: run.RunCreateRequest, assistant):
         try:
-            custom_run_id = None
-            if run.metadata:
-                custom_run_id = run.metadata.get("run_id")
-            if custom_run_id:
-                run_id = custom_run_id
-            else:
-                run_id = str(uuid.uuid4())
+            metadata = run.metadata if run.metadata else {}
+            run_id = metadata.get("run_id", str(uuid.uuid4()))
             item = Run(
                 id=run_id,
                 thread_id=thread_id,
