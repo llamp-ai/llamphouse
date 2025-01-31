@@ -16,6 +16,7 @@ class LLAMPHouse:
         self.time_out = time_out
         self.thread_count = thread_count
         self.api_key = api_key
+        self.worker = None
         self.fastapi = FastAPI(title="LLAMPHouse API Server")
         self.fastapi.state.assistants = assistants
         self.fastapi.state.task_queues = {}
@@ -41,14 +42,20 @@ ______[===]______
         sys.stdout.flush()
 
     def ignite(self, host="0.0.0.0", port=80, reload=False):
-        # Start workers based on the specified type
         @self.fastapi.on_event("startup")
         async def startup_event():
             loop = asyncio.get_running_loop()
-            # create a worker and start it
-            worker = WorkerFactory.create_worker(self.worker_type, self.assistants, self.fastapi.state, self.time_out, self.thread_count, loop)
-            worker.start()
+            self.worker = WorkerFactory.create_worker(
+                self.worker_type, self.assistants, self.fastapi.state, self.time_out, self.thread_count, loop
+            )
+            self.worker.start()
 
+        @self.fastapi.on_event("shutdown")
+        async def on_shutdown():
+            print("Server shutting down...")
+            if self.worker:
+                print("Stopping worker...")
+                self.worker.stop() 
         self.__print_ignite(host, port)
         uvicorn.run(self.fastapi, host=host, port=port, reload=reload)
 

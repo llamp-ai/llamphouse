@@ -1,8 +1,6 @@
 import asyncio
 from ..database.database import engine
 from sqlalchemy.orm import sessionmaker
-from ..database.database import engine
-from sqlalchemy.orm import sessionmaker
 from ..types.enum import run_status
 from .base_worker import BaseWorker
 from ..assistant import Assistant
@@ -30,6 +28,7 @@ class AsyncWorker(BaseWorker):
         self.loop = loop
         self.time_out = time_out
         self.SessionLocal = sessionmaker(autocommit=False, bind=engine)
+        self.running = True
 
         print("AsyncWorker initialized")
 
@@ -37,7 +36,7 @@ class AsyncWorker(BaseWorker):
         """
         Continuously process the run queue, fetching and handling pending runs.
         """
-        while True:
+        while self.running:
             try:
                 session = self.SessionLocal()
                 run = (
@@ -81,7 +80,7 @@ class AsyncWorker(BaseWorker):
 
                     except asyncio.TimeoutError:
                         print(f"Run {run.id} timed out.")
-                        run.status = run_status.INCOMPLETE
+                        run.status = run_status.EXPIRED
                         run.last_error = {
                             "code": "server_error",
                             "message": "Run timeout"
@@ -113,4 +112,10 @@ class AsyncWorker(BaseWorker):
         """
         Start the async worker to process the run queue.
         """
-        self.loop.create_task(self.process_run_queue())
+        self.task = self.loop.create_task(self.process_run_queue())
+
+    def stop(self):
+        print("Stopping async worker...")
+        self.running = False
+        if self.task:
+            self.task.cancel()
