@@ -31,8 +31,8 @@ This packages creates a server that mimics the OpenAI Assistant behavior. Howeve
     - [ ] Submit tool outputs
     - [ ] Cancel
 - Run steps
-    - [ ] List
-    - [ ] Retrieve
+    - [x] List
+    - [x] Retrieve
 - Vector stores
     - [ ] Create  ->  depends on implementation
     - [ ] List

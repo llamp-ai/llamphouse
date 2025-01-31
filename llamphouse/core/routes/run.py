@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
-from llamphouse.core.database.database import DatabaseManager, SessionLocal
+from llamphouse.core.database.database import DatabaseManager
 from fastapi.responses import StreamingResponse
 from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, RunListResponse, ModifyRunRequest
 from ..assistant import Assistant
@@ -7,6 +7,7 @@ from typing import List, Optional
 import time
 import asyncio
 import json
+
 router = APIRouter()
 
 @router.post("/threads/{thread_id}/runs", response_model=RunObject)
@@ -183,7 +184,7 @@ def get_assistant_by_id(assistants: List[Assistant], assistant_id: str) -> Assis
 async def list_runs(thread_id: str, limit: int = 20, order: str = "desc", after: Optional[str] = None, before: Optional[str] = None) -> RunObject:
     try:
         db = DatabaseManager()
-        runs = db.get_runs_by_thread_id(
+        runs = db.list_runs_by_thread_id(
             thread_id=thread_id,
             limit=limit + 1,
             order=order,
@@ -292,6 +293,49 @@ async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest):
     try:
         db = DatabaseManager()
         run = db.update_run_metadata(thread_id, run_id, request.metadata)
+        if not run:
+            raise HTTPException(status_code=404, detail="Message not found.")
+        
+        return  RunObject(
+            id=run.id,
+            created_at=int(run.created_at.timestamp()),
+            thread_id=thread_id,
+            assistant_id=run.assistant_id,
+            status=run.status,
+            required_action=run.required_action,
+            last_error=run.last_error,
+            expires_at=run.expires_at,
+            started_at=run.started_at,
+            cancelled_at=run.cancelled_at,
+            failed_at=run.failed_at,
+            completed_at=run.completed_at,
+            incomplete_details=run.incomplete_details,
+            model=run.model,
+            instructions=run.instructions,
+            tools=run.tools,
+            metadata=run.meta,
+            usage=run.usage,
+            temperature=run.temperature,
+            top_p=run.top_p,
+            max_prompt_tokens=run.max_prompt_tokens,
+            max_completion_tokens=run.max_completion_tokens,
+            truncation_strategy=run.truncation_strategy,
+            tool_choice=run.tool_choice,
+            parallel_tool_calls=run.parallel_tool_calls,
+            response_format=run.response_format,
+        )
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
+
+@router.post("/threads/{thread_id}/runs/{run_id}/cancel", response_model=RunObject)
+async def cancel_run(thread_id: str, run_id: str):
+    try:
+        db = DatabaseManager()
+        run = db.update_run_metadata(thread_id, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Message not found.")
         

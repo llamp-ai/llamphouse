@@ -136,7 +136,31 @@ class DatabaseManager:
             print(f"An error occurred: {e}")
             return None
 
-    def get_messages_by_thread_id(
+    def get_pending_runs(self):
+        try:
+            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).all()
+            return pending_runs
+        except Exception as e:
+            print(f"An error occurred while fetching pending runs: {e}")
+            return []
+        
+    def get_pending_run(self):
+        try:
+            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).with_for_update().first()
+            return pending_runs
+        except Exception as e:
+            print(f"An error occurred while fetching pending runs: {e}")
+            return None
+
+    def get_run_step_by_id(self, run_step_id: str) -> RunStep:
+        try:
+            run_step = self.session.query(RunStep).filter(RunStep.id == run_step_id).first()
+            return run_step
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
+    def list_messages_by_thread_id(
             self,
             thread_id: str, 
             limit: int = 20, 
@@ -159,7 +183,7 @@ class DatabaseManager:
             print(f"An error occurred: {e}")
             return []
         
-    def get_runs_by_thread_id(
+    def list_runs_by_thread_id(
             self,
             thread_id: str, 
             limit: int = 20, 
@@ -182,26 +206,25 @@ class DatabaseManager:
             print(f"An error occurred: {e}")
             return []
 
-    def get_pending_runs(self):
+    def list_run_steps(self, 
+            thread_id: str, 
+            run_id: str,
+            limit: int = 20, 
+            order: str = "desc", 
+            after: str = None, 
+            before: str = None
+        ) -> list[RunStep]:
         try:
-            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).all()
-            return pending_runs
-        except Exception as e:
-            print(f"An error occurred while fetching pending runs: {e}")
-            return []
-        
-    def get_pending_run(self):
-        try:
-            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).with_for_update().first()
-            return pending_runs
-        except Exception as e:
-            print(f"An error occurred while fetching pending runs: {e}")
-            return None
-
-    def list_run_steps(self, thread_id: str, run_id: str):
-        try:
-            run_steps = self.session.query(RunStep).filter(RunStep.run_id == run_id, RunStep.thread_id == thread_id)
-            return run_steps
+            query = self.session.query(RunStep).filter(RunStep.run_id == run_id, RunStep.thread_id == thread_id)
+            if order == "asc":
+                query = query.order_by(RunStep.created_at.asc())
+            else:
+                query = query.order_by(RunStep.created_at.desc())
+            if after:
+                query = query.filter(RunStep.id > after)
+            if before:
+                query = query.filter(RunStep.id < before)
+            return query.limit(limit).all()
         except Exception as e:
             print(f"An error occurred while fetching run steps: {e}")
             return []

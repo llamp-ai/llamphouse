@@ -1,6 +1,7 @@
 from .database.database import DatabaseManager, SessionLocal
 from typing import Dict
 from .types.message import Attachment, CreateMessageRequest
+from .types.run_step import ToolCallsStepDetails
 from .types.enum import run_step_status
 import uuid
 import json
@@ -14,7 +15,7 @@ class Context:
         self.assistant = assistant
         self.db = DatabaseManager(db_session=db_session or SessionLocal())
         self.thread = self._get_thread_by_id(thread_id)
-        self.messages = self._get_messages_by_thread_id(thread_id)
+        self.messages = self._list_messages_by_thread_id(thread_id)
         self.run = run
         self.__queue = queue
         
@@ -30,7 +31,7 @@ class Context:
         self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="message_creation", step_details=step_details, status=run_step_status.COMPLETED)
 
         # Update context.message
-        self.messages = self._get_messages_by_thread_id(self.thread_id)
+        self.messages = self._list_messages_by_thread_id(self.thread_id)
         return new_message
     
     def update_thread_details(self, **kwargs):
@@ -61,7 +62,7 @@ class Context:
 
         try:
             self.db.update_message(message)
-            self.messages = self._get_messages_by_thread_id(self.thread_id)
+            self.messages = self._list_messages_by_thread_id(self.thread_id)
             return message
         except Exception as e:
             raise Exception(f"Failed to update message: {e}")
@@ -102,8 +103,8 @@ class Context:
             print(f"Thread with ID {thread_id} not found.")
         return thread
 
-    def _get_messages_by_thread_id(self, thread_id):
-        messages = self.db.get_messages_by_thread_id(thread_id)
+    def _list_messages_by_thread_id(self, thread_id):
+        messages = self.db.list_messages_by_thread_id(thread_id)
         if not messages:
             print(f"No messages found in thread {thread_id}.")
         return messages
