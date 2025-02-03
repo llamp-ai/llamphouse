@@ -34,6 +34,10 @@ class Context:
         self.messages = self._list_messages_by_thread_id(self.thread_id)
         return new_message
     
+    def insert_tool_calls_step(self, step_details: ToolCallsStepDetails):
+        run_step = self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="tool_calls", step_details=step_details, status=run_step_status.COMPLETED)
+        return run_step
+    
     def update_thread_details(self, **kwargs):
         if not self.thread:
             raise ValueError("Thread object is not initialized.")
@@ -81,21 +85,6 @@ class Context:
             return updated_run
         except Exception as e:
             raise Exception(f"Failed to update run in the database: {e}")
-
-    async def call_function(self, function_name: str, *args, **kwargs):
-        function = self._get_function_from_tools(function_name)
-        if not function:
-            raise ValueError(f"Function {function_name} not found in assistant's tools.")
-        
-        step_details = self._function_call_step_details(function_name, args, kwargs)
-        step = self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="tool_calls", step_details=step_details, status=run_step_status.IN_PROGRESS)
-        try:
-            result = await function(*args, **kwargs)
-            self.db.update_run_step_status(run_step_id=step.id, status=run_step_status.COMPLETED, output=result)
-            return result
-        except Exception as e:
-            self.db.update_run_step_status(run_step_id=step.id, status=run_step_status.FAILED, error=str(e))
-            raise e
 
     def _get_thread_by_id(self, thread_id):
         thread = self.db.get_thread_by_id(thread_id)
