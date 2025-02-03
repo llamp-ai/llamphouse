@@ -160,6 +160,34 @@ class DatabaseManager:
             print(f"An error occurred: {e}")
             return None
 
+    def get_latest_run_step_by_run_id(self, run_id: str) -> RunStep:
+        try:
+            run_step = (
+                self.session.query(RunStep)
+                .filter(RunStep.run_id == run_id)
+                .order_by(RunStep.created_at.desc())
+                .first()
+            )
+            return run_step
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
+    def insert_tool_output(self, run_step: RunStep, tool_output: run.ToolOutput):
+        try:
+            tool_calls = run_step.step_details["tool_calls"]
+            for tool_call in tool_calls:
+                if tool_call["id"] == tool_output.tool_call_id:
+                    tool_call["output"] = tool_output.output
+                    break
+
+            run_step.step_details = {"tool_calls": tool_calls}
+            run_step.status = run_step_status.COMPLETED
+            self.session.commit()
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
     def list_messages_by_thread_id(
             self,
             thread_id: str, 

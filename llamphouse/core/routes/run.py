@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, Request
 from llamphouse.core.database.database import DatabaseManager
 from fastapi.responses import StreamingResponse
-from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, RunListResponse, ModifyRunRequest
+from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, RunListResponse, ModifyRunRequest, SubmitRunToolOutputRequest
+from ..types.enum import run_status, run_step_status
 from ..assistant import Assistant
 from typing import List, Optional
 import time
@@ -18,6 +19,10 @@ async def create_run(
 ) -> RunObject:
     try:
         db = DatabaseManager()
+        thread = db.get_thread_by_id(thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found.")
+        
         assistants = req.app.state.assistants
         assistant = get_assistant_by_id(assistants, request.assistant_id)
         # store run in db
@@ -331,15 +336,88 @@ async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest):
     finally:
         db.session.close()
 
+@router.post("/threads/{thread_id}/runs/{run_id}/submit_tool_outputs", response_model=RunObject)
+async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: SubmitRunToolOutputRequest):
+    try:
+        db = DatabaseManager()
+        thread = db.get_thread_by_id(thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found.")
+        
+        run = db.get_run_by_id(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        if run.status != run_status.REQUIRES_ACTION:
+            raise HTTPException(status_code=400, detail="Run is not in 'requires_action' status.")
+
+        latest_run_step = db.get_latest_run_step_by_run_id(run_id)
+        if not latest_run_step:
+            raise HTTPException(status_code=404, detail="No run step found for this run.")
+
+        if not latest_run_step.step_details or "tool_calls" not in latest_run_step.step_details:
+            raise HTTPException(status_code=400, detail="No tool calls found in the latest run step.")
+        
+        tool_calls = latest_run_step.step_details["tool_calls"]
+        
+        for tool_output in request.tool_outputs:
+            for tool_call in tool_calls:
+                if tool_call["id"] == tool_output.tool_call_id:
+                    tool_call["output"] = tool_output.output
+                    break
+
+        latest_run_step.step_details = {"tool_calls": tool_calls}
+        latest_run_step.status = run_step_status.COMPLETED
+        db.session.commit()
+
+        return RunObject(
+            id=run.id,
+            created_at=int(run.created_at.timestamp()),
+            thread_id=thread_id,
+            assistant_id=run.assistant_id,
+            status=run.status,
+            required_action=run.required_action,
+            last_error=run.last_error,
+            expires_at=run.expires_at,
+            started_at=run.started_at,
+            cancelled_at=run.cancelled_at,
+            failed_at=run.failed_at,
+            completed_at=run.completed_at,
+            incomplete_details=run.incomplete_details,
+            model=run.model,
+            instructions=run.instructions,
+            tools=run.tools,
+            metadata=run.meta,
+            usage=run.usage,
+            temperature=run.temperature,
+            top_p=run.top_p,
+            max_prompt_tokens=run.max_prompt_tokens,
+            max_completion_tokens=run.max_completion_tokens,
+            truncation_strategy=run.truncation_strategy,
+            tool_choice=run.tool_choice,
+            parallel_tool_calls=run.parallel_tool_calls,
+            response_format=run.response_format,
+        )
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    finally:
+        db.session.close()
+
 @router.post("/threads/{thread_id}/runs/{run_id}/cancel", response_model=RunObject)
 async def cancel_run(thread_id: str, run_id: str):
     try:
         db = DatabaseManager()
-        run = db.update_run_metadata(thread_id, run_id)
+        run = db.get_run_by_id(run_id)
         if not run:
-            raise HTTPException(status_code=404, detail="Message not found.")
+            raise HTTPException(status_code=404, detail="Run not found.")
+        if run.status != run_status.QUEUED:
+            raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
         
-        return  RunObject(
+        run.status = run_status.CANCELLED
+        db.session.commit()
+
+        return RunObject(
             id=run.id,
             created_at=int(run.created_at.timestamp()),
             thread_id=thread_id,

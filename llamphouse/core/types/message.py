@@ -41,7 +41,7 @@ class MessageObject(BaseModel):
     id: str
     created_at: int
     thread_id: str
-    status: str = "in_progress"
+    status: Literal["in_progress", "incomplete", "completed"] = "completed"
     incomplete_details: Optional[IncompleteDetails] = None
     completed_at: Optional[int] = None
     incomplete_at: Optional[int] = None

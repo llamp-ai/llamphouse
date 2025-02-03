@@ -28,8 +28,8 @@ This packages creates a server that mimics the OpenAI Assistant behavior. Howeve
     - [x] List
     - [x] Retrieve
     - [x] Modify
-    - [ ] Submit tool outputs
-    - [ ] Cancel
+    - [x] Submit tool outputs
+    - [x] Cancel
 - Run steps
     - [x] List
     - [x] Retrieve

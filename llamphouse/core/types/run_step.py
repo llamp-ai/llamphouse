@@ -39,7 +39,7 @@ class RunStepObject(BaseModel):
     metadata: Optional[object] = None
     object: Literal["thread.run.step"] = "thread.run.step"
     run_id: str
-    status: Literal["in_progress", "cancelled", "failed", "completed", "expired"]
+    status: Literal["in_progress", "cancelled", "failed", "completed", "expired"] = "completed"
     step_details: StepDetails
     thread_id: str
     type: Literal["message_creation", "tool_calls"]

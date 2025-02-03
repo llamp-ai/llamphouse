@@ -1,8 +1,9 @@
 from .database.database import DatabaseManager, SessionLocal
-from typing import Dict
+from typing import Dict, Optional
 from .types.message import Attachment, CreateMessageRequest
 from .types.run_step import ToolCallsStepDetails
-from .types.enum import run_step_status
+from .types.run import ToolOutput
+from .types.enum import run_step_status, run_status
 import uuid
 import json
 import asyncio
@@ -34,8 +35,22 @@ class Context:
         self.messages = self._list_messages_by_thread_id(self.thread_id)
         return new_message
     
-    def insert_tool_calls_step(self, step_details: ToolCallsStepDetails):
-        run_step = self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="tool_calls", step_details=step_details, status=run_step_status.COMPLETED)
+    def insert_tool_calls_step(self, step_details: ToolCallsStepDetails, output: Optional[ToolOutput] = None):
+        status = run_step_status.COMPLETED if output else run_step_status.IN_PROGRESS
+        run_step = self.db.insert_run_step(
+            run_id=self.run_id,
+            assistant_id=self.assistant_id,
+            thread_id=self.thread_id,
+            step_type="tool_calls",
+            step_details=step_details,
+            status=status
+        )
+
+        if output:
+            self.db.insert_tool_output(run_step, output)
+        else:
+            self.db.update_run_status(self.run_id, run_status.REQUIRES_ACTION)
+
         return run_step
     
     def update_thread_details(self, **kwargs):
