@@ -59,10 +59,14 @@ jobs:
       run: |
         python -m twine upload dist/*
 
-    
+    - name: Set up Git user identity
+      run: |
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.name "github-actions[bot]"
+
     - name: Merge main into dev
       run: |
         git checkout dev
         git pull origin dev
-        git merge main --no-edit
+        git merge --no-ff main -m "Merge main into dev"
         git push origin dev

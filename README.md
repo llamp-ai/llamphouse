@@ -1,58 +1,15 @@
+> [!NOTE]  
+> This package is still under development. Always use the latest version for better stability.
+
 # Introduction 
-LLAMPHouse core Python package.
 
-This packages creates a server that mimics the OpenAI Assistant behavior. However, you can fully customize the run behavior yourself.
+When building production grade LLM apps, there are many frameworks available to work something out in Python code. However, how can we deploy this code? When looking for tutorials, most people suggest using FastAPI to deploy a server with an endpoint. But in this step, scaling can become an issue. That is where LLAMPHouse comes in.
 
-## Included API endpoints
+![stack](docs/img/stack.png)
 
-- Assistants
-    - ~~Create~~  ->  created in code
-    - [x] List
-    - [x] Retrieve
-    - ~~Modify~~  ->  only in code
-    - ~~Delete~~  ->  only in code
-- Threads
-    - [x] Create
-    - [x] Retrieve
-    - [x] Modify
-    - [x] Delete
-- Messages
-    - [x] Create
-    - [x] List
-    - [x] Retrieve
-    - [x] Modify
-    - [x] Delete
-- Runs
-    - [x] Create
-    - [x] Create thread and run
-    - [x] List
-    - [x] Retrieve
-    - [x] Modify
-    - [ ] Submit tool outputs
-    - [ ] Cancel
-- Run steps
-    - [ ] List
-    - [ ] Retrieve
-- Vector stores
-    - [ ] Create  ->  depends on implementation
-    - [ ] List
-    - [ ] Retrieve
-    - [ ] Modify
-    - [ ] Delete  ->  depends on implementation
-- Vector store files
-    - [ ] Create
-    - [ ] List
-    - [ ] Retrieve
-    - [ ] Delete
-- Vector store file batches
-    - [ ] Create
-    - [ ] Retrieve
-    - [ ] Cancel
-    - [ ] List
-- Streaming
-    - [ ] Message delta
-    - [ ] Run step object
-    - [ ] Assistant stream
+This packages creates a reliable self-hosted server that mimics the OpenAI Assistant behavior. However, you can fully customize the run behavior yourself using your favorite framework.
+
+![assistant API](docs/img/assistant_api.png)
 
 ## Installation
 
@@ -81,3 +38,55 @@ To create a new database revision: `alembic revision --autogenerate -m "Added ac
 To upgrade the database with the latest revision: `alembic upgrade head`
 
 To downgrade back to the base version: `alembic downgrade base`
+
+## Included API endpoints
+
+- Assistants
+    - ~~Create~~  ->  created in code
+    - [x] List
+    - [x] Retrieve
+    - ~~Modify~~  ->  only in code
+    - ~~Delete~~  ->  only in code
+- Threads
+    - [x] Create
+    - [x] Retrieve
+    - [x] Modify
+    - [x] Delete
+- Messages
+    - [x] Create
+    - [x] List
+    - [x] Retrieve
+    - [x] Modify
+    - [x] Delete
+- Runs
+    - [x] Create
+    - [x] Create thread and run
+    - [x] List
+    - [x] Retrieve
+    - [x] Modify
+    - [x] Submit tool outputs
+    - [x] Cancel
+- Run steps
+    - [x] List
+    - [x] Retrieve
+- Vector stores
+    - [ ] Create  ->  depends on implementation
+    - [ ] List
+    - [ ] Retrieve
+    - [ ] Modify
+    - [ ] Delete  ->  depends on implementation
+- Vector store files
+    - [ ] Create
+    - [ ] List
+    - [ ] Retrieve
+    - [ ] Delete
+- Vector store file batches
+    - [ ] Create
+    - [ ] Retrieve
+    - [ ] Cancel
+    - [ ] List
+- Streaming
+    - [ ] Message delta
+    - [ ] Run step object
+    - [ ] Assistant stream
+    

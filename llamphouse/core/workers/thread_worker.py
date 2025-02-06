@@ -15,9 +15,11 @@ class ThreadWorker(BaseWorker):
         self.thread_count = thread_count
         self.time_out = time_out
         self.SessionLocal = sessionmaker(autocommit=False, bind=engine)
+        self.threads = []
+        self.running = True
 
     def task_execute(self):
-        while True:
+        while self.running:
             try:
                 session = self.SessionLocal()
                 task = (
@@ -55,7 +57,7 @@ class ThreadWorker(BaseWorker):
                             task.status = run_status.COMPLETED
                             session.commit()
                         except TimeoutError:
-                            task.status = run_status.FAILED
+                            task.status = run_status.EXPIRED
                             task.last_error = {
                                 "code": "timeout_error",
                                 "message": f"Task execution exceeded the {self.time_out}-second timeout."
@@ -80,4 +82,11 @@ class ThreadWorker(BaseWorker):
         for i in range(self.thread_count):
             thread = threading.Thread(target=self.task_execute)
             thread.start()
+            self.threads.append(thread)
+
             print(f"ThreadWorker thread {i} started")
+
+    def stop(self):
+        self.running = False
+        for thread in self.threads:
+            thread.join()

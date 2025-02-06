@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- Add tracing and monitoring
+- Make Assistant init with only a unique name
+- Streaming
+- LangChain utilities
+- LangGraph utilities
+
+## [0.0.6] - 03/02/2025
+
+- Implement Grceful shutdown for both worker types.
+- Implement pool size customization by env variable and check with maximum avaliable from database connection
+- Enhanced `Context` class with the ability to create new tool call step.
+- Add remaining runs endpoints: Submit tool output, Cancel run.
+- Add remaining run_steps endpoints: List run_step, Retrieve run_step.
+
 ## [0.0.5] - 29/01/2025
 
 - Fixed issue with created_at field causing incorrect ordering by using a separate session for each FastAPI request.
