@@ -1,7 +1,9 @@
 from .database.database import DatabaseManager, SessionLocal
-from typing import Dict
+from typing import Dict, Optional
 from .types.message import Attachment, CreateMessageRequest
-from .types.enum import run_step_status
+from .types.run_step import ToolCallsStepDetails
+from .types.run import ToolOutput
+from .types.enum import run_step_status, run_status
 import uuid
 import json
 import asyncio
@@ -14,7 +16,7 @@ class Context:
         self.assistant = assistant
         self.db = DatabaseManager(db_session=db_session or SessionLocal())
         self.thread = self._get_thread_by_id(thread_id)
-        self.messages = self._get_messages_by_thread_id(thread_id)
+        self.messages = self._list_messages_by_thread_id(thread_id)
         self.run = run
         self.__queue = queue
         
@@ -30,8 +32,26 @@ class Context:
         self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="message_creation", step_details=step_details, status=run_step_status.COMPLETED)
 
         # Update context.message
-        self.messages = self._get_messages_by_thread_id(self.thread_id)
+        self.messages = self._list_messages_by_thread_id(self.thread_id)
         return new_message
+    
+    def insert_tool_calls_step(self, step_details: ToolCallsStepDetails, output: Optional[ToolOutput] = None):
+        status = run_step_status.COMPLETED if output else run_step_status.IN_PROGRESS
+        run_step = self.db.insert_run_step(
+            run_id=self.run_id,
+            assistant_id=self.assistant_id,
+            thread_id=self.thread_id,
+            step_type="tool_calls",
+            step_details=step_details,
+            status=status
+        )
+
+        if output:
+            self.db.insert_tool_output(run_step, output)
+        else:
+            self.db.update_run_status(self.run_id, run_status.REQUIRES_ACTION)
+
+        return run_step
     
     def update_thread_details(self, **kwargs):
         if not self.thread:
@@ -61,7 +81,7 @@ class Context:
 
         try:
             self.db.update_message(message)
-            self.messages = self._get_messages_by_thread_id(self.thread_id)
+            self.messages = self._list_messages_by_thread_id(self.thread_id)
             return message
         except Exception as e:
             raise Exception(f"Failed to update message: {e}")
@@ -81,29 +101,14 @@ class Context:
         except Exception as e:
             raise Exception(f"Failed to update run in the database: {e}")
 
-    async def call_function(self, function_name: str, *args, **kwargs):
-        function = self._get_function_from_tools(function_name)
-        if not function:
-            raise ValueError(f"Function {function_name} not found in assistant's tools.")
-        
-        step_details = self._function_call_step_details(function_name, args, kwargs)
-        step = self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="tool_calls", step_details=step_details, status=run_step_status.IN_PROGRESS)
-        try:
-            result = await function(*args, **kwargs)
-            self.db.update_run_step_status(run_step_id=step.id, status=run_step_status.COMPLETED, output=result)
-            return result
-        except Exception as e:
-            self.db.update_run_step_status(run_step_id=step.id, status=run_step_status.FAILED, error=str(e))
-            raise e
-
     def _get_thread_by_id(self, thread_id):
         thread = self.db.get_thread_by_id(thread_id)
         if not thread:
             print(f"Thread with ID {thread_id} not found.")
         return thread
 
-    def _get_messages_by_thread_id(self, thread_id):
-        messages = self.db.get_messages_by_thread_id(thread_id)
+    def _list_messages_by_thread_id(self, thread_id):
+        messages = self.db.list_messages_by_thread_id(thread_id)
         if not messages:
             print(f"No messages found in thread {thread_id}.")
         return messages

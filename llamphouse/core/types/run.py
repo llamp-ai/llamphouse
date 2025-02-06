@@ -131,3 +131,11 @@ class RunListResponse(BaseModel):
 
 class ModifyRunRequest(BaseModel):
     metadata: Optional[object] = {}
+
+class ToolOutput(BaseModel):
+    output: str
+    tool_call_id: str
+
+class SubmitRunToolOutputRequest(BaseModel):
+    tool_outputs: List[ToolOutput]
+    stream: Optional[bool] = False

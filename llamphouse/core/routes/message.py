@@ -50,7 +50,7 @@ async def list_messages(thread_id: str, limit: int = 20, order: str = "desc", af
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
         
-        messages = db.get_messages_by_thread_id(
+        messages = db.list_messages_by_thread_id(
             thread_id=thread_id,
             limit=limit + 1,
             order=order,

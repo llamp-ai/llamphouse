@@ -1,36 +1,37 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from .models import Thread, Message, Run, RunStep
 from ..types import thread, message, run
 from ..types.enum import run_status, run_step_status
+from .._utils._utils import get_max_db_connections
 from dotenv import load_dotenv
 import uuid
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost/llamphouse")
-engine = create_engine(DATABASE_URL)
+POOL_SIZE = int(os.getenv("POOL_SIZE", "100"))
+engine = create_engine(DATABASE_URL, pool_size=int(POOL_SIZE))
 SessionLocal = sessionmaker(autocommit=False, bind=engine)
+MAX_POOL_SIZE = get_max_db_connections(engine)
+
+if MAX_POOL_SIZE and POOL_SIZE > MAX_POOL_SIZE:
+    raise ValueError(f"Input POOL_SIZE ({POOL_SIZE}) exceeds the database's maximum allowed ({MAX_POOL_SIZE}).")
 
 class DatabaseManager:
     def __init__(self, db_session: Session = None):
         self.session = db_session if db_session else SessionLocal()
 
-    def insert_thread(self, threads: thread.CreateThreadRequest):
+    def insert_thread(self, thread: thread.CreateThreadRequest):
         try:
-            custom_thread_id = None
-            if threads.metadata:
-                custom_thread_id = threads.metadata.get("thread_id")
-            if custom_thread_id:
-                thread_id = custom_thread_id
-            else:
-                thread_id = str(uuid.uuid4())
+            metadata = thread.metadata if thread.metadata else {}
+            thread_id = metadata.get("thread_id", str(uuid.uuid4()))
             item = Thread(
                 id=thread_id,
                 name=thread_id,
-                tool_resources=threads.tool_resources,
-                meta=threads.metadata
+                tool_resources=thread.tool_resources,
+                meta=thread.metadata
             )
             self.session.add(item)
             self.session.commit()
@@ -42,13 +43,8 @@ class DatabaseManager:
         
     def insert_message(self, thread_id: str, message: message.CreateMessageRequest):
         try:
-            custom_message_id = None
-            if message.metadata:
-                custom_message_id = message.metadata.get("message_id")
-            if custom_message_id:
-                message_id = custom_message_id
-            else:
-                message_id = str(uuid.uuid4())
+            metadata = message.metadata if message.metadata else {}
+            message_id = metadata.get("message_id", str(uuid.uuid4()))
             item = Message(
                 id=message_id,
                 role=message.role,
@@ -67,13 +63,8 @@ class DatabaseManager:
         
     def insert_run(self, thread_id: str, run: run.RunCreateRequest, assistant):
         try:
-            custom_run_id = None
-            if run.metadata:
-                custom_run_id = run.metadata.get("run_id")
-            if custom_run_id:
-                run_id = custom_run_id
-            else:
-                run_id = str(uuid.uuid4())
+            metadata = run.metadata if run.metadata else {}
+            run_id = metadata.get("run_id", str(uuid.uuid4()))
             item = Run(
                 id=run_id,
                 thread_id=thread_id,
@@ -145,7 +136,59 @@ class DatabaseManager:
             print(f"An error occurred: {e}")
             return None
 
-    def get_messages_by_thread_id(
+    def get_pending_runs(self):
+        try:
+            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).all()
+            return pending_runs
+        except Exception as e:
+            print(f"An error occurred while fetching pending runs: {e}")
+            return []
+        
+    def get_pending_run(self):
+        try:
+            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).with_for_update().first()
+            return pending_runs
+        except Exception as e:
+            print(f"An error occurred while fetching pending runs: {e}")
+            return None
+
+    def get_run_step_by_id(self, run_step_id: str) -> RunStep:
+        try:
+            run_step = self.session.query(RunStep).filter(RunStep.id == run_step_id).first()
+            return run_step
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
+    def get_latest_run_step_by_run_id(self, run_id: str) -> RunStep:
+        try:
+            run_step = (
+                self.session.query(RunStep)
+                .filter(RunStep.run_id == run_id)
+                .order_by(RunStep.created_at.desc())
+                .first()
+            )
+            return run_step
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
+    def insert_tool_output(self, run_step: RunStep, tool_output: run.ToolOutput):
+        try:
+            tool_calls = run_step.step_details["tool_calls"]
+            for tool_call in tool_calls:
+                if tool_call["id"] == tool_output.tool_call_id:
+                    tool_call["output"] = tool_output.output
+                    break
+
+            run_step.step_details = {"tool_calls": tool_calls}
+            run_step.status = run_step_status.COMPLETED
+            self.session.commit()
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
+
+    def list_messages_by_thread_id(
             self,
             thread_id: str, 
             limit: int = 20, 
@@ -168,7 +211,7 @@ class DatabaseManager:
             print(f"An error occurred: {e}")
             return []
         
-    def get_runs_by_thread_id(
+    def list_runs_by_thread_id(
             self,
             thread_id: str, 
             limit: int = 20, 
@@ -191,26 +234,25 @@ class DatabaseManager:
             print(f"An error occurred: {e}")
             return []
 
-    def get_pending_runs(self):
+    def list_run_steps(self, 
+            thread_id: str, 
+            run_id: str,
+            limit: int = 20, 
+            order: str = "desc", 
+            after: str = None, 
+            before: str = None
+        ) -> list[RunStep]:
         try:
-            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).all()
-            return pending_runs
-        except Exception as e:
-            print(f"An error occurred while fetching pending runs: {e}")
-            return []
-        
-    def get_pending_run(self):
-        try:
-            pending_runs = self.session.query(Run).filter(Run.status == run_status.QUEUED).with_for_update().first()
-            return pending_runs
-        except Exception as e:
-            print(f"An error occurred while fetching pending runs: {e}")
-            return None
-
-    def list_run_steps(self, thread_id: str, run_id: str):
-        try:
-            run_steps = self.session.query(RunStep).filter(RunStep.run_id == run_id, RunStep.thread_id == thread_id)
-            return run_steps
+            query = self.session.query(RunStep).filter(RunStep.run_id == run_id, RunStep.thread_id == thread_id)
+            if order == "asc":
+                query = query.order_by(RunStep.created_at.asc())
+            else:
+                query = query.order_by(RunStep.created_at.desc())
+            if after:
+                query = query.filter(RunStep.id > after)
+            if before:
+                query = query.filter(RunStep.id < before)
+            return query.limit(limit).all()
         except Exception as e:
             print(f"An error occurred while fetching run steps: {e}")
             return []

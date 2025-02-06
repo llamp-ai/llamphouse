@@ -1,0 +1,5 @@
+openai
+langgraph
+langchain-openai
+requests
+llamphouse
