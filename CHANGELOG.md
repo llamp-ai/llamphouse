@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Add tracing and monitoring
+- Make Assistant init with only a unique name
+- Streaming
+- LangChain utilities
+- LangGraph utilities
+
 ## [0.0.6] - 03/02/2025
 
 - Implement Grceful shutdown for both worker types.
