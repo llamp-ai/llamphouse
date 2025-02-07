@@ -3,8 +3,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from .models import Thread, Message, Run, RunStep
 from ..types import thread, message, run
-from ..types.enum import run_status, run_step_status
+from ..types.enum import run_status, run_step_status, message_status
 from .._utils._utils import get_max_db_connections
+from typing import Literal
 from dotenv import load_dotenv
 import uuid
 
@@ -192,7 +193,7 @@ class DatabaseManager:
             self,
             thread_id: str, 
             limit: int = 20, 
-            order: str = "desc", 
+            order: Literal["desc", "asc"] = "desc", 
             after: str = None, 
             before: str = None
         ) -> list[Message]:
@@ -215,7 +216,7 @@ class DatabaseManager:
             self,
             thread_id: str, 
             limit: int = 20, 
-            order: str = "desc", 
+            order: Literal["desc", "asc"] = "desc", 
             after: str = None, 
             before: str = None
         ) -> list[Message]:
@@ -238,7 +239,7 @@ class DatabaseManager:
             thread_id: str, 
             run_id: str,
             limit: int = 20, 
-            order: str = "desc", 
+            order: Literal["desc", "asc"] = "desc", 
             after: str = None, 
             before: str = None
         ) -> list[RunStep]:
