@@ -32,6 +32,34 @@ jobs:
       run: |
         echo "VERSION=$(python -c 'from llamphouse import __version__; print(__version__)')" >> $GITHUB_ENV
 
+    - name: Get Latest Git Tag
+      id: get_latest_tag
+      run: |
+        git fetch --tags
+        LATEST_TAG=$(git tag --sort=-v:refname | head -n 1 | sed 's/^v//')
+        echo "LATEST_TAG=${LATEST_TAG}" >> $GITHUB_ENV
+        echo "Latest tag: ${LATEST_TAG}"
+
+    - name: Compare Versions
+      id: check_version
+      run: |
+        if [ -z "${{ env.LATEST_TAG }}" ]; then
+          echo "No previous tag found, proceeding with release."
+          echo "SHOULD_RELEASE=true" >> $GITHUB_ENV
+        elif python -c "import sys; from packaging.version import parse as V; sys.exit(0 if V('${{ env.VERSION }}') > V('${{ env.LATEST_TAG }}') else 1)"; then
+          echo "New version is greater, proceeding with release."
+          echo "SHOULD_RELEASE=true" >> $GITHUB_ENV
+        else
+          echo "Version has not increased. Skipping release."
+          echo "SHOULD_RELEASE=false" >> $GITHUB_ENV
+        fi
+
+    - name: Stop if Version Not Increased
+      if: env.SHOULD_RELEASE == 'false'
+      run: |
+        echo "Skipping release as version has not increased."
+        exit 0
+
     - name: Build the package
       run: |
         python -m build
@@ -58,15 +86,3 @@ jobs:
         TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
       run: |
         python -m twine upload dist/*
-
-    - name: Set up Git user identity
-      run: |
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git config --global user.name "github-actions[bot]"
-
-    - name: Merge main into dev
-      run: |
-        git checkout dev
-        git pull origin dev
-        git merge --no-ff main -m "Merge main into dev"
-        git push origin dev
