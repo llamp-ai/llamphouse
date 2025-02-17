@@ -21,8 +21,7 @@
   <h3 align="center">LLAMPHouse</h3>
 
   <p align="center">
-    From Python Code to Production-Ready LLM Apps - With Ease.
-    Production-Grade LLM Apps, Without the Scaling Hassle.
+    Serving Your LLM Apps, Scalable and Reliable.
     <br />
     <a href="https://github.com/llamp-ai/llamphouse/tree/main/docs"><strong>Explore the docs »</strong></a>
     <br />
@@ -38,15 +37,21 @@
 
 
 <!-- PROJECT DESCRIPTION -->
-# Introduction 
+# Introduction
 
-When building production grade LLM apps, there are many frameworks available to work something out in Python code. However, how can we deploy this code? When looking for tutorials, most people suggest using FastAPI to deploy a server with an endpoint. But in this step, scaling can become an issue. That is where LLAMPHouse comes in.
+Building LLM-powered applications is easier than ever, with countless frameworks helping you craft intelligent workflows in Python. But when it’s time to deploy at scale, the challenges begin.
 
-![stack](docs/img/stack.png)
+Most tutorials suggest spinning up a FastAPI server with an endpoint — but what happens when scalability and reliability  becomes critical?
 
-This packages creates a reliable self-hosted server that mimics the OpenAI Assistant behavior. However, you can fully customize the run behavior yourself using your favorite framework.
+**That’s where LLAMPHouse comes in.**
+
+LLAMPHouse provides a self-hosted, production-ready server that mimics OpenAI’s Assistant API while giving you full control over execution. Whether you're using LangChain, LlamaIndex, or your own custom framework, LLAMPHouse lets you deploy, scale, and customize your LLM apps—without sacrificing flexibility.
 
 ![assistant API](docs/img/assistant_api.png)
+
+Take control of your LLM infrastructure and build AI-powered apps on your own terms with LLAMPHouse. 🚀
+
+![stack](docs/img/stack.png)
 
 
 <!-- GETTING STARTED -->
@@ -184,11 +189,11 @@ Project Admin: Pieter van der Deen - [email](mailto:pieter@llamp.ai)
 
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/llamp-ai/llamphouse.svg?style=for-the-badge
+[contributors-shield]: https://img.shields.io/github/contributors/llamp-ai/llamphouse?style=for-the-badge
 [contributors-url]: https://github.com/llamp-ai/llamphouse/graphs/contributors
 [forks-shield]: https://img.shields.io/github/forks/llamp-ai/llamphouse?style=for-the-badge
 [forks-url]: https://github.com/llamp-ai/llamphouse/network/members
-[stars-shield]: https://img.shields.io/github/stars/llamp-ai/llamphouse?style=for-the-badge
+[stars-shield]: https://img.shields.io/github/stars/llamp-ai/llamphouse.svg?style=for-the-badge
 [stars-url]: https://github.com/llamp-ai/llamphouse/stargazers
 [issues-shield]: https://img.shields.io/github/issues/llamp-ai/llamphouse.svg?style=for-the-badge
 [issues-url]: https://github.com/llamp-ai/llamphouse/issues
