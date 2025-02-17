@@ -51,8 +51,6 @@ LLAMPHouse provides a self-hosted, production-ready server that mimics OpenAI’
 
 Take control of your LLM infrastructure and build AI-powered apps on your own terms with LLAMPHouse. 🚀
 
-![stack](docs/img/stack.png)
-
 
 <!-- GETTING STARTED -->
 ## Getting Started
