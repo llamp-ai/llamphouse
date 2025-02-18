@@ -14,27 +14,8 @@ async def create_message(thread_id: str, request: CreateMessageRequest):
             raise HTTPException(status_code=404, detail="Thread not found.")
         
         message = db.insert_message(thread_id, request)
-        
-        return MessageObject(
-                    id=message.id,
-                    role=message.role,
-                    content=[
-                        TextContent(text=message.content) if isinstance(message.content, str) else ImageFileContent(image_file=message.content)
-                        for message.content in [message.content]
-                    ],
-                    metadata=message.meta,
-                    status=message.status,
-                    incomplete_details=message.incomplete_details,
-                    completed_at=message.completed_at,
-                    incomplete_at=message.incomplete_at,
-                    assistant_id=message.assistant_id,
-                    run_id=message.run_id,
-                    attachments=[
-                        Attachment(file_id=attachment['file_id'], tool=attachment.get('tool')) for attachment in (message.attachments or [])
-                    ],
-                    created_at=int(message.created_at.timestamp()),
-                    thread_id=message.thread_id
-                ) 
+        return MessageObject.from_db_message(message)
+     
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
@@ -63,29 +44,7 @@ async def list_messages(thread_id: str, limit: int = 20, order: str = "desc", af
 
         return MessageListResponse(
             object="list",
-            data=[
-                MessageObject(
-                    id=msg.id,
-                    role=msg.role,
-                    content=[
-                        TextContent(text=msg.content) if isinstance(msg.content, str) else ImageFileContent(image_file=msg.content)
-                        for msg.content in [msg.content]
-                    ],
-                    metadata=msg.meta,
-                    status=msg.status,
-                    incomplete_details=msg.incomplete_details,
-                    completed_at=msg.completed_at,
-                    incomplete_at=msg.incomplete_at,
-                    assistant_id=msg.assistant_id,
-                    run_id=msg.run_id,
-                    attachments=[
-                        Attachment(file_id=attachment['file_id'], tool=attachment.get('tool')) for attachment in (msg.attachments or [])
-                    ],
-                    created_at=int(msg.created_at.timestamp()),
-                    thread_id=msg.thread_id
-                ) 
-                for msg in messages
-            ],
+            data=[MessageObject.from_db_message(msg) for msg in messages],
             first_id=first_id,
             last_id=last_id,
             has_more=has_more
@@ -109,26 +68,8 @@ async def retrieve_message(thread_id: str, message_id: str):
         if not message:
             raise HTTPException(status_code=404, detail="Message not found.")
         
-        return  MessageObject(
-                    id=message.id,
-                    role=message.role,
-                    content=[
-                        TextContent(text=message.content) if isinstance(message.content, str) else ImageFileContent(image_file=message.content)
-                        for message.content in [message.content]
-                    ],
-                    metadata=message.meta,
-                    status=message.status,
-                    incomplete_details=message.incomplete_details,
-                    completed_at=message.completed_at,
-                    incomplete_at=message.incomplete_at,
-                    assistant_id=message.assistant_id,
-                    run_id=message.run_id,
-                    attachments=[
-                        Attachment(file_id=attachment['file_id'], tool=attachment.get('tool')) for attachment in (message.attachments or [])
-                    ],
-                    created_at=int(message.created_at.timestamp()),
-                    thread_id=message.thread_id
-                ) 
+        return MessageObject.from_db_message(message)
+    
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
@@ -144,26 +85,8 @@ async def modify_message(thread_id: str, message_id: str, request: ModifyMessage
         if not message:
             raise HTTPException(status_code=404, detail="Message not found.")
         
-        return  MessageObject(
-                    id=message.id,
-                    role=message.role,
-                    content=[
-                        TextContent(text=message.content) if isinstance(message.content, str) else ImageFileContent(image_file=message.content)
-                        for message.content in [message.content]
-                    ],
-                    metadata=message.meta,
-                    status=message.status,
-                    incomplete_details=message.incomplete_details,
-                    completed_at=message.completed_at,
-                    incomplete_at=message.incomplete_at,
-                    assistant_id=message.assistant_id,
-                    run_id=message.run_id,
-                    attachments=[
-                        Attachment(file_id=attachment['file_id'], tool=attachment.get('tool')) for attachment in (message.attachments or [])
-                    ],
-                    created_at=int(message.created_at.timestamp()),
-                    thread_id=message.thread_id
-                ) 
+        return MessageObject.from_db_message(message)
+    
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:

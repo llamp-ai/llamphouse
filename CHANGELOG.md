@@ -3,15 +3,28 @@
 ## [Unreleased]
 
 - Add tracing and monitoring
-- Make Assistant init with only a unique name
 - Streaming
 - LangChain utilities
 - LangGraph utilities
+- Cleanup error messages
+- Cleanup db object to OpenAI object (see types/message.py from_db_message)
+- Fix completed_at, failed_at, expired_at, ... times on the run
+- Fix fastapi deprecated events
+
+## [0.0.7] - 19/02/2025
+
+- Change order messages in context (from desc to asc)
+- Add worker as object in server init
+- Add authenticator as object in server init
+- Add ability to create custom authentication verification
+- Make Assistant init with only a unique name
+- Change context create_message to insert_message
+- Update and add examples
 
 ## [0.0.6] - 03/02/2025
 
-- Implement Grceful shutdown for both worker types.
-- Implement pool size customization by env variable and check with maximum avaliable from database connection
+- Implement Graceful shutdown for both worker types.
+- Implement pool size customization by env variable and check with maximum available from database connection
 - Enhanced `Context` class with the ability to create new tool call step.
 - Add remaining runs endpoints: Submit tool output, Cancel run.
 - Add remaining run_steps endpoints: List run_step, Retrieve run_step.

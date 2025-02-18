@@ -5,18 +5,18 @@ from .context import Context
 
 class Assistant(ABC):
     def __init__(
-        self, 
-        model: str, 
-        id: Optional[str] = str(uuid.uuid4()),
+        self,
+        id: str,
+        model: Optional[str] = "",
         name: Optional[str] = None, 
         description: Optional[str] = None, 
         temperature: Optional[float] = 0.7, 
         top_p: Optional[float] = 1.0, 
-        instructions: Optional[str] = None,
+        instructions: Optional[str] = "",
         tools: Optional[List[str]] = None
     ):
         self.model = model
-        self.id = id or str(uuid.uuid4())
+        self.id = id
         self.object = "assistant"
         self.name = name
         self.description = description
@@ -24,6 +24,16 @@ class Assistant(ABC):
         self.top_p = top_p
         self.instructions = instructions
         self.tools = tools or []
+
+        # If name is provided, use it as the ID
+        # If no ID and no name is provided, generate a random UUID
+        if not id and name:
+            self.id = name
+        elif not id and not name:
+            self.id = str(uuid.uuid4())
+        
+        if id and not name:
+            self.name = id
 
     @abstractmethod
     async def run(self, context: Context):
