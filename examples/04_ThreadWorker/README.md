@@ -14,7 +14,7 @@ By default, an Async Worker is used to handle the runs. This is using AsyncIO ta
 1. Clone the repository:
     ```sh
     git clone https://github.com/llamp-ai/llamphouse.git
-    cd llamphouse/examples/03_CustomAuth
+    cd llamphouse/examples/04_ThreadWorker
     ```
 
 2. Install any required packages:
@@ -33,7 +33,7 @@ By default, an Async Worker is used to handle the runs. This is using AsyncIO ta
 
 1. Navigate to the example directory:
     ```sh
-    cd llamphouse/examples/03_CustomAuth
+    cd llamphouse/examples/04_ThreadWorker
     ```
 
 2. Start the server:
@@ -45,7 +45,7 @@ By default, an Async Worker is used to handle the runs. This is using AsyncIO ta
 
 1. Open a new terminal and navigate to the example directory:
     ```sh
-    cd llamphouse/examples/03_CustomAuth
+    cd llamphouse/examples/04_ThreadWorker
     ```
 
 2. Run the client:
