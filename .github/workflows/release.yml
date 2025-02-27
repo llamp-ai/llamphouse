@@ -84,3 +84,9 @@ jobs:
         TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
       run: |
         python -m twine upload dist/*
+
+    - name: Keep dev branch up to date
+      run: |
+        git checkout dev
+        git pull origin main
+        git push origin dev
