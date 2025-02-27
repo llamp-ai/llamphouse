@@ -31,7 +31,7 @@ async def create_run(
         # Check if the task exists
         task_key = f"{request.assistant_id}:{thread_id}"
         if task_key not in req.app.state.task_queues:
-            print(f"Creating queue for task {task_key} in RUN")
+            # print(f"Creating queue for task {task_key} in RUN")
             req.app.state.task_queues[task_key] = asyncio.Queue(maxsize=1)
             # raise HTTPException(status_code=404, detail="Task not found")
 
@@ -115,7 +115,7 @@ async def create_thread_and_run(request: CreateThreadAndRunRequest, req: Request
         # Check if the task exists
         task_key = f"{request.assistant_id}:{thread.id}"
         if task_key not in req.app.state.task_queues:
-            print(f"Creating queue for task {task_key} in RUN")
+            # print(f"Creating queue for task {task_key} in RUN")
             req.app.state.task_queues[task_key] = asyncio.Queue(maxsize=1)
             # raise HTTPException(status_code=404, detail="Task not found")
 

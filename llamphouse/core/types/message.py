@@ -53,6 +53,29 @@ class MessageObject(BaseModel):
     metadata: Optional[object] = None
     object: Literal["thread.message"] = "thread.message"
 
+    @staticmethod
+    def from_db_message(message) -> "MessageObject":
+        return MessageObject(
+            id=message.id,
+            role=message.role,
+            content=[
+                TextContent(text=message.content) if isinstance(message.content, str) else ImageFileContent(image_file=message.content)
+                for message.content in [message.content]
+            ],
+            metadata=message.meta,
+            status=message.status,
+            incomplete_details=message.incomplete_details,
+            completed_at=message.completed_at,
+            incomplete_at=message.incomplete_at,
+            assistant_id=message.assistant_id,
+            run_id=message.run_id,
+            attachments=[
+                Attachment(file_id=attachment['file_id'], tool=attachment.get('tool')) for attachment in (message.attachments or [])
+            ],
+            created_at=int(message.created_at.timestamp()),
+            thread_id=message.thread_id
+        )
+
 class CreateMessageRequest(BaseModel):
     role: str
     content: str

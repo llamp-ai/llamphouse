@@ -9,11 +9,10 @@ import time
 import threading
 
 class ThreadWorker(BaseWorker):
-    def __init__(self, assistants, fastapi_state, time_out, thread_count, loop, *args, **kwargs):
-        self.assistants = assistants
-        self.fastapi_state = fastapi_state
+    def __init__(self, time_out=30, thread_count=1):
         self.thread_count = thread_count
         self.time_out = time_out
+        
         self.SessionLocal = sessionmaker(autocommit=False, bind=engine)
         self.threads = []
         self.running = True
@@ -78,7 +77,10 @@ class ThreadWorker(BaseWorker):
             finally:
                 session.close()
 
-    def start(self):
+    def start(self, **kwargs):
+        self.assistants = kwargs.get("assistants", [])
+        self.fastapi_state = kwargs.get("fastapi_state", {})
+
         for i in range(self.thread_count):
             thread = threading.Thread(target=self.task_execute)
             thread.start()

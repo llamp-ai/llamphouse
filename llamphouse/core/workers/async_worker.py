@@ -6,10 +6,10 @@ from .base_worker import BaseWorker
 from ..assistant import Assistant
 from ..database.models import Run
 from ..context import Context
-from typing import List
+from typing import List, Optional
 
 class AsyncWorker(BaseWorker):
-    def __init__(self, assistants, fastapi_state, time_out, thread_count, loop, timeout=30, sleep_interval=2):
+    def __init__(self,time_out=30):
         """
         Initialize the AsyncWorker.
 
@@ -20,13 +20,15 @@ class AsyncWorker(BaseWorker):
             timeout: Timeout for processing each run (in seconds).
             sleep_interval: Time to sleep between checking the queue (in seconds).
         """
-        self.assistants: List[Assistant] = assistants
-        self.timeout = timeout
-        self.sleep_interval = sleep_interval
-        self.fastapi_state = fastapi_state
-        self.task = None
-        self.loop = loop
         self.time_out = time_out
+
+        # self.assistants: List[Assistant] = kwargs.get("assistants", [])
+        # self.fastapi_state = kwargs.get("fastapi_state", {})
+        # self.loop = kwargs.get("loop", None)
+        # if not self.loop:
+        #     raise ValueError("loop is required")
+
+        self.task = None
         self.SessionLocal = sessionmaker(autocommit=False, bind=engine)
         self.running = True
 
@@ -63,7 +65,7 @@ class AsyncWorker(BaseWorker):
                     task_key = f"{run.assistant_id}:{run.thread_id}"
 
                     if task_key not in self.fastapi_state.task_queues:
-                        print(f"Creating queue for task {task_key}")
+                        # print(f"Creating queue for task {task_key}")
                         self.fastapi_state.task_queues[task_key] = asyncio.Queue(maxsize=1)
 
                     output_queue = self.fastapi_state.task_queues[task_key]
@@ -108,10 +110,16 @@ class AsyncWorker(BaseWorker):
                 await asyncio.sleep(2)
 
 
-    def start(self):
+    def start(self, **kwargs):
         """
         Start the async worker to process the run queue.
         """
+        self.assistants = kwargs.get("assistants", [])
+        self.fastapi_state = kwargs.get("fastapi_state", {})
+        self.loop = kwargs.get("loop", None)
+        if not self.loop:
+            raise ValueError("loop is required")
+        
         self.task = self.loop.create_task(self.process_run_queue())
 
     def stop(self):

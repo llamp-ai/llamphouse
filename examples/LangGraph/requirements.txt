@@ -2,4 +2,4 @@ openai
 langgraph
 langchain-openai
 requests
-llamphouse
+llamphouse==0.0.6
