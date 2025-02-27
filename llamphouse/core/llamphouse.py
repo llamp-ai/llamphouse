@@ -4,24 +4,27 @@ import uvicorn
 from fastapi import FastAPI
 from .routes import all_routes
 from .assistant import Assistant
-from fastapi.middleware.cors import CORSMiddleware
-from llamphouse.core.middlewares.api_key_middleware import APIKeyMiddleware
+from .workers.base_worker import BaseWorker
+from .workers.async_worker import AsyncWorker
+from .middlewares.catch_exceptions_middleware import CatchExceptionsMiddleware
+from .middlewares.auth_middleware import AuthMiddleware
+from .auth.base_auth import BaseAuth
 import asyncio
-from .workers.factory import WorkerFactory
 
 class LLAMPHouse:
-    def __init__(self, assistants: List[Assistant] = [], worker_type = "thread", api_key: Optional[str] = None, time_out: int = 60, thread_count: int = 1):
+    def __init__(self, assistants: List[Assistant] = [], authenticator: Optional[BaseAuth] = None, worker: Optional[BaseWorker] = AsyncWorker()):
         self.assistants = assistants
-        self.worker_type = worker_type
-        self.time_out = time_out
-        self.thread_count = thread_count
-        self.api_key = api_key
-        self.worker = None
+        self.worker = worker
+        self.authenticator = authenticator
         self.fastapi = FastAPI(title="LLAMPHouse API Server")
         self.fastapi.state.assistants = assistants
         self.fastapi.state.task_queues = {}
-        if self.api_key:
-            self.fastapi.add_middleware(APIKeyMiddleware, api_key=self.api_key)
+
+        # Add middlewares
+        self.fastapi.add_middleware(CatchExceptionsMiddleware)
+        if self.authenticator:
+            self.fastapi.add_middleware(AuthMiddleware, auth=self.authenticator)
+
         self._register_routes()
 
     def __print_ignite(self, host, port):
@@ -42,13 +45,11 @@ ______[===]______
         sys.stdout.flush()
 
     def ignite(self, host="0.0.0.0", port=80, reload=False):
+        
         @self.fastapi.on_event("startup")
         async def startup_event():
-            loop = asyncio.get_running_loop()
-            self.worker = WorkerFactory.create_worker(
-                self.worker_type, self.assistants, self.fastapi.state, self.time_out, self.thread_count, loop
-            )
-            self.worker.start()
+            loop = asyncio.get_event_loop()
+            self.worker.start(assistants=self.assistants, fastapi_state=self.fastapi.state, loop=loop)
 
         @self.fastapi.on_event("shutdown")
         async def on_shutdown():

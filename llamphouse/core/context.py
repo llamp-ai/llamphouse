@@ -1,8 +1,8 @@
 from .database.database import DatabaseManager, SessionLocal
 from typing import Dict, Optional
-from .types.message import Attachment, CreateMessageRequest
+from .types.message import Attachment, CreateMessageRequest, MessageObject
 from .types.run_step import ToolCallsStepDetails
-from .types.run import ToolOutput
+from .types.run import ToolOutput, RunObject
 from .types.enum import run_step_status, run_status
 import uuid
 import json
@@ -17,12 +17,12 @@ class Context:
         self.db = DatabaseManager(db_session=db_session or SessionLocal())
         self.thread = self._get_thread_by_id(thread_id)
         self.messages = self._list_messages_by_thread_id(thread_id)
-        self.run = run
+        self.run: RunObject = run
         self.__queue = queue
         
-    def create_message(self, content: str, attachment: Attachment = None, metadata: Dict[str, str] = {}):
+    def insert_message(self, content: str, attachment: Attachment = None, metadata: Dict[str, str] = {}, role: str = "assistant"):
         messageRequest = CreateMessageRequest(
-            role="assistant",
+            role=role,
             content=content,
             attachment=attachment,
             metadata=metadata
@@ -108,10 +108,10 @@ class Context:
         return thread
 
     def _list_messages_by_thread_id(self, thread_id):
-        messages = self.db.list_messages_by_thread_id(thread_id)
+        messages = self.db.list_messages_by_thread_id(thread_id, order="asc")
         if not messages:
             print(f"No messages found in thread {thread_id}.")
-        return messages
+        return [MessageObject.from_db_message(msg) for msg in messages]
     
     def _get_function_from_tools(self, function_name: str):
         for tool in self.assistant.tools:
