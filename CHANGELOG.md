@@ -10,6 +10,7 @@
 - Cleanup db object to OpenAI object (see types/message.py from_db_message)
 - Fix completed_at, failed_at, expired_at, ... times on the run
 - Fix fastapi deprecated events
+- Easier setting and getting metadata values
 
 ## [0.0.7] - 19/02/2025
 
