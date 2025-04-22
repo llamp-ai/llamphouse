@@ -2,12 +2,13 @@ from fastapi import APIRouter, HTTPException, Request
 from llamphouse.core.database.database import DatabaseManager
 from fastapi.responses import StreamingResponse
 from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, RunListResponse, ModifyRunRequest, SubmitRunToolOutputRequest
-from ..types.enum import run_status, run_step_status
+from ..types.enum import run_status, run_step_status, message_status, event_type
 from ..assistant import Assistant
 from typing import List, Optional
 import time
 import asyncio
 import json
+import queue
 
 router = APIRouter()
 
@@ -30,35 +31,77 @@ async def create_run(
 
         # Check if the task exists
         task_key = f"{request.assistant_id}:{thread_id}"
+        
+        wait_time = 0
+        max_wait = 3
+        poll_interval = 0.1
+
+        # Wait until worker creates the queue
+        while task_key not in req.app.state.task_queues and wait_time < max_wait:
+            await asyncio.sleep(poll_interval)
+            wait_time += poll_interval
+            if task_key in req.app.state.task_queues:
+                break
         if task_key not in req.app.state.task_queues:
-            # print(f"Creating queue for task {task_key} in RUN")
-            req.app.state.task_queues[task_key] = asyncio.Queue(maxsize=1)
-            # raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(status_code=500, detail="Worker did not register a task queue in time.")
+
+        output_queue = req.app.state.task_queues[task_key]
 
         # check if stream is enabled
         if request.stream:
-            output_queue: asyncio.Queue = req.app.state.task_queues[task_key]
 
-            # Streaming generator for SSE
-            async def event_stream():
+            # Async Worker
+            async def async_event_stream():
                 while True:
+                    event = None
                     try:
-                        event = await asyncio.wait_for(output_queue.get(), timeout=10.0)  # Set timeout in seconds
+                        event = await asyncio.wait_for(output_queue.get(), timeout=10.0)
                         if event is None:  # Stream completion signal
                             break
                         print(f"Event: {event['event']}")
-                        # output_queue.task_done()
-                        yield f"event: {event['event']}\ndata: {event['data']}\n\n"
+                        yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+
+                        handle_stream_event(event, db, thread_id, request, assistant)
+                        if event['event'] == event_type.DONE:
+                            break
+                            
                     except asyncio.TimeoutError:
                         print("TimeoutError: No event received within the timeout period")
                         yield f'''event: error\ndata: {json.dumps({
                             "error": "TimeoutError",
                             "message": "No event received within the timeout period"
                         })}\n\n'''
+                        event_id = event['data']["id"] if event else "No ID"
+                        db.update_run_status(event_id, run_status.EXPIRED)
                         break
 
-            # Return the streaming response
-            return StreamingResponse(event_stream(), media_type="text/event-stream")
+            # Thread Worker
+            def thread_event_stream():
+                while True:
+                    try:
+                        event = output_queue.get(timeout=10.0)
+                        if event is None:
+                            break
+                        yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+                        handle_stream_event(event, db, thread_id, request, assistant)
+                        if event['event'] == event_type.DONE:
+                            break
+                    except queue.Empty:
+                        print("TimeoutError: No event received within the timeout period")
+                        yield f'''event: error\ndata: {json.dumps({
+                            "error": "TimeoutError",
+                            "message": "No event received within the timeout period"
+                        })}\n\n'''
+                        event_id = event['data']["id"] if event else "No ID"
+                        db.update_run_status(event_id, run_status.EXPIRED)
+                        break
+
+            if isinstance(output_queue, asyncio.Queue):
+                return StreamingResponse(async_event_stream(), media_type="text/event-stream")
+            elif isinstance(output_queue, queue.Queue):
+                return StreamingResponse(thread_event_stream(), media_type="text/event-stream")
+            else:
+                raise HTTPException(status_code=500, detail="Unsupported queue type for streaming.")
         
         return RunObject(
             id=run.id,
@@ -451,3 +494,55 @@ async def cancel_run(thread_id: str, run_id: str):
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
     finally:
         db.session.close()
+
+def handle_stream_event(event, db: DatabaseManager, thread_id, request, assistant):
+    if event['event'] == event_type.THREAD_CREATED:
+        db.insert_stream_thread(event['data'])
+    elif event['event'] == event_type.RUN_CREATED:
+        db.insert_run(thread_id, run=request, assistant=assistant)
+    elif event['event'] == event_type.RUN_QUEUED:
+        db.update_run_status(event['data']["id"], run_status.QUEUED)
+    elif event['event'] == event_type.RUN_IN_PROGRESS:
+        db.update_run_status(event['data']["id"], run_status.IN_PROGRESS)
+    elif event['event'] == event_type.RUN_REQUIRES_ACTION:
+        db.update_run_status(event['data']["id"], run_status.REQUIRES_ACTION)
+    elif event['event'] == event_type.RUN_COMPLETED:
+        db.update_run_status(event['data']["id"], run_status.COMPLETED)
+    elif event['event'] == event_type.RUN_FAILED:
+        db.update_run_status(event['data']["id"], run_status.FAILED, event['data']["error"])
+    elif event['event'] == event_type.RUN_CANCELLING:
+        db.update_run_status(event['data']["id"], run_status.CANCELLING)
+    elif event['event'] == event_type.RUN_CANCELLED:
+        db.update_run_status(event['data']["id"], run_status.CANCELLED)
+    elif event['event'] == event_type.RUN_EXPIRED:
+        db.update_run_status(event['data']["id"], run_status.EXPIRED)
+    elif event['event'] == event_type.RUN_STEP_CREATED:
+        db.insert_run_step(event['data'])
+    elif event['event'] == event_type.RUN_STEP_IN_PROGRESS:
+        db.update_run_step_status(event['data']["id"], run_step_status.IN_PROGRESS)
+    elif event['event'] == event_type.RUN_STEP_DELTA:
+        pass
+    elif event['event'] == event_type.RUN_STEP_COMPLETED:
+        db.update_run_step_status(event['data']["id"], run_step_status.COMPLETED)
+    elif event['event'] == event_type.RUN_STEP_FAILED:
+        db.update_run_step_status(event['data']["id"], run_step_status.FAILED)
+    elif event['event'] == event_type.RUN_STEP_CANCELLED:
+        db.update_run_step_status(event['data']["id"], run_step_status.CANCELLED)
+    elif event['event'] == event_type.RUN_STEP_EXPIRED:
+        db.update_run_step_status(event['data']["id"], run_step_status.EXPIRED)
+    elif event['event'] == event_type.MESSAGE_CREATED:
+        pass
+        # db.insert_stream_message(event['data']["id"], event['data']["thread_id"], event['data'])
+    elif event['event'] == event_type.MESSAGE_IN_PROGRESS:
+        db.update_message_status(event['data']["id"], message_status.IN_PROGRESS)
+    elif event['event'] == event_type.MESSAGE_DELTA:
+        pass
+        # db.update_stream_message(event['data']["id"], event['data'].get("text", ""))
+    elif event['event'] == event_type.MESSAGE_COMPLETED:
+        db.update_message_status(event['data']["id"], message_status.COMPLETED)
+    elif event['event'] == event_type.MESSAGE_INCOMPLETE:
+        db.update_message_status(event['data']["id"], message_status.INCOMPLETE)
+    elif event['event'] == event_type.ERROR:
+        db.update_run_status(event['data']["id"], run_status.FAILED, event['data']["error"])
+    elif event['event'] == event_type.DONE:
+        db.update_run_status(event['data']["id"], run_status.COMPLETED)

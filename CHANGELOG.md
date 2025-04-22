@@ -12,6 +12,11 @@
 - Fix fastapi deprecated events
 - Easier setting and getting metadata values
 
+## [0.0.8] - 22/04/2025
+
+- Support OpenAI streaming
+- Add example 
+
 ## [0.0.7] - 19/02/2025
 
 - Change order messages in context (from desc to asc)

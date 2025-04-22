@@ -70,7 +70,7 @@ class AsyncWorker(BaseWorker):
 
                     output_queue = self.fastapi_state.task_queues[task_key]
 
-                    context = Context(assistant=assistant, assistant_id=run.assistant_id, run_id=run.id, run=run, thread_id=run.thread_id, queue=output_queue, db_session=session)
+                    context = Context(assistant=assistant, assistant_id=run.assistant_id, run_id=run.id, run=run, thread_id=run.thread_id, queue=output_queue, db_session=session, loop=self.loop)
 
                     try:
                         await asyncio.wait_for(

@@ -18,7 +18,6 @@ async def list_run_steps(thread_id: str, run_id: str, limit: int = 20, order: st
             after=after,
             before=before
         )
-        print(len(run_steps))
         has_more = len(run_steps) > limit
         first_id = run_steps[0].id if run_steps else None
         last_id = run_steps[-1].id if run_steps else None

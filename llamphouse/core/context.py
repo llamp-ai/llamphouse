@@ -1,15 +1,15 @@
+import queue
 from .database.database import DatabaseManager, SessionLocal
 from typing import Dict, Optional
 from .types.message import Attachment, CreateMessageRequest, MessageObject
 from .types.run_step import ToolCallsStepDetails
 from .types.run import ToolOutput, RunObject
-from .types.enum import run_step_status, run_status
+from .types.enum import run_step_status, run_status, event_type
 import uuid
-import json
 import asyncio
 
 class Context:
-    def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: asyncio.Queue = None, db_session = None):
+    def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: asyncio.Queue = None, db_session = None, loop = None):
         self.assistant_id = assistant_id
         self.thread_id = thread_id
         self.run_id = run_id
@@ -19,6 +19,7 @@ class Context:
         self.messages = self._list_messages_by_thread_id(thread_id)
         self.run: RunObject = run
         self.__queue = queue
+        self.__loop = loop
         
     def insert_message(self, content: str, attachment: Attachment = None, metadata: Dict[str, str] = {}, role: str = "assistant"):
         messageRequest = CreateMessageRequest(
@@ -145,80 +146,77 @@ class Context:
             }]
         }
     
-    async def create_message_stream(self, stream):
-        has_started = False
-        message = None
-        for chunk in stream:
-            # print(f"Chunk object type:", chunk)
-            if not has_started:
-                has_started = True
-                if chunk.object == 'chat.completion.chunk':
-                    message = self.create_message('')
-                    print(f"Created message:", message)
-                    await self.__queue.put({"event": "thread.message.created", "data": json.dumps({
-                        "id": message.id,
-                        "object": "thread.message",
-                        "created_at": int(message.created_at.timestamp()),
-                        "thread_id": self.thread_id,
-                        "role": "assistant",
-                        "content": [
-                            {
-                            "type": "text",
-                            "text": {
-                                "value": "",
-                                "annotations": []
-                            }
-                            }
-                        ],
-                        "assistant_id": self.assistant_id,
-                        "run_id": self.run_id,
-                        "attachments": [],
-                        "metadata": {}
-                    })})
-                else:
-                    print(f"Stream object type {chunk.object} not recognized.")
-            else:
-                if chunk.object == 'chat.completion.chunk':
-                    if chunk.choices[0].delta.content == None or not chunk.choices[0].finish_reason == None:
-                        await self.__queue.put({"event": "thread.message.completed", "data": json.dumps({
-                            "id": message.id,
-                            "object": "thread.message",
-                            "created_at": int(message.created_at.timestamp()),
-                            "thread_id": self.thread_id,
-                            "role": "assistant",
-                            "content": [
-                                {
-                                "type": "text",
-                                "text": {
-                                    "value": None,
-                                    "annotations": []
-                                }
-                                }
-                            ],
-                            "assistant_id": self.assistant_id,
-                            "run_id": self.run_id,
-                            "attachments": [],
-                            "metadata": {}
-                        })})
+    def _send_event(self, event):
+        if isinstance(self.__queue, asyncio.Queue) and self.__loop:
+            asyncio.run_coroutine_threadsafe(self.__queue.put(event), self.__loop)
+        elif isinstance(self.__queue, queue.Queue):
+            self.__queue.put(event)
+    
+    def handle_completion_stream(self, stream):
+        full_text = ""
 
-                    # message.content.text.value += chunk.choices[0].delta.content
-                        
-                    await self.__queue.put({"event": "thread.message.delta", "data": json.dumps({
+        message = self.insert_message("")
+
+        create_event = {
+            "event": event_type.MESSAGE_CREATED,
+            "data": {
+                "id": message.id,
+                "object": "thread.message",
+                "created_at": message.created_at.isoformat(),
+                "thread_id": self.thread_id,
+                "role": "assistant",
+                "content": [],
+                "assistant_id": self.assistant_id,
+                "run_id": self.run_id,
+                "attachments": [],
+                "metadata": {}
+            }
+        }
+        self._send_event(create_event)
+
+        index = 0  # Tracks position of text parts (we're assuming 1-part text only for now)
+
+        for chunk in stream:
+            delta = chunk.choices[0].delta
+            finish_reason = chunk.choices[0].finish_reason
+            if delta.content:
+                full_text += delta.content
+
+                delta_event = {
+                    "event": event_type.MESSAGE_DELTA,
+                    "data": {
                         "id": message.id,
                         "object": "thread.message.delta",
                         "delta": {
                             "content": [
                                 {
-                                    "index": chunk.choices[0].index,
+                                    "index": index,
                                     "type": "text",
-                                    "text": { "value": chunk.choices[0].delta.content, "annotations": [] }
+                                    "text": {
+                                        "value": delta.content,
+                                        "annotations": []
+                                    }
                                 }
                             ]
                         }
-                    })})
-                else:
-                    print(f"Stream object type {chunk.object} not recognized.")
-            # print(chunk)
-            # await self.create_message(chunk)
+                    }
+                }
+                self._send_event(delta_event)
+                index += 1
 
-        await self.__queue.put(None)
+            # If stream ends
+            if finish_reason == "stop":
+                final_event = {
+                    "event": event_type.DONE,
+                    "data": {
+                        "id": self.run_id,
+                        "thread_id": self.thread_id,
+                        "assistant_id": self.assistant_id,
+                        "status": "completed"
+                    }
+                }
+                self._send_event(final_event)
+                break
+        # self.db.insert_message()
+        message.content = full_text
+        self.db.update_message(message)
