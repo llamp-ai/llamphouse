@@ -7,6 +7,7 @@ from .types.run import ToolOutput, RunObject
 from .types.enum import run_step_status, run_status, event_type
 import uuid
 import asyncio
+from .streaming.openai_event_handler import OpenAIEventHandler
 
 class Context:
     def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: asyncio.Queue = None, db_session = None, loop = None):
@@ -147,76 +148,155 @@ class Context:
         }
     
     def _send_event(self, event):
-        if isinstance(self.__queue, asyncio.Queue) and self.__loop:
-            asyncio.run_coroutine_threadsafe(self.__queue.put(event), self.__loop)
-        elif isinstance(self.__queue, queue.Queue):
-            self.__queue.put(event)
+        if self.__loop:
+            asyncio.run_coroutine_threadsafe(self.__queue.async_q.put(event), self.__loop)
+        else:
+            self.__queue.sync_q.put(event)
+
+    def send_completion_event(self, event):
+        pass
+
     
     def handle_completion_stream(self, stream):
         full_text = ""
+        full_tool_calls = {}
+        active_tool = None
 
-        message = self.insert_message("")
+        event_handler = OpenAIEventHandler(self._send_event, self.assistant_id, self.thread_id, self.run_id)
 
-        create_event = {
-            "event": event_type.MESSAGE_CREATED,
-            "data": {
-                "id": message.id,
-                "object": "thread.message",
-                "created_at": message.created_at.isoformat(),
-                "thread_id": self.thread_id,
-                "role": "assistant",
-                "content": [],
-                "assistant_id": self.assistant_id,
-                "run_id": self.run_id,
-                "attachments": [],
-                "metadata": {}
-            }
-        }
-        self._send_event(create_event)
+        # message = self.insert_message("")
 
-        index = 0  # Tracks position of text parts (we're assuming 1-part text only for now)
+        # create_event = {
+        #     "event": event_type.MESSAGE_CREATED,
+        #     "data": {
+        #         "id": message.id,
+        #         "object": "thread.message",
+        #         "created_at": message.created_at.isoformat(),
+        #         "thread_id": self.thread_id,
+        #         "role": "assistant",
+        #         "content": [],
+        #         "assistant_id": self.assistant_id,
+        #         "run_id": self.run_id,
+        #         "attachments": [],
+        #         "metadata": {}
+        #     }
+        # }
+        # self._send_event(create_event)
+
+        # index = 0  # Tracks position of text parts (we're assuming 1-part text only for now)
 
         for chunk in stream:
-            delta = chunk.choices[0].delta
-            finish_reason = chunk.choices[0].finish_reason
-            if delta.content:
-                full_text += delta.content
+            event_handler.handle_event(chunk)
+            
+            # if not chunk.choices or not chunk.choices[0].delta:
+            #     print("No choices or delta in chunk, skipping...", chunk, flush=True)
+            #     delta_event = {
+            #             "event": event_type.MESSAGE_DELTA,
+            #             "data": {
+            #                 "id": message.id,
+            #                 "object": "thread.message.created",
+            #                 "thread_id": self.thread_id,
+            #                 "role": "assistant",
+            #                 "content": [
+            #                     {
+            #                         "type": "text",
+            #                         "text": {
+            #                             "value": "",
+            #                             "annotations": []
+            #                         }
+            #                     }
+            #                 ],
+            #                 "assistant_id": self.assistant_id,
+            #                 "run_id": self.run_id,
+            #                 "attachments": [],
+            #                 "metadata": {}
+            #             }
+            #         }
+            #     self._send_event(delta_event)
+            # else:
+            #     print(f"Processing chunk", flush=True)
+            #     delta = chunk.choices[0].delta
+            #     finish_reason = chunk.choices[0].finish_reason
+            #     if delta.content: # text response
+            #         full_text += delta.content
+            #         print(f"Received chunk", flush=True)
 
-                delta_event = {
-                    "event": event_type.MESSAGE_DELTA,
-                    "data": {
-                        "id": message.id,
-                        "object": "thread.message.delta",
-                        "delta": {
-                            "content": [
-                                {
-                                    "index": index,
-                                    "type": "text",
-                                    "text": {
-                                        "value": delta.content,
-                                        "annotations": []
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                }
-                self._send_event(delta_event)
-                index += 1
+            #         delta_event = {
+            #             "event": event_type.MESSAGE_DELTA,
+            #             "data": {
+            #                 "id": message.id,
+            #                 "object": "thread.message.delta",
+            #                 "delta": {
+            #                     "content": [
+            #                         {
+            #                             "index": index,
+            #                             "type": "text",
+            #                             "text": {
+            #                                 "value": delta.content,
+            #                                 "annotations": []
+            #                             }
+            #                         }
+            #                     ]
+            #                 }
+            #             }
+            #         }
+            #         self._send_event(delta_event)
+            #         index += 1
 
-            # If stream ends
-            if finish_reason == "stop":
-                final_event = {
-                    "event": event_type.DONE,
-                    "data": {
-                        "id": self.run_id,
-                        "thread_id": self.thread_id,
-                        "assistant_id": self.assistant_id,
-                        "status": "completed"
-                    }
-                }
-                self._send_event(final_event)
-                break
+            #     if delta.tool_calls: # tool call response
+            #         # print(f"Received tool calls", delta.tool_calls, flush=True)
+            #         for tool_call in delta.tool_calls:
+            #             function_name = tool_call.function.name
+            #             if function_name:
+            #                 active_tool = function_name
+
+            #             arguments = tool_call.function.arguments
+            #             print(f"Function name: {active_tool}, Arguments: {arguments}", flush=True)
+            #             if active_tool not in full_tool_calls:
+            #                 full_tool_calls[active_tool] = arguments
+            #             else:
+            #                 full_tool_calls[active_tool] += arguments
+
+            #             delta_event = {
+            #                 "event": event_type.RUN_STEP_DELTA,
+            #                 "data": {
+            #                     "id": message.id,
+            #                     "object": "thread.run.step.delta",
+            #                     "delta": {
+            #                         "step_details": {
+            #                             "type": "tool_calls",
+            #                             "tool_calls": [{
+            #                                 "index": index,
+            #                                 "id": str(uuid.uuid4()),
+            #                                 "type": "function",
+            #                                 "function": {
+            #                                     "name": active_tool,
+            #                                     "arguments": arguments
+            #                                 }
+            #                             }]
+            #                         }
+            #                     }
+            #                 }
+            #             }
+            #             # print(f"Sending tool call delta event: {delta_event}", flush=True)
+            #             self._send_event(delta_event)
+                    
+            #         index += 1
+
+
+            #     # If stream ends
+            #     if finish_reason == "stop" or finish_reason == "tool_calls":
+            #         final_event = {
+            #             "event": event_type.DONE,
+            #             "data": {
+            #                 "id": self.run_id,
+            #                 "thread_id": self.thread_id,
+            #                 "assistant_id": self.assistant_id,
+            #                 "status": "completed"
+            #             }
+            #         }
+            #         self._send_event(final_event)
+            #         break
         # self.db.insert_message()
-        message.content = full_text
-        self.db.update_message(message)
+        # message.content = full_text
+        # self.db.update_message(message)

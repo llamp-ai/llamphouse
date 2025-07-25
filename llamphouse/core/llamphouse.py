@@ -10,15 +10,22 @@ from .middlewares.catch_exceptions_middleware import CatchExceptionsMiddleware
 from .middlewares.auth_middleware import AuthMiddleware
 from .auth.base_auth import BaseAuth
 import asyncio
+import logging
+
+logger = logging.getLogger("llamphouse")
 
 class LLAMPHouse:
-    def __init__(self, assistants: List[Assistant] = [], authenticator: Optional[BaseAuth] = None, worker: Optional[BaseWorker] = AsyncWorker()):
+    def __init__(self, assistants: List[Assistant] = [], authenticator: Optional[BaseAuth] = None, worker: Optional[BaseWorker] = None):
         self.assistants = assistants
         self.worker = worker
         self.authenticator = authenticator
         self.fastapi = FastAPI(title="LLAMPHouse API Server")
         self.fastapi.state.assistants = assistants
         self.fastapi.state.task_queues = {}
+
+        if not worker:
+            # Default to AsyncWorker if no worker is provided
+            self.worker = AsyncWorker()
 
         # Add middlewares
         self.fastapi.add_middleware(CatchExceptionsMiddleware)
@@ -39,10 +46,9 @@ class LLAMPHouse:
       |===|
 ______[===]______
 """
-        print(ascii_art)
-        print("We have light!")
-        print(f"LLAMPHOUSE server running on http://{host}:{port}")
-        sys.stdout.flush()
+        logger.info(ascii_art)
+        logger.info("We have light!")
+        logger.info(f"LLAMPHOUSE server running on http://{host}:{port}")
 
     def ignite(self, host="0.0.0.0", port=80, reload=False):
         
@@ -53,10 +59,10 @@ ______[===]______
 
         @self.fastapi.on_event("shutdown")
         async def on_shutdown():
-            print("Server shutting down...")
+            logger.info("Server shutting down...")
             if self.worker:
-                print("Stopping worker...")
-                self.worker.stop() 
+                logger.info("Stopping worker...")
+                self.worker.stop()
         self.__print_ignite(host, port)
         uvicorn.run(self.fastapi, host=host, port=port, reload=reload)
 

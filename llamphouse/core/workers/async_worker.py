@@ -1,6 +1,5 @@
 import asyncio
-from ..database.database import engine
-from sqlalchemy.orm import sessionmaker
+from ..database.database import sessionmaker, engine
 from ..types.enum import run_status
 from .base_worker import BaseWorker
 from ..assistant import Assistant
@@ -32,8 +31,6 @@ class AsyncWorker(BaseWorker):
         self.SessionLocal = sessionmaker(autocommit=False, bind=engine)
         self.running = True
 
-        print("AsyncWorker initialized")
-
     async def process_run_queue(self):
         """
         Continuously process the run queue, fetching and handling pending runs.
@@ -64,9 +61,9 @@ class AsyncWorker(BaseWorker):
 
                     task_key = f"{run.assistant_id}:{run.thread_id}"
 
-                    if task_key not in self.fastapi_state.task_queues:
-                        # print(f"Creating queue for task {task_key}")
-                        self.fastapi_state.task_queues[task_key] = asyncio.Queue(maxsize=1)
+                    # if task_key not in self.fastapi_state.task_queues:
+                    #     # print(f"Creating queue for task {task_key}")
+                    #     self.fastapi_state.task_queues[task_key] = asyncio.Queue(maxsize=10)
 
                     output_queue = self.fastapi_state.task_queues[task_key]
 
