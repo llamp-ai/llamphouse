@@ -108,7 +108,7 @@ class Context:
         return thread
 
     def _list_messages_by_thread_id(self, thread_id):
-        messages = self.db.list_messages_by_thread_id(thread_id, order="asc")
+        messages = self.db.list_messages_by_thread_id(thread_id, order="asc", limit=1000)
         if not messages:
             print(f"No messages found in thread {thread_id}.")
         return [MessageObject.from_db_message(msg) for msg in messages]
