@@ -12,6 +12,10 @@
 - Fix fastapi deprecated events
 - Easier setting and getting metadata values
 
+## [0.0.8] - 14/08/2025
+
+- Fix messages being limited to 20 items
+
 ## [0.0.7] - 19/02/2025
 
 - Change order messages in context (from desc to asc)
