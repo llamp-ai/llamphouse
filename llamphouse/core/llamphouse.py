@@ -1,4 +1,3 @@
-import sys
 from typing import List, Optional
 import uvicorn
 from fastapi import FastAPI
@@ -9,19 +8,61 @@ from .workers.async_worker import AsyncWorker
 from .middlewares.catch_exceptions_middleware import CatchExceptionsMiddleware
 from .middlewares.auth_middleware import AuthMiddleware
 from .auth.base_auth import BaseAuth
+from .streaming.event_queue.base_event_queue import BaseEventQueue
+from .streaming.event_queue.janus_event_queue import JanusEventQueue
+from .data_stores.base_data_store import BaseDataStore
+from .data_stores.in_memory_store import InMemoryDataStore
 import asyncio
 import logging
 
-logger = logging.getLogger("llamphouse")
+# Create your custom logger
+llamphouse_logger = logging.getLogger("llamphouse")
+llamphouse_logger.setLevel(logging.INFO)
+
+handler = logging.StreamHandler()
+formatter = logging.Formatter("LLAMPHOUSE: %(levelname)s: %(message)s")
+# formatter = logging.Formatter("[%(asctime)s] LLAMPHOUSE: %(levelname)s: %(message)s")
+handler.setFormatter(formatter)
+llamphouse_logger.addHandler(handler)
+llamphouse_logger.propagate = False
+
+# Replace uvicorn loggers properly
+uvicorn_error = logging.getLogger("uvicorn.error")
+uvicorn_access = logging.getLogger("uvicorn.access")
+
+# Send error logs to llamphouse format
+uvicorn_error.handlers = [handler]
+uvicorn_error.propagate = False
+
+# For access logs, use a safe formatter (not llamphouse one)
+access_handler = logging.StreamHandler()
+access_formatter = logging.Formatter(
+    "ACCESS: %(client_addr)s - \"%(request_line)s\" %(status_code)s"
+)
+access_handler.setFormatter(access_formatter)
+uvicorn_access.handlers = [access_handler]
+uvicorn_access.propagate = True
 
 class LLAMPHouse:
-    def __init__(self, assistants: List[Assistant] = [], authenticator: Optional[BaseAuth] = None, worker: Optional[BaseWorker] = None):
+    def __init__(self, 
+                 assistants: List[Assistant] = [],
+                 authenticator: Optional[BaseAuth] = None,
+                 worker: Optional[BaseWorker] = None,
+                 event_queue_class: Optional[BaseEventQueue] = JanusEventQueue,
+                 data_store: Optional[BaseDataStore] = InMemoryDataStore()):
         self.assistants = assistants
         self.worker = worker
         self.authenticator = authenticator
         self.fastapi = FastAPI(title="LLAMPHouse API Server")
         self.fastapi.state.assistants = assistants
-        self.fastapi.state.task_queues = {}
+        self.fastapi.state.event_queues = {}
+        self.fastapi.state.queue_class = event_queue_class
+        self.fastapi.state.data_store = data_store
+
+        if self.fastapi.state.data_store:
+            self.fastapi.state.data_store.init(assistants)
+        else:
+            raise ValueError("A data_store instance is required")
 
         if not worker:
             # Default to AsyncWorker if no worker is provided
@@ -46,22 +87,22 @@ class LLAMPHouse:
       |===|
 ______[===]______
 """
-        logger.info(ascii_art)
-        logger.info("We have light!")
-        logger.info(f"LLAMPHOUSE server running on http://{host}:{port}")
+        llamphouse_logger.info(ascii_art)
+        llamphouse_logger.info("We have light!")
+        llamphouse_logger.info(f"LLAMPHOUSE server running on http://{host}:{port}")
 
     def ignite(self, host="0.0.0.0", port=80, reload=False):
         
         @self.fastapi.on_event("startup")
         async def startup_event():
             loop = asyncio.get_event_loop()
-            self.worker.start(assistants=self.assistants, fastapi_state=self.fastapi.state, loop=loop)
+            self.worker.start(data_store=self.fastapi.state.data_store, assistants=self.assistants, fastapi_state=self.fastapi.state, loop=loop)
 
         @self.fastapi.on_event("shutdown")
         async def on_shutdown():
-            logger.info("Server shutting down...")
+            llamphouse_logger.info("Server shutting down...")
             if self.worker:
-                logger.info("Stopping worker...")
+                llamphouse_logger.info("Stopping worker...")
                 self.worker.stop()
         self.__print_ignite(host, port)
         uvicorn.run(self.fastapi, host=host, port=port, reload=reload)

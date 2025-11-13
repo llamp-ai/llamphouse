@@ -24,11 +24,14 @@ class ThreadWorker(BaseWorker):
                 task = (
                     session.query(Run)
                     .filter(Run.status == run_status.QUEUED)
+                    .filter(Run.assistant_id.in_([assistant.id for assistant in self.assistants]))
                     .with_for_update(skip_locked=True)
                     .first()
                 )
 
                 if task:
+                    output_queue = self.fastapi_state.event_queues[task_key]
+
                     task.status = run_status.IN_PROGRESS
                     session.commit()
 
@@ -40,15 +43,13 @@ class ThreadWorker(BaseWorker):
                         task.status = run_status.FAILED
                         task.last_error = {
                             "code": "server_error",
-                            "message": "Assistant not found"
+                            "message": "Assistant not found."
                         }
                         session.commit()
                         continue
                     
                     task_key = f"{task.assistant_id}:{task.thread_id}"
-                    # output_queue = queue.Queue()
-                    # self.fastapi_state.task_queues[task_key] = output_queue
-                    output_queue = self.fastapi_state.task_queues[task_key]
+
                     context = Context(assistant=assistant, assistant_id=task.assistant_id, thread_id=task.thread_id, run_id=task.id, run=task, queue=output_queue, db_session=session)
                     with ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(assistant.run, context)

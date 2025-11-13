@@ -4,13 +4,14 @@ from typing import Dict, Optional
 from .types.message import Attachment, CreateMessageRequest, MessageObject
 from .types.run_step import ToolCallsStepDetails
 from .types.run import ToolOutput, RunObject
-from .types.enum import run_step_status, run_status, event_type
+from .types.enum import run_step_status, run_status, event_type, message_status
 import uuid
 import asyncio
 from .streaming.openai_event_handler import OpenAIEventHandler
+from .streaming.event_queue.base_event_queue import BaseEventQueue
 
 class Context:
-    def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: asyncio.Queue = None, db_session = None, loop = None):
+    def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: BaseEventQueue = None, db_session = None, loop = None):
         self.assistant_id = assistant_id
         self.thread_id = thread_id
         self.run_id = run_id
@@ -19,7 +20,7 @@ class Context:
         self.thread = self._get_thread_by_id(thread_id)
         self.messages = self._list_messages_by_thread_id(thread_id)
         self.run: RunObject = run
-        self.__queue = queue
+        self.__queue: BaseEventQueue = queue
         self.__loop = loop
         
     def insert_message(self, content: str, attachment: Attachment = None, metadata: Dict[str, str] = {}, role: str = "assistant"):
@@ -29,9 +30,20 @@ class Context:
             attachment=attachment,
             metadata=metadata
         )
-        new_message = self.db.insert_message(self.thread_id, messageRequest)
+        new_message = self.db.insert_message(self.thread_id, messageRequest, status=message_status.COMPLETED)
+
+        # Send events to the queue
+        self.__queue.add(new_message.to_event(event_type.MESSAGE_CREATED))
+        self.__queue.add(new_message.to_event(event_type.MESSAGE_IN_PROGRESS))
+        self.__queue.add(new_message.to_event(event_type.MESSAGE_COMPLETED))
+
         step_details = self._message_step_details(new_message.id)
-        self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="message_creation", step_details=step_details, status=run_step_status.COMPLETED)
+        new_step_detail = self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="message_creation", step_details=step_details, status=run_step_status.COMPLETED)
+
+        # Send events to the queue
+        self.__queue.add(new_step_detail.to_event(event_type.RUN_STEP_CREATED))
+        self.__queue.add(new_step_detail.to_event(event_type.RUN_STEP_IN_PROGRESS))
+        self.__queue.add(new_step_detail.to_event(event_type.RUN_STEP_COMPLETED))
 
         # Update context.message
         self.messages = self._list_messages_by_thread_id(self.thread_id)

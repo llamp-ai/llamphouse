@@ -1,12 +1,10 @@
+from datetime import datetime
 from typing import Optional, Union, List, Dict , Literal
 from pydantic import BaseModel
-from .message import Attachment, ImageFileContent, AdditionalMessage, ImageURLContent, RefusalContent, TextContent
+from .message import Attachment, ImageFileContent, CreateMessageRequest, ImageURLContent, RefusalContent, TextContent
+from ..streaming.event import Event
+from .thread import CreateThreadRequest
 
-
-class ToolResources(BaseModel):
-    file_ids: Optional[List[str]] = None
-    vector_store_ids: Optional[List[str]] = None
-    
 
 class RequiredAction(BaseModel):
     type: Optional[str]
@@ -29,8 +27,8 @@ class UsageStatistics(BaseModel):
 
 
 class TruncationStrategy(BaseModel):
-    type: Optional[str]
-    parameters: Optional[Dict]
+    type: str
+    parameters: Optional[Dict] = None
 
 
 class ToolChoice(BaseModel):
@@ -42,32 +40,26 @@ class ToolCall(BaseModel):
     type: str
     function: Optional[Dict[str, str]] = None
 
-class InitialMessage(BaseModel):
-    role: str
-    content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]]
-    attachments: Optional[List[Attachment]] = None
-    metadata: Optional[object] = None
-
 
 class ThreadObject(BaseModel):
-    messages: Optional[List[InitialMessage]]
-    tool_resources: Optional[ToolResources] = None
+    messages: Optional[List[CreateMessageRequest]] = []
+    tool_resources: Optional[object] = {}
     metadata: Optional[object] = {}
 
 
 class RunObject(BaseModel):
     id: str
-    created_at: int
+    created_at: datetime
     thread_id: str
     assistant_id: str
     status: str
     required_action: Optional[RequiredAction] = None
     last_error: Optional[LastError] = None
-    expires_at: Optional[int] = None
-    started_at: Optional[int] = None
-    cancelled_at: Optional[int] = None
-    failed_at: Optional[int] = None
-    completed_at: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     incomplete_details: Optional[IncompleteDetails] = None
     model: str
     instructions: Optional[str] = None
@@ -83,34 +75,39 @@ class RunObject(BaseModel):
     tool_choice: Optional[Union[str, ToolChoice]] = None
     parallel_tool_calls: Optional[bool] = False
     response_format: Optional[Union[str, Dict]] = "auto"
+    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high"]] = "medium"
+
+    def to_event(self, event: str) -> Event:
+        return Event(event=event, data=self.model_dump_json())
 
 
 class RunCreateRequest(BaseModel):
     assistant_id: str
-    model: Optional[str] = None
-    instructions: Optional[Union[str, None]] = None
     additional_instructions: Optional[Union[str, None]] = None
-    additional_messages: Optional[Union[List[AdditionalMessage], None]] = None
-    tools: Optional[Union[List[ToolCall], None]] = None
-    metadata: Optional[object] = {}
-    temperature: Optional[float] = 1.0
-    top_p: Optional[float] = 1.0
-    stream: Optional[bool] = None
-    max_prompt_tokens: Optional[int] = None
+    additional_messages: Optional[Union[List[CreateMessageRequest], None]] = None
+    instructions: Optional[Union[str, None]] = None
     max_completion_tokens: Optional[int] = None 
-    truncation_strategy: Optional[Dict[str, str]] = None  
-    tool_choice: Optional[Union[str, Dict[str, str]]] = "auto"
+    max_prompt_tokens: Optional[int] = None
+    metadata: Optional[object] = {}
+    model: Optional[str] = None
     parallel_tool_calls: Optional[bool] = True
+    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high"]] = "medium"
     response_format: Optional[Union[str, Dict[str, str]]] = "auto"
+    stream: Optional[bool] = None
+    temperature: Optional[float] = 1.0
+    tool_choice: Optional[Union[str, Dict[str, str]]] = "auto"
+    tools: Optional[List[Dict]] = None
+    top_p: Optional[float] = 1.0
+    truncation_strategy: Optional[TruncationStrategy] = None  
 
 
 class CreateThreadAndRunRequest(BaseModel):
     assistant_id: str
-    thread: Optional[ThreadObject] = None
+    thread: Optional[CreateThreadRequest] = CreateThreadRequest()
     model: Optional[str] = None
     instructions: Optional[str] = None
     tools: Optional[List[Dict]] = None
-    tool_resources: Optional[ToolResources] = None
+    tool_resources: Optional[object] = {}
     metadata: Optional[object] = {}
     temperature: Optional[float] = 1.0
     top_p: Optional[float] = 1.0
@@ -121,13 +118,7 @@ class CreateThreadAndRunRequest(BaseModel):
     tool_choice: Optional[Union[str, ToolChoice]] = None
     parallel_tool_calls: Optional[bool] = True
     response_format: Optional[Union[str, Dict]] = "auto"
-
-class RunListResponse(BaseModel):
-    object: Literal["list"] = "list"
-    data: List[RunObject]
-    first_id: Optional[str] = None
-    last_id: Optional[str] = None
-    has_more: bool
+    reasoning_effort: Optional[str] = "medium"
 
 class ModifyRunRequest(BaseModel):
     metadata: Optional[object] = {}

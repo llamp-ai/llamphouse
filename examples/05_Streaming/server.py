@@ -1,22 +1,28 @@
-from llamphouse.core import LLAMPHouse, Assistant
 from dotenv import load_dotenv
-from llamphouse.core.context import Context
 from openai import OpenAI
 
 load_dotenv(override=True)
 
-open_client = OpenAI()
+from llamphouse.core import LLAMPHouse, Assistant
+from llamphouse.core.context import Context
+
+import logging
+logging.basicConfig(level=logging.INFO)
+
+# open_client = OpenAI()
 
 class CustomAssistant(Assistant):
     def run(self, context: Context):
         messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
         
-        stream = open_client.chat.completions.create(
-            messages=messages,
-            model="gpt-4o-mini",
-            stream=True
-        )
-        context.handle_completion_stream(stream)
+        # stream = open_client.chat.completions.create(
+        #     messages=messages,
+        #     model="gpt-4o-mini",
+        #     stream=True
+        # )
+        # context.handle_completion_stream(stream)
+
+        context.insert_message("This is a test response from the CustomAssistant.")
 
 
 def main():

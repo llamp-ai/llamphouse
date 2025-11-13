@@ -1,95 +1,72 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from ..types.thread import ThreadObject, CreateThreadRequest, ModifyThreadRequest, DeleteThreadResponse
-from llamphouse.core.database.database import DatabaseManager
+from ..data_stores.base_data_store import BaseDataStore
 import time
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 @router.post("/threads", response_model=ThreadObject)
-async def create_thread(request: CreateThreadRequest):
+async def create_thread(request: CreateThreadRequest, req: Request):
     try:
-        db = DatabaseManager()
-        thread = db.insert_thread(request)
-        if request.messages:
-            for msg in request.messages:
-                if msg.role not in ["user", "assistant"]:
-                    raise HTTPException(status_code=400, detail="Invalid role. Must be 'user' or 'assistant'.")
-                else:
-                    db.insert_message(thread_id=thread.id, message=msg)
+        # Get the data store from the app state
+        db: BaseDataStore = req.app.state.data_store
+
+        # Insert the thread
+        thread = await db.insert_thread(request)
+        if not thread:
+            raise HTTPException(status_code=400, detail="Thread with the same ID already exists.")
         
-        return ThreadObject(
-            id=thread.id,
-            created_at=time.mktime(thread.created_at.timetuple()),
-            tool_resources=thread.tool_resources,
-            metadata=thread.meta
-        )
+        return thread
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    finally:
-        db.session.close()
 
 @router.get("/threads/{thread_id}", response_model=ThreadObject)
-async def retrieve_thread(thread_id: str):
+async def retrieve_thread(thread_id: str, req: Request):
     try:
-        db = DatabaseManager()
-        thread = db.get_thread_by_id(thread_id)
+        # Get the data store from the app state
+        db: BaseDataStore = req.app.state.data_store
+
+        # Retrieve the thread
+        thread = await db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
         
-        return ThreadObject(
-            id=thread.id,
-            created_at=time.mktime(thread.created_at.timetuple()),
-            tool_resources=thread.tool_resources,
-            metadata=thread.meta
-        )
+        return thread
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    finally:
-        db.session.close()
 
 @router.post("/threads/{thread_id}", response_model=ThreadObject)
-async def modify_thread(thread_id: str, request: ModifyThreadRequest):
+async def modify_thread(thread_id: str, request: ModifyThreadRequest, req: Request):
     try:
-        db = DatabaseManager()
-        thread = db.get_thread_by_id(thread_id)
+        # Get the data store from the app state
+        db: BaseDataStore = req.app.state.data_store
+
+        # Retrieve the thread
+        thread = await db.update_thread(thread_id, request)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
         
-        thread = db.update_thread_metadata(thread_id, request.metadata)
-        
-        return ThreadObject(
-            id=thread.id,
-            created_at=time.mktime(thread.created_at.timetuple()),
-            tool_resources=thread.tool_resources,
-            metadata=thread.meta
-        )
+        return thread
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    finally:
-        db.session.close()
 
 @router.delete("/threads/{thread_id}", response_model=DeleteThreadResponse)
-async def delete_thread(thread_id: str):
+async def delete_thread(thread_id: str, req: Request):
     try:
-        db = DatabaseManager()
-        thread = db.get_thread_by_id(thread_id)
-        if not thread:
+        # Get the data store from the app state
+        db: BaseDataStore = req.app.state.data_store
+
+        thread_id = await db.delete_thread(thread_id)
+        if not thread_id:
             raise HTTPException(status_code=404, detail="Thread not found.")
-        
-        db.delete_messages_by_thread_id(thread_id)
-        deleted = db.delete_thread_by_id(thread_id)
-        
-        if not deleted:
-            return DeleteThreadResponse(
-                id=thread_id,
-                deleted=False
-            )
         
         return DeleteThreadResponse(
             id=thread_id,
@@ -99,5 +76,3 @@ async def delete_thread(thread_id: str):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    finally:
-        db.session.close()

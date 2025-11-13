@@ -1,16 +1,21 @@
 from typing import Optional, Union, Dict, List, Literal
 from pydantic import BaseModel
+from datetime import datetime
 
 class AssistantObject(BaseModel):
+    created_at: datetime
+    description: Optional[str] = None
     id: str
-    object: Literal["assistant"] = "assistant"
+    instructions: Optional[str] = None
+    metadata: Optional[object] = {}
     model: str
     name: Optional[str] = None
-    description: Optional[str] = None
-    temperature: Optional[float] = 0.7 
-    top_p: Optional[float] = 1.0
-    instruction: Optional[str] = None
+    object: Literal["assistant"] = "assistant"
+    response_format: Optional[Union[str, Dict]] = "auto"
+    temperature: Optional[float] = 0.7
+    tool_resources: Optional[object] = {}
     tools: Optional[List[str]] = None
+    top_p: Optional[float] = 1.0
 
 class AssistantListResponse(BaseModel):
     data: List[AssistantObject]

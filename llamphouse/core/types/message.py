@@ -1,5 +1,7 @@
 from typing import Optional, List, Dict, Literal, Union
 from pydantic import BaseModel
+from ..streaming.event import Event
+from datetime import datetime
 
 class Attachment(BaseModel):
     file_id: str
@@ -25,62 +27,30 @@ class RefusalContent(BaseModel):
     type: Literal["refusal"] = "refusal"
     refusal_text: str
 
-class InitialMessage(BaseModel):
-    role: str
-    content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]]
-    attachments: Optional[List[Attachment]] = None
-    metadata: Optional[object] = None
-
-class AdditionalMessage(BaseModel):
-    role: str
-    content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]]
-    attachments: Optional[List[Attachment]] = None
-    metadata: Optional[object] = None
-
 class MessageObject(BaseModel):
     id: str
-    created_at: int
+    created_at: datetime
     thread_id: str
     status: Literal["in_progress", "incomplete", "completed"] = "completed"
     incomplete_details: Optional[IncompleteDetails] = None
-    completed_at: Optional[int] = None
-    incomplete_at: Optional[int] = None
+    completed_at: Optional[datetime] = None
+    incomplete_at: Optional[datetime] = None
     role: str
     content: List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]
     assistant_id: Optional[str] = None
     run_id: Optional[str] = None
     attachments: Optional[List[Attachment]] = None
-    metadata: Optional[object] = None
+    metadata: Optional[object] = {}
     object: Literal["thread.message"] = "thread.message"
 
-    @staticmethod
-    def from_db_message(message) -> "MessageObject":
-        return MessageObject(
-            id=message.id,
-            role=message.role,
-            content=[
-                TextContent(text=message.content) if isinstance(message.content, str) else ImageFileContent(image_file=message.content)
-                for message.content in [message.content]
-            ],
-            metadata=message.meta,
-            status=message.status,
-            incomplete_details=message.incomplete_details,
-            completed_at=message.completed_at,
-            incomplete_at=message.incomplete_at,
-            assistant_id=message.assistant_id,
-            run_id=message.run_id,
-            attachments=[
-                Attachment(file_id=attachment['file_id'], tool=attachment.get('tool')) for attachment in (message.attachments or [])
-            ],
-            created_at=int(message.created_at.timestamp()),
-            thread_id=message.thread_id
-        )
+    def to_event(self, event: str) -> Event:
+        return Event(event=event, data=self.model_dump_json())
 
 class CreateMessageRequest(BaseModel):
     role: str
-    content: str
+    content: Union[str, List[Union[TextContent, ImageFileContent, ImageURLContent, RefusalContent]]] | str
     attachments: Optional[Attachment] = None
-    metadata: Optional[object] = None
+    metadata: Optional[object] = {}
 
 class MessagesListRequest(BaseModel):
     limit: Optional[int] = 20
@@ -88,13 +58,6 @@ class MessagesListRequest(BaseModel):
     after: Optional[str] = None
     before: Optional[str] = None
     run_id: Optional[str] = None
-
-class MessageListResponse(BaseModel):
-    object: Literal["list"] = "list"
-    data: List[MessageObject]
-    first_id: Optional[str] = None
-    last_id: Optional[str] = None
-    has_more: bool
 
 class ModifyMessageRequest(BaseModel):
     metadata: Optional[object] = {}
