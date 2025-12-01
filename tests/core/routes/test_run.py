@@ -2,6 +2,11 @@ from llamphouse.core import LLAMPHouse, Assistant
 from llamphouse.core.context import Context
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
 
+import asyncio
+from llamphouse.core.types.enum import run_status, run_step_status
+from llamphouse.core.types.run_step import CreateRunStepRequest, ToolCallsStepDetails
+from llamphouse.core.types.tool_call import FunctionToolCall, Function
+
 from openai import OpenAI, NotFoundError
 import threading
 
@@ -102,3 +107,59 @@ def test_modify_run_metadata():
     )
     assert updated_run.metadata["task"] == "Updated Task"
     assert updated_run.metadata["status"] == "in-progress"
+
+def test_cancel_run():
+    thread = client.beta.threads.create()
+    run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id="my-assistant")
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(
+        db_store.update_run_status(thread_id=thread.id, run_id=run.id, status=run_status.QUEUED)
+    )
+
+    cancelled = client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
+    assert cancelled.status == "cancelled"
+
+def test_submit_tool_outputs_to_run():
+    loop = asyncio.get_event_loop()
+
+    # create thread/run
+    thread = client.beta.threads.create()
+    run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id="my-assistant")
+
+    # mark run as REQUIRES_ACTION
+    loop.run_until_complete(
+        db_store.update_run_status(thread.id, run.id, run_status.REQUIRES_ACTION)
+    )
+
+    # create a run step with one tool_call
+    tool_call = {
+        "id": "tool_1",
+        "type": "function",
+        "function": {"arguments": "{}", "name": "do_something"},
+    }
+    step_details = ToolCallsStepDetails(tool_calls=[tool_call], type="tool_calls")
+
+    step_req = CreateRunStepRequest(
+        assistant_id="my-assistant",
+        metadata={},
+        step_details=step_details,
+    )
+    loop.run_until_complete(
+        db_store.insert_run_step(
+            thread_id=thread.id,
+            run_id=run.id,
+            step=step_req,
+            status=run_step_status.IN_PROGRESS,
+        )
+    )
+
+    # submit outputs via endpoint
+    updated = client.beta.threads.runs.submit_tool_outputs(
+        thread_id=thread.id,
+        run_id=run.id,
+        tool_outputs=[{"tool_call_id": "tool_1", "output": "ok"}],
+    )
+
+    assert updated.status == "in_progress"
+    assert updated.required_action is None

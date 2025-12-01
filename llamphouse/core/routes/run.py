@@ -186,11 +186,11 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
         # Get the data store from the app state
         db: BaseDataStore = req.app.state.data_store
 
-        thread = db.get_thread_by_id(thread_id)
+        thread = await db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
         
-        run = db.get_run_by_id(run_id)
+        run = await db.get_run_by_id(thread_id, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found.")
         if run.status != run_status.REQUIRES_ACTION:
@@ -209,13 +209,26 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
 
         for tool_output in request.tool_outputs:
             for tool_call in tool_calls:
-                tool_call_id = getattr(tool_call, "id", None) or tool_call.get("id")
-                if tool_call_id == tool_output.tool_call_id:
-                    if hasattr(tool_call, "function"):      # Pydantic ToolCall
-                        tool_call.function.output = tool_output.output
-                    elif isinstance(tool_call, dict):        # dict fallback
-                        tool_call["output"] = tool_output.output
-                    break
+                # resolve tool_call_id from object or dict
+                if isinstance(tool_call, dict):
+                    tool_call_id = tool_call.get("id")
+                elif hasattr(tool_call, "model_dump"):
+                    tool_call_id = tool_call.model_dump().get("id")
+                else:
+                    tool_call_id = getattr(tool_call, "id", None)
+
+                if tool_call_id != tool_output.tool_call_id:
+                    continue
+
+                # set output back on the tool call
+                if isinstance(tool_call, dict):
+                    tool_call.setdefault("function", {})["output"] = tool_output.output
+                elif hasattr(tool_call, "function"):
+                    tool_call.function.output = tool_output.output
+                elif hasattr(tool_call, "model_dump"):
+                    data = tool_call.model_dump()
+                    data.setdefault("function", {})["output"] = tool_output.output
+                    tool_call = data
 
         if hasattr(step_details, "tool_calls"):
             step_details.tool_calls = tool_calls
@@ -223,6 +236,8 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
             latest_run_step.step_details = {"tool_calls": tool_calls}
 
         latest_run_step = await db.update_run_step_status(latest_run_step.id, run_step_status.COMPLETED)
+        await db.update_run_status(thread_id, run_id, run_status.IN_PROGRESS)
+        run = await db.get_run_by_id(thread_id, run_id)
 
         return RunObject(
             id=run.id,
@@ -241,7 +256,7 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
             model=run.model,
             instructions=run.instructions,
             tools=run.tools,
-            metadata=run.meta,
+            metadata=run.metadata,
             usage=run.usage,
             temperature=run.temperature,
             top_p=run.top_p,
@@ -287,7 +302,7 @@ async def cancel_run(thread_id: str, run_id: str, req: Request):
             model=run.model,
             instructions=run.instructions,
             tools=run.tools,
-            metadata=run.meta,
+            metadata=run.metadata,
             usage=run.usage,
             temperature=run.temperature,
             top_p=run.top_p,
