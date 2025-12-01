@@ -153,7 +153,7 @@ async def retrieve_run(
         db: BaseDataStore = req.app.state.data_store
 
         # Retrieve the run
-        run = db.get_run_by_id(thread_id, run_id)
+        run = await db.get_run_by_id(thread_id, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found in thread.")
         
@@ -196,24 +196,33 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
         if run.status != run_status.REQUIRES_ACTION:
             raise HTTPException(status_code=400, detail="Run is not in 'requires_action' status.")
 
-        latest_run_step = db.get_latest_run_step_by_run_id(run_id)
+        latest_run_step = await db.get_latest_run_step_by_run_id(run_id)
         if not latest_run_step:
             raise HTTPException(status_code=404, detail="No run step found for this run.")
 
-        if not latest_run_step.step_details or "tool_calls" not in latest_run_step.step_details:
+        step_details = latest_run_step.step_details
+        tool_calls = getattr(step_details, "tool_calls", None)
+        if tool_calls is None and isinstance(step_details, dict):
+            tool_calls = step_details.get("tool_calls")
+        if not tool_calls:
             raise HTTPException(status_code=400, detail="No tool calls found in the latest run step.")
-        
-        tool_calls = latest_run_step.step_details["tool_calls"]
-        
+
         for tool_output in request.tool_outputs:
             for tool_call in tool_calls:
-                if tool_call["id"] == tool_output.tool_call_id:
-                    tool_call["output"] = tool_output.output
+                tool_call_id = getattr(tool_call, "id", None) or tool_call.get("id")
+                if tool_call_id == tool_output.tool_call_id:
+                    if hasattr(tool_call, "function"):      # Pydantic ToolCall
+                        tool_call.function.output = tool_output.output
+                    elif isinstance(tool_call, dict):        # dict fallback
+                        tool_call["output"] = tool_output.output
                     break
 
-        latest_run_step.step_details = {"tool_calls": tool_calls}
-        latest_run_step.status = run_step_status.COMPLETED
-        db.session.commit()
+        if hasattr(step_details, "tool_calls"):
+            step_details.tool_calls = tool_calls
+        else:
+            latest_run_step.step_details = {"tool_calls": tool_calls}
+
+        latest_run_step = await db.update_run_step_status(latest_run_step.id, run_step_status.COMPLETED)
 
         return RunObject(
             id=run.id,
@@ -249,17 +258,17 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.post("/threads/{thread_id}/runs/{run_id}/cancel", response_model=RunObject)
-async def cancel_run(thread_id: str, run_id: str):
+async def cancel_run(thread_id: str, run_id: str, req: Request):
     try:
-        db = DatabaseManager()
-        run = db.get_run_by_id(run_id)
+        db: BaseDataStore = req.app.state.data_store
+
+        run = await db.get_run_by_id(thread_id, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found.")
         if run.status != run_status.QUEUED:
             raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
         
-        run.status = run_status.CANCELLED
-        db.session.commit()
+        run = await db.update_run_status(thread_id, run_id, run_status.CANCELLED)
 
         return RunObject(
             id=run.id,
@@ -293,8 +302,6 @@ async def cancel_run(thread_id: str, run_id: str):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    finally:
-        db.session.close()
 
 def handle_stream_event(event, db: DatabaseManager, thread_id, request, assistant):
     if event['event'] == event_type.THREAD_CREATED:

@@ -1,5 +1,6 @@
 from llamphouse.core import LLAMPHouse, Assistant
 from llamphouse.core.context import Context
+from llamphouse.core.data_stores.postgres_store import PostgresDataStore
 
 from openai import OpenAI, NotFoundError
 import threading
@@ -9,7 +10,8 @@ class CustomAssistant(Assistant):
         pass
 
 my_assistant = CustomAssistant("my-assistant")
-llamphouse = LLAMPHouse(assistants=[my_assistant])
+db_store = PostgresDataStore()
+llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=db_store)
 
 # Start the server in a separate thread
 def start_server():

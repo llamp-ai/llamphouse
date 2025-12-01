@@ -69,7 +69,7 @@ class Thread(Base):
             "created_at": int(self.created_at.timestamp()) if self.created_at else None,
             "name": self.name,
             "tool_resources": self.tool_resources,
-            "meta": self.meta,
+            "metadata": self.meta,
             "updated_at": int(self.updated_at.timestamp()) if self.updated_at else None
         }
 
@@ -113,7 +113,7 @@ class Message(Base):
             "assistant_id": self.assistant_id,
             "run_id": self.run_id,
             "attachments": self.attachments,
-            "meta": self.meta,
+            "metadata": self.meta,
             "completed_at": int(self.completed_at) if self.completed_at else None,
             "incomplete_at": int(self.incomplete_at) if self.incomplete_at else None,
             "status": self.status,
@@ -160,6 +160,7 @@ class Run(Base):
     completed_at = Column(Integer)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime, server_default=func.now())
+    reasoning_effort = Column(String, nullable=False, server_default='medium')
     
     thread = relationship("Thread", back_populates="runs")
     run_steps = relationship("RunStep", back_populates="run")
@@ -176,7 +177,7 @@ class Run(Base):
             "model": self.model,
             "instructions": self.instructions,
             "tools": self.tools,
-            "meta": self.meta,
+            "metadata": self.meta,
             "usage": self.usage,
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -186,6 +187,7 @@ class Run(Base):
             "tool_choice": self.tool_choice,
             "parallel_tool_calls": self.parallel_tool_calls,
             "response_format": self.response_format,
+            "reasoning_effort": self.reasoning_effort,
             "thread_id": self.thread_id,
             "assistant_id": self.assistant_id,
             "expires_at": int(self.expires_at) if self.expires_at else None,
@@ -193,7 +195,7 @@ class Run(Base):
             "cancelled_at": int(self.cancelled_at) if self.cancelled_at else None,
             "failed_at": int(self.failed_at) if self.failed_at else None,
             "completed_at": int(self.completed_at) if self.completed_at else None,
-            "updated_at": int(self.updated_at.timestamp()) if self.updated_at else None
+            "updated_at": int(self.updated_at.timestamp()) if self.updated_at else None,
         }
     
     def __repr__(self):
@@ -240,7 +242,7 @@ class RunStep(Base):
             "type": self.type,
             "status": self.status,
             "step_details": self.step_details,
-            "meta": self.meta,
+            "metadata": self.meta,
             "usage": self.usage,
             "last_error": self.last_error,
             "expired_at": int(self.expired_at) if self.expired_at else None,

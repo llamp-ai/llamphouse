@@ -119,3 +119,18 @@ class BaseDataStore(ABC):
     def get_run_step_by_id(self, thread_id: str, run_id: str, step_id: str) -> RunStepObject | None:
         """Retrieve a run step by its ID within a specific thread and run."""
         pass
+
+    @abstractmethod
+    async def get_latest_run_step_by_run_id(self, run_id: str) -> RunStepObject | None:
+        """Retrieve the most recent run step for a run."""
+        pass
+
+    @abstractmethod
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+        """Update status of a run."""
+        pass
+
+    @abstractmethod
+    async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
+        """Update status/output/error of a run step."""
+        pass

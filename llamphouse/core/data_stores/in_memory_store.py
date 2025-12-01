@@ -275,7 +275,29 @@ class InMemoryDataStore(BaseDataStore):
             logger.debug(f"Run {run_id} in thread {thread_id} is not in REQUIRES_ACTION state.")
             return None
         # Check that the tool outputs correspond to the run steps
-        
+        steps = self._run_steps.get(run_id, [])
+        if not steps:
+            logger.debug(f"No steps found for run {run_id}")
+            return None
+        latest_step = max(steps, key=lambda s: s.created_at)
+
+        tool_calls = getattr(latest_step.step_details, "tool_calls", []) or []
+        for output in tool_outputs:
+            for call in tool_calls:
+                if getattr(call, "id", None) == output.tool_call_id:
+                    if hasattr(call, "function"):
+                        call.function.output = output.output
+                    else:
+                        call.output = output.output  # fallback
+
+        latest_step.status = run_step_status.COMPLETED
+        run.status = run_status.IN_PROGRESS
+        run.required_action = None
+
+        self._run_steps[run_id] = [s if s.id != latest_step.id else latest_step for s in steps]
+        self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
+
+        return run
 
     async def insert_run_step(self, thread_id: str, run_id: str, step: CreateRunStepRequest, status: str = run_step_status.COMPLETED, event_queue: BaseEventQueue = None) -> RunStepObject | None:
         if not thread_id in self._threads:
@@ -349,3 +371,35 @@ class InMemoryDataStore(BaseDataStore):
             return None
         step = next((s for s in self._run_steps.get(run_id, []) if s.id == step_id), None)
         return step
+
+    async def get_latest_run_step_by_run_id(self, run_id: str) -> RunStepObject | None:
+        steps = self._run_steps.get(run_id, [])
+        if not steps:
+            return None
+        return max(steps, key=lambda s: s.created_at)
+
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+        if thread_id not in self._runs:
+            return None
+        run = next((r for r in self._runs[thread_id] if r.id == run_id), None)
+        if not run:
+            return None
+        run.status = status
+        run.last_error = error
+        self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
+        return run
+
+    async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
+        for run_id, steps in self._run_steps.items():
+            for idx, step in enumerate(steps):
+                if step.id == run_step_id:
+                    step.status = status
+                    step.last_error = error
+                    if output and hasattr(step.step_details, "tool_calls"):
+                        tool_calls = step.step_details.tool_calls
+                        if tool_calls and hasattr(tool_calls[0], "function"):
+                            tool_calls[0].function.output = output
+                    steps[idx] = step
+                    self._run_steps[run_id] = steps
+                    return step
+        return None
