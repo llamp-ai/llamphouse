@@ -12,10 +12,14 @@
 - Fix fastapi deprecated events
 - Easier setting and getting metadata values
 
+## [0.0.9] - 08/12/2025
+
+* Add pluggable data_store module with in-memory and Postgres backends
+
 ## [0.0.8] - 22/04/2025
 
 - Support OpenAI streaming
-- Add example 
+- Add example
 
 ## [0.0.7] - 19/02/2025
 
