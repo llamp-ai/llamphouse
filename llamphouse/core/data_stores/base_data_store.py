@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Optional, List
-from ..assistant import Assistant
+from typing import Any, AsyncIterator, Optional, List, TYPE_CHECKING
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
 from ..types.assistant import AssistantObject
@@ -10,13 +9,16 @@ from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, RunStepObject
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 
+if TYPE_CHECKING:
+    from ..assistant import Assistant
+
 class BaseDataStore(ABC):
 
     def __init__(self):
-        self.assistants: list[Assistant] = []
+        self.assistants: list["Assistant"] = []
         pass
 
-    def init(self, assistants: list[Assistant]) -> None:
+    def init(self, assistants: list["Assistant"]) -> None:
         """Set the list of assistants."""
         self.assistants = assistants
 
