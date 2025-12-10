@@ -2,6 +2,8 @@ from llamphouse.core import LLAMPHouse, Assistant
 from dotenv import load_dotenv
 from llamphouse.core.context import Context
 from openai import OpenAI
+from llamphouse.core.data_stores.postgres_store import PostgresDataStore
+from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 
 load_dotenv(override=True)
 
@@ -28,6 +30,9 @@ class CustomAssistant(Assistant):
 def main():
     # Create an instance of the custom assistant
     my_assistant = CustomAssistant("my-assistant")
+
+    # data store choice
+    data_store = InMemoryDataStore() # or InMemoryDataStore() for in-memory testing
 
     # Create a new LLAMPHouse instance
     llamphouse = LLAMPHouse(assistants=[my_assistant])

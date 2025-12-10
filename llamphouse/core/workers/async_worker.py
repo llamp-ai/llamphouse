@@ -39,14 +39,36 @@ class AsyncWorker(BaseWorker):
         self._running = True
 
     async def process_run_queue(self, data_store: BaseDataStore):
-        """
-        Continuously process the run queue, fetching and handling pending runs.
-        """
-        # Use the listen function to process queued runs
         async for run in data_store.listen():
-            print(f"Processing run: {run.id}")
-            # Example: Update the run status to prevent re-processing
-            run.status = run_status.IN_PROGRESS
+            task_key = f"{run.assistant_id}:{run.thread_id}"
+            output_queue: BaseEventQueue | None = None
+            if hasattr(self, "fastapi_state") and hasattr(self.fastapi_state, "event_queues"):
+                output_queue = self.fastapi_state.event_queues.get(task_key)
+
+            # move to in_progress so it does not loop forever
+            run = await data_store.update_run_status(run.thread_id, run.id, run_status.IN_PROGRESS)
+            if output_queue:
+                await output_queue.add_async(run.to_event(event_type.RUN_IN_PROGRESS))
+
+            try:
+                # Minimal completion path; wire assistant.run(context) here if needed
+                run = await data_store.update_run_status(run.thread_id, run.id, run_status.COMPLETED)
+                if output_queue:
+                    await output_queue.add_async(run.to_event(event_type.RUN_COMPLETED))
+                    await output_queue.add_async(DoneEvent())
+            except asyncio.TimeoutError:
+                err = {"code": "server_error", "message": "Run timeout"}
+                run = await data_store.update_run_status(run.thread_id, run.id, run_status.EXPIRED, err)
+                if output_queue:
+                    await output_queue.add_async(run.to_event(event_type.RUN_EXPIRED))
+                    await output_queue.add_async(ErrorEvent(err))
+            except Exception as e:
+                err = {"code": "server_error", "message": str(e)}
+                run = await data_store.update_run_status(run.thread_id, run.id, run_status.FAILED, err)
+                if output_queue:
+                    await output_queue.add_async(run.to_event(event_type.RUN_FAILED))
+                    await output_queue.add_async(ErrorEvent(err))
+
         # while self._running:
         #     try:
         #         session = self.SessionLocal()

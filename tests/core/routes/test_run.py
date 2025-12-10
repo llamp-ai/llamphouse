@@ -1,6 +1,7 @@
 from llamphouse.core import LLAMPHouse, Assistant
 from llamphouse.core.context import Context
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
+from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 
 import asyncio
 from llamphouse.core.types.enum import run_status, run_step_status
@@ -15,7 +16,7 @@ class CustomAssistant(Assistant):
         pass
 
 my_assistant = CustomAssistant("my-assistant")
-db_store = PostgresDataStore()
+db_store = PostgresDataStore() # or InMemoryDataStore() for in-memory testing
 llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=db_store)
 
 # Start the server in a separate thread
