@@ -8,6 +8,7 @@ from ..assistant import Assistant
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..streaming.event import Event, DoneEvent, ErrorEvent
 from ..data_stores.base_data_store import BaseDataStore
+from llamphouse.core.queue.base_queue import BaseQueue
 from typing import List, Optional
 import asyncio
 import logging
@@ -40,11 +41,23 @@ async def create_run(
             output_queue: BaseEventQueue = req.app.state.event_queues[task_key]
         else:
             output_queue = None
+
+        run_queue: BaseQueue = req.app.state.run_queue
         
         # store run in db
         run = await db.insert_run(thread_id, run=request, assistant=assistant, event_queue=output_queue)
         if not run:
             raise HTTPException(status_code=404, detail="Thread not found.")
+
+        if run_queue:
+            await run_queue.enqueue({
+                "run_id": run.id,
+                "thread_id": thread_id,
+                "assistant_id": run.assistant_id,
+            })
+
+        if not output_queue:
+            return run
 
         # check if stream is enabled
         if output_queue:
@@ -84,8 +97,7 @@ async def create_run(
 
             # Return the streaming response
             return StreamingResponse(event_stream(), media_type="text/event-stream")
-        
-        return run
+
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:

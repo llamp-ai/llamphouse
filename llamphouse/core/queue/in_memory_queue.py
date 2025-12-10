@@ -1,0 +1,108 @@
+import asyncio
+import time
+import uuid
+import heapq
+from typing import Any, Optional, Dict, Tuple, Sequence
+from .base_queue import BaseQueue
+from .types import QueueMessage, RetryPolicy
+
+class InMemoryQueue(BaseQueue):
+    def __init__(self, retry_policy: Optional[RetryPolicy] = None) -> None:
+        self.retry_policy = retry_policy or RetryPolicy()
+        self._queues: Dict[str, list[tuple[float, str, QueueMessage]]] = {}
+        self._pending: Dict[str, QueueMessage] = {}
+        self._lock = asyncio.Lock()
+        self._not_empty = asyncio.Condition(self._lock)
+
+    def _assistant_key(self, message: QueueMessage) -> str:
+        return message.assistant_id or "default"
+    
+    def _coerce_msg(self, item: Any) -> QueueMessage:
+        return item if isinstance(item, QueueMessage) else QueueMessage(**item)
+
+    async def enqueue(self, item: Any, schedule_at: Optional[float] = None) -> str:
+        message = self._coerce_msg(item)
+        receipt = str(uuid.uuid4())
+        ready = schedule_at if schedule_at is not None else time.time()
+        key = self._assistant_key(message)
+        async with self._not_empty:
+            heap = self._queues.setdefault(key, [])
+            heapq.heappush(heap, (ready, receipt, message))
+            self._pending[receipt] = message
+            self._not_empty.notify()
+        return receipt
+
+    async def dequeue(self, assistant_ids: Optional[Sequence[str]] = None, timeout: Optional[float] = None) -> Optional[Tuple[str, QueueMessage]]:
+        start = time.time()
+        keys = list(assistant_ids) if assistant_ids else None
+        while True:
+            async with self._not_empty:
+                while True:
+                    now = time.time()
+                    receipt_message = self._pop_ready(keys, now)
+                    if receipt_message:
+                        receipt, message = receipt_message
+                        message.increment_attempts()
+                        # max_attempts check; if exceeded, drop and continue
+                        if message.attempts > self.retry_policy.max_attempts:
+                            self._pending.pop(receipt, None)
+                            continue
+                        return receipt, message
+                    
+                    # no ready item; compute next wake time
+                    next_ready = self._next_ready_ts(keys)
+                    remaining = None if timeout is None else timeout - (now - start)
+                    if timeout is not None and remaining <= 0:
+                        return None
+                    sleep_for = None
+                    if next_ready is not None:
+                        sleep_for = max(0.0, min(next_ready - now, remaining if remaining is not None else next_ready - now))
+                    elif remaining is not None:
+                        sleep_for = remaining
+                    try:
+                        await asyncio.wait_for(self._not_empty.wait(), timeout=sleep_for)
+                    except asyncio.TimeoutError:
+                        return None
+
+    def _pop_ready(self, keys: Optional[Sequence[str]], now: float):
+        queue_keys = keys or list(self._queues.keys())
+        for key in queue_keys:
+            heap = self._queues.get(key)
+            if not heap:
+                continue
+            ready_ts, receipt, msg = heap[0]
+            if ready_ts <= now:
+                heapq.heappop(heap)
+                return receipt, msg
+        return None
+    
+    def _next_ready_ts(self, keys: Optional[Sequence[str]]) -> Optional[float]:
+        queue_keys = keys or list(self._queues.keys())
+        ts = [self._queues[k][0][0] for k in queue_keys if self._queues.get(k)]
+        return min(ts) if ts else None
+    
+    async def ack(self, receipt: Any) -> None:
+        async with self._lock:
+            self._pending.pop(receipt, None)
+
+    async def requeue(self, receipt: str, message: Optional[QueueMessage] = None, delay: Optional[float] =None) -> None:
+        msg = message or self._pending.get(receipt)
+        if not msg:
+            return
+        backoff = delay if delay is not None else self.retry_policy.next_backoff(msg.attempts)
+        ready = time.time() + backoff
+        key = self._assistant_key(msg)
+        async with self._not_empty:
+            heap = self._queues.setdefault(key, [])
+            heapq.heappush(heap, (ready, receipt, msg))
+            self._pending[receipt] = msg
+            self._not_empty.notify()
+
+    async def size(self) -> int:
+        async with self._lock:
+            return sum(len(h) for h in self._queues.values())
+
+    async def close(self) -> None:
+        async with self._lock:
+            self._queues.clear()
+            self._pending.clear()

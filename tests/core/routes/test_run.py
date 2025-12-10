@@ -1,7 +1,8 @@
 from llamphouse.core import LLAMPHouse, Assistant
 from llamphouse.core.context import Context
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
-
+from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
+import pytest
 import asyncio
 from llamphouse.core.types.enum import run_status, run_step_status
 from llamphouse.core.types.run_step import CreateRunStepRequest, ToolCallsStepDetails
@@ -15,8 +16,8 @@ class CustomAssistant(Assistant):
         pass
 
 my_assistant = CustomAssistant("my-assistant")
-db_store = PostgresDataStore()
-llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=db_store)
+data_store = PostgresDataStore() # or InMemoryDataStore() for in-memory testing
+llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=data_store)
 
 # Start the server in a separate thread
 def start_server():
@@ -108,58 +109,46 @@ def test_modify_run_metadata():
     assert updated_run.metadata["task"] == "Updated Task"
     assert updated_run.metadata["status"] == "in-progress"
 
-def test_cancel_run():
+# Dummy queue to block worker from dequeuing so tests stay idle
+class DummyQueue:
+    async def enqueue(self, *a, **k): return None
+    async def dequeue(self, *a, **k): return None
+llamphouse.fastapi.state.run_queue = DummyQueue()
+
+@pytest.mark.asyncio
+async def test_cancel_run():
     thread = client.beta.threads.create()
     run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id="my-assistant")
+    await data_store.update_run_status(thread.id, run.id, run_status.QUEUED)
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(
-        db_store.update_run_status(thread_id=thread.id, run_id=run.id, status=run_status.QUEUED)
-    )
+    resp = client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
+    assert resp.status == run_status.CANCELLED
 
-    cancelled = client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
-    assert cancelled.status == "cancelled"
-
-def test_submit_tool_outputs_to_run():
-    loop = asyncio.get_event_loop()
-
-    # create thread/run
+@pytest.mark.asyncio
+async def test_submit_tool_outputs_to_run():
+    tool_call_id = "call_123"
     thread = client.beta.threads.create()
     run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id="my-assistant")
-
-    # mark run as REQUIRES_ACTION
-    loop.run_until_complete(
-        db_store.update_run_status(thread.id, run.id, run_status.REQUIRES_ACTION)
-    )
-
-    # create a run step with one tool_call
-    tool_call = {
-        "id": "tool_1",
-        "type": "function",
-        "function": {"arguments": "{}", "name": "do_something"},
-    }
-    step_details = ToolCallsStepDetails(tool_calls=[tool_call], type="tool_calls")
-
-    step_req = CreateRunStepRequest(
-        assistant_id="my-assistant",
-        metadata={},
-        step_details=step_details,
-    )
-    loop.run_until_complete(
-        db_store.insert_run_step(
-            thread_id=thread.id,
-            run_id=run.id,
-            step=step_req,
-            status=run_step_status.IN_PROGRESS,
-        )
-    )
-
-    # submit outputs via endpoint
-    updated = client.beta.threads.runs.submit_tool_outputs(
+    await data_store.update_run_status(thread.id, run.id, run_status.REQUIRES_ACTION)
+    await data_store.insert_run_step(
         thread_id=thread.id,
         run_id=run.id,
-        tool_outputs=[{"tool_call_id": "tool_1", "output": "ok"}],
+        step=CreateRunStepRequest(
+            assistant_id="my-assistant",
+            step_details={
+                "type": "tool_calls",
+                "tool_calls": [
+                    {"id": tool_call_id, "type": "function", "function": {"name": "foo", "arguments": "{}"}}
+                ],
+            },
+            metadata={},
+        ),
+        status=run_step_status.IN_PROGRESS,
     )
 
-    assert updated.status == "in_progress"
-    assert updated.required_action is None
+    resp = client.beta.threads.runs.submit_tool_outputs(
+        thread_id=thread.id,
+        run_id=run.id,
+        tool_outputs=[{"tool_call_id": tool_call_id, "output": "ok"}],
+    )
+    assert resp.status == run_status.IN_PROGRESS

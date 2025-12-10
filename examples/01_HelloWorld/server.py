@@ -10,7 +10,7 @@ open_client = OpenAI()
 # Create a custom assistant
 class CustomAssistant(Assistant):
 
-    def run(self, context: Context):
+    async def run(self, context: Context):
         # transform the assistant messages to chat messages
         messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
         
@@ -21,7 +21,7 @@ class CustomAssistant(Assistant):
         )
 
         # add the assistant messages to the thread
-        context.insert_message(role="assistant", content=result.choices[0].message.content)
+        await context.insert_message(role="assistant", content=result.choices[0].message.content)
 
         # no need to return anything, the run will stop here
 

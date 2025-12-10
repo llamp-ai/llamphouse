@@ -12,6 +12,8 @@ from .streaming.event_queue.base_event_queue import BaseEventQueue
 from .streaming.event_queue.janus_event_queue import JanusEventQueue
 from .data_stores.base_data_store import BaseDataStore
 from .data_stores.in_memory_store import InMemoryDataStore
+from .queue.base_queue import BaseQueue
+from .queue.in_memory_queue import InMemoryQueue
 import asyncio
 import logging
 
@@ -49,7 +51,9 @@ class LLAMPHouse:
                  authenticator: Optional[BaseAuth] = None,
                  worker: Optional[BaseWorker] = None,
                  event_queue_class: Optional[BaseEventQueue] = JanusEventQueue,
-                 data_store: Optional[BaseDataStore] = InMemoryDataStore()):
+                 data_store: Optional[BaseDataStore] = None,
+                 run_queue: Optional[BaseQueue] = None,
+                 ):
         self.assistants = assistants
         self.worker = worker
         self.authenticator = authenticator
@@ -57,7 +61,8 @@ class LLAMPHouse:
         self.fastapi.state.assistants = assistants
         self.fastapi.state.event_queues = {}
         self.fastapi.state.queue_class = event_queue_class
-        self.fastapi.state.data_store = data_store
+        self.fastapi.state.data_store = data_store or InMemoryDataStore()
+        self.fastapi.state.run_queue = run_queue or InMemoryQueue()
 
         if self.fastapi.state.data_store:
             self.fastapi.state.data_store.init(assistants)
@@ -96,7 +101,13 @@ ______[===]______
         @self.fastapi.on_event("startup")
         async def startup_event():
             loop = asyncio.get_event_loop()
-            self.worker.start(data_store=self.fastapi.state.data_store, assistants=self.assistants, fastapi_state=self.fastapi.state, loop=loop)
+            self.worker.start(
+                data_store=self.fastapi.state.data_store, 
+                assistants=self.assistants, 
+                fastapi_state=self.fastapi.state, 
+                loop=loop, 
+                run_queue=self.fastapi.state.run_queue,
+            )
 
         @self.fastapi.on_event("shutdown")
         async def on_shutdown():
