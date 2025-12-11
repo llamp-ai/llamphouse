@@ -12,7 +12,7 @@ open_client = OpenAI()
 # Create a custom assistant
 class CustomAssistant(Assistant):
 
-    def run(self, context: Context):
+    async def run(self, context: Context):
         # transform the assistant messages to chat messages
         messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
         
@@ -23,7 +23,7 @@ class CustomAssistant(Assistant):
         )
 
         # add the assistant messages to the thread
-        context.insert_message(role="assistant", content=result.choices[0].message.content)
+        await context.insert_message(role="assistant", content=result.choices[0].message.content)
 
         # no need to return anything, the run will stop here
 
@@ -32,10 +32,10 @@ def main():
     my_assistant = CustomAssistant("my-assistant")
 
     # data store choice
-    data_store = InMemoryDataStore() # or InMemoryDataStore() for in-memory testing
+    data_store = PostgresDataStore() # or InMemoryDataStore() for in-memory testing
 
     # Create a new LLAMPHouse instance
-    llamphouse = LLAMPHouse(assistants=[my_assistant])
+    llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=data_store)
     
     # Start the LLAMPHouse server
     llamphouse.ignite(host="127.0.0.1", port=8000)

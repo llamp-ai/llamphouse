@@ -1,131 +1,138 @@
-import queue
-from .database.database import DatabaseManager, SessionLocal
-from typing import Dict, Optional
-from .types.message import Attachment, CreateMessageRequest, MessageObject
-from .types.run_step import ToolCallsStepDetails
-from .types.run import ToolOutput, RunObject
-from .types.enum import run_step_status, run_status, event_type, message_status
-import uuid
 import asyncio
+import uuid
+from typing import Dict, Optional
+from .types.message import Attachment, CreateMessageRequest, MessageObject, ModifyMessageRequest
+from .types.run_step import ToolCallsStepDetails, CreateRunStepRequest
+from .types.run import ToolOutput, RunObject, ModifyRunRequest
+from .types.thread import ModifyThreadRequest
+from .types.enum import run_step_status, run_status, event_type, message_status
 from .streaming.openai_event_handler import OpenAIEventHandler
 from .streaming.event_queue.base_event_queue import BaseEventQueue
+from .data_stores.base_data_store import BaseDataStore
 
 class Context:
-    def __init__(self, assistant, assistant_id: str, run_id: str, run, thread_id: str = None, queue: BaseEventQueue = None, db_session = None, loop = None):
+    def __init__(
+            self, 
+            assistant, 
+            assistant_id: str, 
+            run_id: str,
+            run: RunObject,
+            thread_id: str = None, 
+            queue: Optional[BaseEventQueue] = None, 
+            data_store: Optional[BaseDataStore] = None, 
+            loop = None
+    ):
         self.assistant_id = assistant_id
         self.thread_id = thread_id
         self.run_id = run_id
         self.assistant = assistant
-        self.db = DatabaseManager(db_session=db_session or SessionLocal())
-        self.thread = self._get_thread_by_id(thread_id)
-        self.messages = self._list_messages_by_thread_id(thread_id)
+        self.data_store = data_store
+        self.thread = None
+        self.messages: list[MessageObject] = []
         self.run: RunObject = run
-        self.__queue: BaseEventQueue = queue
+        self.__queue = queue
         self.__loop = loop
+
+    @classmethod
+    async def create(cls, **kwargs) -> "Context":
+        self = cls(**kwargs)
+        self.thread = await self._get_thread_by_id(self.thread_id)
+        self.messages = await self._list_messages_by_thread_id(self.thread_id)
+        return self
         
-    def insert_message(self, content: str, attachment: Attachment = None, metadata: Dict[str, str] = {}, role: str = "assistant"):
-        messageRequest = CreateMessageRequest(
-            role=role,
-            content=content,
-            attachment=attachment,
-            metadata=metadata
+    async def insert_message(self, content: str, attachment: Attachment = None, metadata: Optional[Dict[str, str]] = None, role: str = "assistant"):
+        metadata = metadata or {}
+        message_request = CreateMessageRequest(role=role, content=content, attachments=attachment, metadata=metadata)
+        new_message = await self.data_store.insert_message(
+            thread_id=self.thread_id,
+            message=message_request,
+            status=message_status.COMPLETED,
+            event_queue=self.__queue,
         )
-        new_message = self.db.insert_message(self.thread_id, messageRequest, status=message_status.COMPLETED)
-
-        # Send events to the queue
-        self.__queue.add(new_message.to_event(event_type.MESSAGE_CREATED))
-        self.__queue.add(new_message.to_event(event_type.MESSAGE_IN_PROGRESS))
-        self.__queue.add(new_message.to_event(event_type.MESSAGE_COMPLETED))
-
         step_details = self._message_step_details(new_message.id)
-        new_step_detail = self.db.insert_run_step(run_id=self.run_id, assistant_id=self.assistant_id, thread_id=self.thread_id, step_type="message_creation", step_details=step_details, status=run_step_status.COMPLETED)
-
-        # Send events to the queue
-        self.__queue.add(new_step_detail.to_event(event_type.RUN_STEP_CREATED))
-        self.__queue.add(new_step_detail.to_event(event_type.RUN_STEP_IN_PROGRESS))
-        self.__queue.add(new_step_detail.to_event(event_type.RUN_STEP_COMPLETED))
-
-        # Update context.message
-        self.messages = self._list_messages_by_thread_id(self.thread_id)
+        await self.data_store.insert_run_step(
+            thread_id=self.thread_id,
+            run_id=self.run_id,
+            step=CreateRunStepRequest(
+                assistant_id=self.assistant_id,
+                step_details=step_details,
+                metadata={},
+            ),
+            event_queue=self.__queue,
+        )
+        self.messages = await self._list_messages_by_thread_id(self.thread_id)
         return new_message
     
-    def insert_tool_calls_step(self, step_details: ToolCallsStepDetails, output: Optional[ToolOutput] = None):
+    async def insert_tool_calls_step(self, step_details: ToolCallsStepDetails, output: Optional[ToolOutput] = None):
         status = run_step_status.COMPLETED if output else run_step_status.IN_PROGRESS
-        run_step = self.db.insert_run_step(
+        run_step = await self.data_store.insert_run_step(
             run_id=self.run_id,
-            assistant_id=self.assistant_id,
             thread_id=self.thread_id,
-            step_type="tool_calls",
-            step_details=step_details,
-            status=status
+            step=CreateRunStepRequest(
+                assistant_id=self.assistant_id,
+                step_details=step_details,
+                metadata={},
+            ),
+            status=status,
+            event_queue=self.__queue,
         )
 
         if output:
-            self.db.insert_tool_output(run_step, output)
+            await self.data_store.submit_tool_outputs_to_run(self.thread_id, self.run_id, [output])
         else:
-            self.db.update_run_status(self.run_id, run_status.REQUIRES_ACTION)
+            await self.data_store.update_run_status(self.thread_id, self.run_id, run_status.REQUIRES_ACTION)
 
         return run_step
     
-    def update_thread_details(self, **kwargs):
+    async def update_thread_details(self, modifications: Dict[str, any]):
         if not self.thread:
             raise ValueError("Thread object is not initialized.")
-
-        for key, value in kwargs.items():
-            if hasattr(self.thread, key):
-                setattr(self.thread, key, value)
-            else:
-                raise AttributeError(f"Thread object has no attribute '{key}'")
         try:
-            updated_thread = self.db.update_thread(self.thread)
+            req = ModifyThreadRequest(**modifications)
+            updated_thread = await self.data_store.update_thread(self.thread_id, req)
+            if updated_thread:
+                self.thread = updated_thread
             return updated_thread
         except Exception as e:
-            raise Exception(f"Failed to update thread in the database: {e}")
+            raise Exception(f"Failed to update thread in the data_store: {e}")
 
-    def update_message_details(self, message_id: str, **kwargs):
-        message = next((msg for msg in self.messages if msg["id"] == message_id), None)
-        if not message:
-            raise ValueError(f"Message with ID '{message_id}' not found in thread.")
-
-        for key, value in kwargs.items():
-            if key in message:
-                message[key] = value
-            else:
-                raise AttributeError(f"Message object has no attribute '{key}'")
-
+    async def update_message_details(self, message_id: str, modifications: Dict[str, any]):
         try:
-            self.db.update_message(message)
-            self.messages = self._list_messages_by_thread_id(self.thread_id)
-            return message
+            req = ModifyMessageRequest(**modifications)
+            updated_message = await self.data_store.update_message(self.thread_id, message_id, req)
+            self.messages = await self._list_messages_by_thread_id(self.thread_id)
+            return updated_message
         except Exception as e:
-            raise Exception(f"Failed to update message: {e}")
+            raise Exception(f"Failed to update message via data_store: {e}")
 
-    def update_run_details(self, **kwargs):
+    async def update_run_details(self, modifications: Dict[str, any]):
         if not self.run:
             raise ValueError("Run object is not initialized.")
 
-        for key, value in kwargs.items():
-            if hasattr(self.run, key):
-                setattr(self.run, key, value)
-            else:
-                raise AttributeError(f"Run object has no attribute '{key}'")
+        req = ModifyRunRequest(**modifications)
         try:
-            updated_run = self.db.update_run(self.run)
+            updated_run = await self.data_store.update_run(self.thread_id, self.run_id, req)
+            if updated_run:
+                self.run = updated_run
             return updated_run
         except Exception as e:
-            raise Exception(f"Failed to update run in the database: {e}")
+            raise Exception(f"Failed to update run in the data_store: {e}")
 
-    def _get_thread_by_id(self, thread_id):
-        thread = self.db.get_thread_by_id(thread_id)
+    async def _get_thread_by_id(self, thread_id):
+        if not thread_id:
+            return None
+        thread = await self.data_store.get_thread_by_id(thread_id)
         if not thread:
             print(f"Thread with ID {thread_id} not found.")
         return thread
 
-    def _list_messages_by_thread_id(self, thread_id):
-        messages = self.db.list_messages_by_thread_id(thread_id, order="asc")
-        if not messages:
+    async def _list_messages_by_thread_id(self, thread_id):
+        if not thread_id:
+            return []
+        resp = await self.data_store.list_messages(thread_id=thread_id, limit=100, order="asc", after=None, before=None)
+        if not resp or not resp.data:
             print(f"No messages found in thread {thread_id}.")
-        return [MessageObject.from_db_message(msg) for msg in messages]
+        return resp.data if resp else []
     
     def _get_function_from_tools(self, function_name: str):
         for tool in self.assistant.tools:

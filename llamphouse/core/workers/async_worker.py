@@ -1,12 +1,12 @@
 import asyncio
-from datetime import datetime, timezone
-# from ..database.database import sessionmaker, engine
+import inspect
+
 from ..types.enum import run_status, event_type
 from .base_worker import BaseWorker
 from ..assistant import Assistant
 from ..database.models import Run
 from ..context import Context
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..streaming.event import Event, DoneEvent, ErrorEvent
 from ..data_stores.base_data_store import BaseDataStore
@@ -38,144 +38,88 @@ class AsyncWorker(BaseWorker):
         # self.SessionLocal = sessionmaker(autocommit=False, bind=engine)
         self._running = True
 
-    async def process_run_queue(self, data_store: BaseDataStore):
-        async for run in data_store.listen():
-            task_key = f"{run.assistant_id}:{run.thread_id}"
-            output_queue: BaseEventQueue | None = None
-            if hasattr(self, "fastapi_state") and hasattr(self.fastapi_state, "event_queues"):
-                output_queue = self.fastapi_state.event_queues.get(task_key)
+    async def process_run_queue(
+        self,
+        data_store: BaseDataStore,
+        assistants: Optional[Sequence[Assistant]] = None,
+        fastapi_state=None,
+    ):
+        assistants = assistants or getattr(self, "assistants", [])
+        fastapi_state = fastapi_state or getattr(self, "fastapi_state", None)
 
-            # move to in_progress so it does not loop forever
-            run = await data_store.update_run_status(run.thread_id, run.id, run_status.IN_PROGRESS)
-            if output_queue:
-                await output_queue.add_async(run.to_event(event_type.RUN_IN_PROGRESS))
-
+        while self._running:
             try:
-                # Minimal completion path; wire assistant.run(context) here if needed
-                run = await data_store.update_run_status(run.thread_id, run.id, run_status.COMPLETED)
-                if output_queue:
-                    await output_queue.add_async(run.to_event(event_type.RUN_COMPLETED))
-                    await output_queue.add_async(DoneEvent())
-            except asyncio.TimeoutError:
-                err = {"code": "server_error", "message": "Run timeout"}
-                run = await data_store.update_run_status(run.thread_id, run.id, run_status.EXPIRED, err)
-                if output_queue:
-                    await output_queue.add_async(run.to_event(event_type.RUN_EXPIRED))
-                    await output_queue.add_async(ErrorEvent(err))
-            except Exception as e:
-                err = {"code": "server_error", "message": str(e)}
-                run = await data_store.update_run_status(run.thread_id, run.id, run_status.FAILED, err)
-                if output_queue:
-                    await output_queue.add_async(run.to_event(event_type.RUN_FAILED))
-                    await output_queue.add_async(ErrorEvent(err))
+                async for run in data_store.listen():
+                    task_key = f"{run.assistant_id}:{run.thread_id}"
+                    output_queue: Optional[BaseEventQueue] = getattr(fastapi_state, "event_queues", {}).get(task_key) if fastapi_state else None
 
-        # while self._running:
-        #     try:
-        #         session = self.SessionLocal()
-        #         run = (
-        #             session.query(Run)
-        #             .filter(Run.status == run_status.QUEUED)
-        #             .filter(Run.assistant_id.in_([assistant.id for assistant in self.assistants]))
-        #             .with_for_update(skip_locked=True)
-        #             .first()
-        #         )
+                    assistant = next((a for a in assistants if a.id == run.assistant_id), None)
+                    if not assistant:
+                        err = {"code": "server_error", "message": "Assistant not found"}
+                        await data_store.update_run_status(run.thread_id, run.id, run_status.FAILED, err)
+                        if output_queue:
+                            await output_queue.add_async(ErrorEvent(err))
+                        continue
 
-        #         if run:
-        #             # Get the event queue for this run
-        #             task_key = f"{run.assistant_id}:{run.thread_id}"
-        #             output_queue: BaseEventQueue = self.fastapi_state.event_queues[task_key] if task_key in self.fastapi_state.event_queues else None
-        #             if not output_queue:
-        #                 run.status = run_status.FAILED
-        #                 run.failed_at = int(datetime.now(timezone.utc).timestamp())
-        #                 run.last_error = {
-        #                     "code": "server_error",
-        #                     "message": "Event queue not found"
-        #                 }
-        #                 session.commit()
-        #                 continue
+                    run = await data_store.update_run_status(run.thread_id, run.id, run_status.IN_PROGRESS)
+                    if output_queue:
+                        await output_queue.add_async(run.to_event(event_type.RUN_IN_PROGRESS))
 
-        #             run.status = run_status.IN_PROGRESS
-        #             run.started_at = int(datetime.now(timezone.utc).timestamp())
-        #             session.commit()
+                    context = await Context.create(
+                        assistant=assistant,
+                        assistant_id=run.assistant_id,
+                        run_id=run.id,
+                        run=run,
+                        thread_id=run.thread_id,
+                        queue=output_queue,
+                        data_store=data_store,
+                        loop=asyncio.get_running_loop(),
+                    )
 
-        #             await output_queue.add_async(run.to_event(event_type.RUN_IN_PROGRESS))
-                    
-        #             assistant = next((assistant for assistant in self.assistants if assistant.id == run.assistant_id), None)
-        #             if not assistant:
-        #                 run.status = run_status.FAILED
-        #                 run.failed_at = int(datetime.now(timezone.utc).timestamp())
-        #                 run.last_error = {
-        #                     "code": "server_error",
-        #                     "message": "Assistant not found"
-        #                 }
-        #                 session.commit()
-        #                 await output_queue.add_async(run.to_event(event_type.RUN_FAILED))
-        #                 await output_queue.add_async(ErrorEvent(run.last_error))
-        #                 continue
+                    try:
+                        if inspect.iscoroutinefunction(assistant.run):
+                            await asyncio.wait_for(assistant.run(context), timeout=self.time_out)
+                        else:
+                            await asyncio.wait_for(asyncio.to_thread(assistant.run, context), timeout=self.time_out)
 
-        #             context = Context(assistant=assistant, assistant_id=run.assistant_id, run_id=run.id, run=run, thread_id=run.thread_id, queue=output_queue, db_session=session, loop=self.loop)
-
-        #             try:
-        #                 await asyncio.wait_for(
-        #                     asyncio.to_thread(assistant.run, context),
-        #                     timeout=self.time_out
-        #                 )
-        #                 run.status = run_status.COMPLETED
-        #                 run.completed_at = int(datetime.now(timezone.utc).timestamp())
-        #                 await output_queue.add_async(run.to_event(event_type.RUN_COMPLETED))
-        #                 await output_queue.add_async(DoneEvent())
-        #                 session.commit()
-
-        #             except asyncio.TimeoutError:
-        #                 print(f"Run {run.id} timed out.", flush=True)
-        #                 run.status = run_status.EXPIRED
-        #                 run.last_error = {
-        #                     "code": "server_error",
-        #                     "message": "Run timeout"
-        #                 }
-        #                 run.expired_at = int(datetime.now(timezone.utc).timestamp())
-        #                 session.commit()
-        #                 await output_queue.add_async(run.to_event(event_type.RUN_EXPIRED))
-        #                 await output_queue.add_async(ErrorEvent(run.last_error))
-
-        #             except Exception as e:
-        #                 print(f"Error executing run {run.id}: {e}", flush=True)
-        #                 run.status = run_status.FAILED
-        #                 run.failed_at = int(datetime.now(timezone.utc).timestamp())
-        #                 run.last_error = {
-        #                     "code": "server_error",
-        #                     "message": str(e)
-        #                 }
-        #                 session.commit()
-        #                 await output_queue.add_async(run.to_event(event_type.RUN_FAILED))
-        #                 await output_queue.add_async(ErrorEvent(run.last_error))
-
-        #             print(f"Run {run.id} completed.")
-
-        #     except Exception as e:
-        #         print(f"Error processing run queue: {e}")
-
-        #     finally:
-        #         session.close()
-        #         # Sleep for a short period to avoid tight loops if there are no pending runs
-        #         await asyncio.sleep(2)
-
+                        run = await data_store.update_run_status(run.thread_id, run.id, run_status.COMPLETED)
+                        if output_queue:
+                            await output_queue.add_async(run.to_event(event_type.RUN_COMPLETED))
+                            await output_queue.add_async(DoneEvent())
+                    except asyncio.TimeoutError:
+                        error = {"code": "server_error", "message": "Run timeout"}
+                        await data_store.update_run_status(run.thread_id, run.id, run_status.EXPIRED, error)
+                        if output_queue:
+                            await output_queue.add_async(ErrorEvent(error))
+                    except Exception as e:
+                        error = {"code": "server_error", "message": str(e)}
+                        await data_store.update_run_status(run.thread_id, run.id, run_status.FAILED, error)
+                        if output_queue:
+                            await output_queue.add_async(ErrorEvent(error))
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Error in process_run_queue loop")
+                await asyncio.sleep(1.0)
 
     def start(self, data_store: BaseDataStore, **kwargs):
-        """
-        Start the async worker to process the run queue.
-        """
         logger.info("Starting async worker...")
         self.assistants = kwargs.get("assistants", [])
         self.fastapi_state = kwargs.get("fastapi_state", {})
-        self.loop = kwargs.get("loop", None)
+        self.loop = kwargs.get("loop")
         if not self.loop:
             raise ValueError("loop is required")
-        
-        self.task = self.loop.create_task(self.process_run_queue(data_store=data_store))
+
+        self.task = self.loop.create_task(
+            self.process_run_queue(
+                data_store=data_store,
+                assistants=self.assistants,
+                fastapi_state=self.fastapi_state,
+            )
+        )
 
     def stop(self):
         logger.info("Stopping async worker...")
-        self.running = False
+        self._running = False
         if self.task:
             self.task.cancel()
