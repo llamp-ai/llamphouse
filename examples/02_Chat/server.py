@@ -15,7 +15,7 @@ class CustomAssistant(Assistant):
 
     async def run(self, context: Context):
         # transform the assistant messages to chat messages
-        messages = [{"role": m.role, "content": m.content[0].text} for m in context.messages]
+        messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
         
         # send the messages to the OpenAI API
         result = open_client.chat.completions.create(
