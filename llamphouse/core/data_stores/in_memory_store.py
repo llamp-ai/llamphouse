@@ -24,11 +24,9 @@ class InMemoryDataStore(BaseDataStore):
 
     async def listen(self) -> AsyncIterator[Any]:
         while True:
-            # Check for any runs with status 'queued'
-            queued_runs = [run for run in self._runs.values() if getattr(run, "status", None) == run_status.QUEUED]
-            if queued_runs:
-                for run in queued_runs:
-                    yield run
+            queued_runs = [run for runs in self._runs.values() for run in runs if getattr(run, "status", None) == run_status.QUEUED]
+            for run in queued_runs:
+                yield run
             await asyncio.sleep(0.1)
 
     async def ack(self, item: Any) -> None:

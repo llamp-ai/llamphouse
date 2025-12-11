@@ -114,7 +114,7 @@ class AsyncWorker(BaseWorker):
         logger.info("Starting async worker...")
         self.assistants = kwargs.get("assistants", [])
         self.fastapi_state = kwargs.get("fastapi_state", {})
-        self.loop = kwargs.get("loop", None)
+        self.loop = kwargs.get("loop")
         if not self.loop:
             raise ValueError("loop is required")
         
@@ -129,6 +129,7 @@ class AsyncWorker(BaseWorker):
 
     def stop(self):
         logger.info("Stopping async worker...")
+        self._running = False
         self._running = False
         if self.task:
             self.task.cancel()
