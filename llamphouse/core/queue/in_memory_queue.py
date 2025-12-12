@@ -2,9 +2,12 @@ import asyncio
 import time
 import uuid
 import heapq
+import logging
 from typing import Any, Optional, Dict, Tuple, Sequence
 from .base_queue import BaseQueue
 from .types import QueueMessage, RetryPolicy
+
+logger = logging.getLogger("llamphouse.queue.in_memory")
 
 class InMemoryQueue(BaseQueue):
     def __init__(self, retry_policy: Optional[RetryPolicy] = None) -> None:
@@ -30,6 +33,8 @@ class InMemoryQueue(BaseQueue):
             heapq.heappush(heap, (ready, receipt, message))
             self._pending[receipt] = message
             self._not_empty.notify()
+
+        logger.debug("enqueue: key=%s run_id=%s receipt=%s ready=%s", key, message.run_id, receipt, ready)
         return receipt
 
     async def dequeue(self, assistant_ids: Optional[Sequence[str]] = None, timeout: Optional[float] = None) -> Optional[Tuple[str, QueueMessage]]:
@@ -46,7 +51,9 @@ class InMemoryQueue(BaseQueue):
                         # max_attempts check; if exceeded, drop and continue
                         if message.attempts > self.retry_policy.max_attempts:
                             self._pending.pop(receipt, None)
+                            logger.debug("dequeue: drop receipt=%s attempts=%s (max=%s)", receipt, message.attempts, self.retry_policy.max_attempts)
                             continue
+                        logger.debug("dequeue: key=%s run_id=%s receipt=%s attempts=%s", self._assistant_key(message), message.run_id, receipt, message.attempts)
                         return receipt, message
                     
                     # no ready item; compute next wake time
@@ -84,6 +91,7 @@ class InMemoryQueue(BaseQueue):
     async def ack(self, receipt: Any) -> None:
         async with self._lock:
             self._pending.pop(receipt, None)
+            logger.debug("ack receipt=%s", receipt)
 
     async def requeue(self, receipt: str, message: Optional[QueueMessage] = None, delay: Optional[float] =None) -> None:
         msg = message or self._pending.get(receipt)
@@ -97,10 +105,13 @@ class InMemoryQueue(BaseQueue):
             heapq.heappush(heap, (ready, receipt, msg))
             self._pending[receipt] = msg
             self._not_empty.notify()
+            logger.debug("requeue key=%s receipt=%s delay=%.3f attempts=%s", key, receipt, backoff, msg.attempts if msg else None)
 
     async def size(self) -> int:
         async with self._lock:
-            return sum(len(h) for h in self._queues.values())
+            total = sum(len(h) for h in self._queues.values())
+            logger.debug("size=%s", total)
+            return total
 
     async def close(self) -> None:
         async with self._lock:
