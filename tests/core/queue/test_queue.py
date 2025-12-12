@@ -3,12 +3,13 @@ import time
 import pytest
 import pytest_asyncio
 from llamphouse.core.queue.in_memory_queue import InMemoryQueue
-from llamphouse.core.queue.types import RetryPolicy, QueueMessage
+from llamphouse.core.queue.types import RetryPolicy, QueueMessage, RateLimitPolicy
+from llamphouse.core.queue.exceptions import QueueRateLimitError, QueueRetryExceeded
 
 @pytest_asyncio.fixture
 async def queue_factory():
-    async def _factory(policy: RetryPolicy | None = None):
-        return InMemoryQueue(retry_policy=policy)
+    async def _factory(policy: RetryPolicy | None = None, rate_limit: RateLimitPolicy | None = None):
+        return InMemoryQueue(retry_policy=policy, rate_limit=rate_limit)
     return _factory
 
 @pytest_asyncio.fixture
@@ -63,16 +64,6 @@ async def test_requeue_with_delay(queue):
     assert res and res[1].run_id == "r1"
 
 @pytest.mark.asyncio
-async def test_drop_when_exceed_max_attempts(queue_factory):
-    policy = RetryPolicy(max_attempts=1, backoff_seconds=0)
-    q = await queue_factory(policy)
-    await q.enqueue({"run_id": "r1", "thread_id": "t1", "assistant_id": "a1"})
-    rec, msg = await q.dequeue()
-    await q.requeue(rec, msg)  # attempts exceed max -> should be dropped
-    assert await q.dequeue(timeout=0.05) is None
-    await q.close()
-
-@pytest.mark.asyncio
 async def test_close_clears(queue):
     await queue.enqueue({"run_id": "r1", "thread_id": "t1", "assistant_id": "a1"})
     await queue.close()
@@ -85,3 +76,24 @@ async def test_timeout_semantics(queue):
     res = await queue.dequeue(timeout=0.1)
     assert res is None
     assert (time.time() - t0) < 0.2  # should not block longer than timeout
+
+@pytest.mark.asyncio
+async def test_rate_limit_exceeded(queue_factory):
+    policy = RateLimitPolicy(max_per_minute=2, window_seconds=60)
+    q = await queue_factory(rate_limit=policy)
+    await q.enqueue({"run_id": "r1", "thread_id": "t1", "assistant_id": "a1"})
+    await q.enqueue({"run_id": "r2", "thread_id": "t1", "assistant_id": "a1"})
+    with pytest.raises(QueueRateLimitError):
+        await q.enqueue({"run_id": "r3", "thread_id": "t1", "assistant_id": "a1"})
+    await q.close()
+
+@pytest.mark.asyncio
+async def test_retry_exceeded_raises(queue_factory):
+    policy = RetryPolicy(max_attempts=1, backoff_seconds=0)
+    q = await queue_factory(policy)
+    await q.enqueue({"run_id": "r1", "thread_id": "t1", "assistant_id": "a1"})
+    rec, msg = await q.dequeue()
+    await q.requeue(rec, msg)  # increments attempts beyond max
+    with pytest.raises(QueueRetryExceeded):
+        await q.dequeue(timeout=0.05)
+    await q.close()

@@ -3,15 +3,19 @@ import time
 import uuid
 import heapq
 import logging
+from collections import deque
 from typing import Any, Optional, Dict, Tuple, Sequence
 from .base_queue import BaseQueue
-from .types import QueueMessage, RetryPolicy
+from .types import QueueMessage, RetryPolicy, RateLimitPolicy
+from .exceptions import QueueRateLimitError, QueueRetryExceeded
 
 logger = logging.getLogger("llamphouse.queue.in_memory")
 
 class InMemoryQueue(BaseQueue):
-    def __init__(self, retry_policy: Optional[RetryPolicy] = None) -> None:
+    def __init__(self, retry_policy: Optional[RetryPolicy] = None, rate_limit: Optional[RateLimitPolicy] = None) -> None:
         self.retry_policy = retry_policy or RetryPolicy()
+        self.rate_limit = rate_limit or RateLimitPolicy()
+        self._rate_history: Dict[str, deque] = {}
         self._queues: Dict[str, list[tuple[float, str, QueueMessage]]] = {}
         self._pending: Dict[str, QueueMessage] = {}
         self._lock = asyncio.Lock()
@@ -28,6 +32,18 @@ class InMemoryQueue(BaseQueue):
         receipt = str(uuid.uuid4())
         ready = schedule_at if schedule_at is not None else time.time()
         key = self._assistant_key(message)
+
+        # Rate limit per key
+        limiter = self._rate_history.setdefault(key, deque())
+        now = time.time()
+        window = self.rate_limit.window_seconds
+        while limiter and now - limiter[0] > window:
+            limiter.popleft()
+        if len(limiter) >= self.rate_limit.max_per_minute:
+            logger.info("enqueue rate limit exceeded for key=%s", key)
+            raise QueueRateLimitError(key, self.rate_limit.max_per_minute, window)
+        limiter.append(now)
+
         async with self._not_empty:
             heap = self._queues.setdefault(key, [])
             heapq.heappush(heap, (ready, receipt, message))
@@ -52,7 +68,7 @@ class InMemoryQueue(BaseQueue):
                         if message.attempts > self.retry_policy.max_attempts:
                             self._pending.pop(receipt, None)
                             logger.debug("dequeue: drop receipt=%s attempts=%s (max=%s)", receipt, message.attempts, self.retry_policy.max_attempts)
-                            continue
+                            raise QueueRetryExceeded(message.run_id, message.attempts, self.retry_policy.max_attempts)
                         logger.debug("dequeue: key=%s run_id=%s receipt=%s attempts=%s", self._assistant_key(message), message.run_id, receipt, message.attempts)
                         return receipt, message
                     
@@ -63,8 +79,10 @@ class InMemoryQueue(BaseQueue):
                         return None
                     sleep_for = None
                     if next_ready is not None:
+                        # Wake up at the earliest ready time, but not beyond overall timeout
                         sleep_for = max(0.0, min(next_ready - now, remaining if remaining is not None else next_ready - now))
                     elif remaining is not None:
+                        # No items scheduled; use the remaining timeout as wake-up window
                         sleep_for = remaining
                     try:
                         await asyncio.wait_for(self._not_empty.wait(), timeout=sleep_for)

@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 import time
 
+@dataclass
+class RateLimitPolicy:
+    max_per_minute: int = 1000
+    window_seconds: int = 60
 
 @dataclass
 class RetryPolicy:

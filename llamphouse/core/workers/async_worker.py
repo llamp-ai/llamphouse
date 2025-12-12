@@ -12,6 +12,7 @@ from ..streaming.event import DoneEvent, ErrorEvent
 from ..data_stores.base_data_store import BaseDataStore
 from ..queue.base_queue import BaseQueue
 from ..queue.types import QueueMessage
+from ..queue.exceptions import QueueRateLimitError, QueueRetryExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class AsyncWorker(BaseWorker):
 
         while self._running:
             try:
-                item: Optional[Tuple[str, QueueMessage]] = await run_queue.dequeue(assistant_ids=assistant_ids, timeout=5.0)
+                item: Optional[Tuple[str, QueueMessage]] = await run_queue.dequeue(assistant_ids=assistant_ids, timeout=None)
                 if not item:
                     continue
                     
@@ -82,6 +83,16 @@ class AsyncWorker(BaseWorker):
                         if run_object:
                             await output_queue.add_async(run_object.to_event(event_type.RUN_COMPLETED))
                             await output_queue.add_async(DoneEvent())
+                    await run_queue.ack(receipt)
+
+                except QueueRateLimitError as e:
+                    error = {"code": "rate_limit_exceeded", "message": str(e)}
+                    await data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)
+                    await run_queue.ack(receipt)
+
+                except QueueRetryExceeded as e:
+                    error = {"code": "max_retry_exceeded", "message": str(e)}
+                    await data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)                    
                     await run_queue.ack(receipt)
 
                 except asyncio.TimeoutError:
