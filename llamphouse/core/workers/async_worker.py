@@ -28,7 +28,7 @@ class AsyncWorker(BaseWorker):
 
         while self._running:
             try:
-                item: Optional[Tuple[str, QueueMessage]] = await run_queue.dequeue(assistant_ids=assistant_ids, timeout=None)
+                item: Optional[Tuple[str, QueueMessage]] = await run_queue.dequeue(assistant_ids=assistant_ids, timeout=0)
                 if not item:
                     continue
                     
