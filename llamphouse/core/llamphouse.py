@@ -10,6 +10,7 @@ from .middlewares.auth_middleware import AuthMiddleware
 from .auth.base_auth import BaseAuth
 from .streaming.event_queue.base_event_queue import BaseEventQueue
 from .streaming.event_queue.janus_event_queue import JanusEventQueue
+from .streaming.event_queue.in_memory_event_queue import InMemoryEventQueue
 from .data_stores.base_data_store import BaseDataStore
 from .data_stores.in_memory_store import InMemoryDataStore
 from .queue.base_queue import BaseQueue
@@ -50,7 +51,7 @@ class LLAMPHouse:
                  assistants: List[Assistant] = [],
                  authenticator: Optional[BaseAuth] = None,
                  worker: Optional[BaseWorker] = None,
-                 event_queue_class: Optional[BaseEventQueue] = JanusEventQueue,
+                 event_queue_class: Optional[BaseEventQueue] = None,
                  data_store: Optional[BaseDataStore] = None,
                  run_queue: Optional[BaseQueue] = None,
                  ):
@@ -60,7 +61,7 @@ class LLAMPHouse:
         self.fastapi = FastAPI(title="LLAMPHouse API Server")
         self.fastapi.state.assistants = assistants
         self.fastapi.state.event_queues = {}
-        self.fastapi.state.queue_class = event_queue_class
+        self.fastapi.state.queue_class = event_queue_class or InMemoryEventQueue
         self.fastapi.state.data_store = data_store or InMemoryDataStore()
         self.fastapi.state.run_queue = run_queue or InMemoryQueue()
 

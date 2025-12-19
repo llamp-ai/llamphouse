@@ -86,11 +86,17 @@ async def create_run(
                             "message": str(e)
                         }).to_sse()
                         break
+                    
                 # Cleanup the queue after the stream ends
-                # Clear all remaining items in the janus queue
-                while not output_queue.empty():
-                    await output_queue.get()
-                    output_queue.task_done()
+                try:
+                    while not output_queue.empty():
+                        try:
+                            await output_queue.get_nowait()
+                        except Exception:
+                            break
+                finally:
+                    await output_queue.close()
+
                 # Remove the event queue after the stream ends
                 if task_key in req.app.state.event_queues:
                     del req.app.state.event_queues[task_key]

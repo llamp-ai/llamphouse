@@ -1,14 +1,41 @@
 import asyncio
 import uuid
-from typing import Dict, Optional
+import traceback
+from inspect import isawaitable
+from typing import Any, Callable, Dict, Optional
 from .types.message import Attachment, CreateMessageRequest, MessageObject, ModifyMessageRequest
 from .types.run_step import ToolCallsStepDetails, CreateRunStepRequest
 from .types.run import ToolOutput, RunObject, ModifyRunRequest
 from .types.thread import ModifyThreadRequest
 from .types.enum import run_step_status, run_status, event_type, message_status
-from .streaming.openai_event_handler import OpenAIEventHandler
+from .streaming.emitter import StreamingEmitter
+from .streaming.adapters.base_stream_adapter import BaseStreamAdapter
+from .streaming.adapters.openai_chat_completions import OpenAIChatCompletionAdapter
 from .streaming.event_queue.base_event_queue import BaseEventQueue
 from .data_stores.base_data_store import BaseDataStore
+from .streaming.stream_events import (
+    CanonicalStreamEvent,
+    StreamError,
+    StreamFinished,
+)
+
+def _tap_sync(evt: CanonicalStreamEvent, on_event: Optional[Callable[[CanonicalStreamEvent], Any]]) -> None:
+    if not on_event:
+        return
+    try:
+        on_event(evt)
+    except Exception as e:
+        return
+    
+async def _tap_async(evt: CanonicalStreamEvent, on_event: Optional[Callable[[CanonicalStreamEvent], Any]]) -> None:
+    if not on_event:
+        return
+    try:
+        r = on_event(evt)
+        if isawaitable(r):
+            await r
+    except Exception:
+        return
 
 class Context:
     def __init__(
@@ -49,6 +76,10 @@ class Context:
             status=message_status.COMPLETED,
             event_queue=self.__queue,
         )
+        
+        if not new_message:
+            raise RuntimeError("insert_message failed")
+        
         step_details = self._message_step_details(new_message.id)
         await self.data_store.insert_run_step(
             thread_id=self.thread_id,
@@ -167,155 +198,60 @@ class Context:
         }
     
     def _send_event(self, event):
+        if not self.__queue:
+            return
         if self.__loop:
-            asyncio.run_coroutine_threadsafe(self.__queue.async_q.put(event), self.__loop)
-        else:
-            self.__queue.sync_q.put(event)
+            asyncio.run_coroutine_threadsafe(self.__queue.add(event), self.__loop)
+            return
+        
+        try: 
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.__queue.add(event))
+            return
+        
+        loop.create_task(self.__queue.add(event))
 
     def send_completion_event(self, event):
         pass
-
     
-    def handle_completion_stream(self, stream):
-        full_text = ""
-        full_tool_calls = {}
-        active_tool = None
-
-        event_handler = OpenAIEventHandler(self._send_event, self.assistant_id, self.thread_id, self.run_id)
-
-        # message = self.insert_message("")
-
-        # create_event = {
-        #     "event": event_type.MESSAGE_CREATED,
-        #     "data": {
-        #         "id": message.id,
-        #         "object": "thread.message",
-        #         "created_at": message.created_at.isoformat(),
-        #         "thread_id": self.thread_id,
-        #         "role": "assistant",
-        #         "content": [],
-        #         "assistant_id": self.assistant_id,
-        #         "run_id": self.run_id,
-        #         "attachments": [],
-        #         "metadata": {}
-        #     }
-        # }
-        # self._send_event(create_event)
-
-        # index = 0  # Tracks position of text parts (we're assuming 1-part text only for now)
-
-        for chunk in stream:
-            event_handler.handle_event(chunk)
+    def handle_completion_stream(self, stream, adapter: Optional[BaseStreamAdapter] = None, on_event: Optional[Callable[[CanonicalStreamEvent], Any]] = None,) -> str:
+        adapter = adapter or OpenAIChatCompletionAdapter()
+        emitter = StreamingEmitter(self._send_event, self.assistant_id, self.thread_id, self.run_id)
+                
+        try:
+            for evt in adapter.iter_events(stream):
+                _tap_sync(evt, on_event)
+                emitter.handle(evt)
             
-            # if not chunk.choices or not chunk.choices[0].delta:
-            #     print("No choices or delta in chunk, skipping...", chunk, flush=True)
-            #     delta_event = {
-            #             "event": event_type.MESSAGE_DELTA,
-            #             "data": {
-            #                 "id": message.id,
-            #                 "object": "thread.message.created",
-            #                 "thread_id": self.thread_id,
-            #                 "role": "assistant",
-            #                 "content": [
-            #                     {
-            #                         "type": "text",
-            #                         "text": {
-            #                             "value": "",
-            #                             "annotations": []
-            #                         }
-            #                     }
-            #                 ],
-            #                 "assistant_id": self.assistant_id,
-            #                 "run_id": self.run_id,
-            #                 "attachments": [],
-            #                 "metadata": {}
-            #             }
-            #         }
-            #     self._send_event(delta_event)
-            # else:
-            #     print(f"Processing chunk", flush=True)
-            #     delta = chunk.choices[0].delta
-            #     finish_reason = chunk.choices[0].finish_reason
-            #     if delta.content: # text response
-            #         full_text += delta.content
-            #         print(f"Received chunk", flush=True)
+        except Exception as e:
+            error_evt = StreamError(message=str(e), code="CompletionStreamError", raw=traceback.format_exc())
+            _tap_sync(error_evt, on_event)
+            emitter.handle(error_evt)
 
-            #         delta_event = {
-            #             "event": event_type.MESSAGE_DELTA,
-            #             "data": {
-            #                 "id": message.id,
-            #                 "object": "thread.message.delta",
-            #                 "delta": {
-            #                     "content": [
-            #                         {
-            #                             "index": index,
-            #                             "type": "text",
-            #                             "text": {
-            #                                 "value": delta.content,
-            #                                 "annotations": []
-            #                             }
-            #                         }
-            #                     ]
-            #                 }
-            #             }
-            #         }
-            #         self._send_event(delta_event)
-            #         index += 1
+            finish_evt = StreamFinished(reason="error")
+            _tap_sync(finish_evt, on_event)
+            emitter.handle(finish_evt)
+        
+        return emitter.content
 
-            #     if delta.tool_calls: # tool call response
-            #         # print(f"Received tool calls", delta.tool_calls, flush=True)
-            #         for tool_call in delta.tool_calls:
-            #             function_name = tool_call.function.name
-            #             if function_name:
-            #                 active_tool = function_name
+    async def handle_completion_stream_async(self, stream, adapter: Optional[BaseStreamAdapter] = None, on_event: Optional[Callable[[CanonicalStreamEvent], Any]] = None,) -> str:
+        adapter = adapter or OpenAIChatCompletionAdapter()
+        emitter = StreamingEmitter(self._send_event, self.assistant_id, self.thread_id, self.run_id)
 
-            #             arguments = tool_call.function.arguments
-            #             print(f"Function name: {active_tool}, Arguments: {arguments}", flush=True)
-            #             if active_tool not in full_tool_calls:
-            #                 full_tool_calls[active_tool] = arguments
-            #             else:
-            #                 full_tool_calls[active_tool] += arguments
+        try:
+            async for evt in adapter.aiter_events(stream):
+                await _tap_async(evt, on_event)
+                emitter.handle(evt)
+        except Exception as e:
+            error_evt = StreamError(message=str(e), code="CompletionStreamError", raw=traceback.format_exc())
+            await _tap_async(error_evt, on_event)
+            emitter.handle(error_evt)
 
-            #             delta_event = {
-            #                 "event": event_type.RUN_STEP_DELTA,
-            #                 "data": {
-            #                     "id": message.id,
-            #                     "object": "thread.run.step.delta",
-            #                     "delta": {
-            #                         "step_details": {
-            #                             "type": "tool_calls",
-            #                             "tool_calls": [{
-            #                                 "index": index,
-            #                                 "id": str(uuid.uuid4()),
-            #                                 "type": "function",
-            #                                 "function": {
-            #                                     "name": active_tool,
-            #                                     "arguments": arguments
-            #                                 }
-            #                             }]
-            #                         }
-            #                     }
-            #                 }
-            #             }
-            #             # print(f"Sending tool call delta event: {delta_event}", flush=True)
-            #             self._send_event(delta_event)
-                    
-            #         index += 1
+            finish_evt = StreamFinished(reason="error")
+            await _tap_async(finish_evt, on_event)
+            emitter.handle(finish_evt)
+            raise
 
-
-            #     # If stream ends
-            #     if finish_reason == "stop" or finish_reason == "tool_calls":
-            #         final_event = {
-            #             "event": event_type.DONE,
-            #             "data": {
-            #                 "id": self.run_id,
-            #                 "thread_id": self.thread_id,
-            #                 "assistant_id": self.assistant_id,
-            #                 "status": "completed"
-            #             }
-            #         }
-            #         self._send_event(final_event)
-            #         break
-        # self.db.insert_message()
-        # message.content = full_text
-        # self.db.update_message(message)
+        return emitter.content
+        

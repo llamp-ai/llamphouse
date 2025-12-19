@@ -1,9 +1,7 @@
 import asyncio
 from dotenv import load_dotenv
-from openai import OpenAI
-
-load_dotenv(override=True)
-
+import os
+from google import genai
 from llamphouse.core import LLAMPHouse, Assistant
 from llamphouse.core.context import Context
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
@@ -16,29 +14,34 @@ from llamphouse.core.streaming.stream_events import TextDelta, ToolCallDelta, St
 import logging
 logging.basicConfig(level=logging.INFO)
 
-open_client = OpenAI()
+load_dotenv(override=True)
+
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 class CustomAssistant(Assistant):
     async def run(self, context: Context):
-        messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
+        contents = [
+            {"parts": [{"text": message.content[0].text}]} 
+            for message in context.messages
+        ]
 
-        stream = open_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            stream=True,
+        stream = client.models.generate_content_stream(
+            model="gemini-2.5-flash",
+            contents=contents,
         )
 
+        # Tap hook: called for every canonical streaming event before it is emitted to SSE.
         def on_event(evt):
             if isinstance(evt, TextDelta):
-                print(evt.text, end="", flush=True)
+                print("delta_len=", len(evt.text), repr(evt.text[:30]))
             elif isinstance(evt, ToolCallDelta):
                 print(f"\n[tool_delta] name={evt.name} args+= {evt.arguments_delta!r}", flush=True)
             elif isinstance(evt, StreamError):
                 print(f"\n[stream_error] {evt.code}: {evt.message}", flush=True)
-            elif isinstance(evt, StreamFinished):
+            if isinstance(evt, StreamFinished):
                 print(f"\n[finished] reason={evt.reason}", flush=True)
 
-        adapter = get_adapter("openai")
+        adapter = get_adapter("gemini")
 
         full_text = await asyncio.to_thread(context.handle_completion_stream, stream, adapter, on_event)
         if full_text and full_text.strip():
@@ -53,7 +56,7 @@ def main():
     data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore() for in-memory testing
 
     # event queue choice
-    event_queue_class = InMemoryEventQueue # InMemoryEventQueue or JanusEventQueue for async support
+    event_queue_class = JanusEventQueue # InMemoryEventQueue or JanusEventQueue for async support
 
     # Create a new LLAMPHouse instance
     llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=data_store, event_queue_class=event_queue_class)

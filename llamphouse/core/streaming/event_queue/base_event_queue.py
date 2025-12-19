@@ -2,12 +2,9 @@ from ..event import Event
 from abc import ABC, abstractmethod
 
 class BaseEventQueue(ABC):
-    @abstractmethod
-    def add(self, event: Event) -> None:
-        pass
 
     @abstractmethod
-    async def add_async(self, event: Event) -> None:
+    async def add(self, event: Event) -> None:
         pass
 
     @abstractmethod
@@ -15,9 +12,13 @@ class BaseEventQueue(ABC):
         pass
 
     @abstractmethod
-    def empty(self) -> bool:
+    async def get_nowait(self) -> Event:
         pass
 
     @abstractmethod
-    def task_done(self) -> None:
+    async def close(self) -> None:
+        pass
+
+    @abstractmethod
+    def empty(self) -> bool:
         pass

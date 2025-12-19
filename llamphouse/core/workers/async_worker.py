@@ -28,7 +28,7 @@ class AsyncWorker(BaseWorker):
 
         while self._running:
             try:
-                item: Optional[Tuple[str, QueueMessage]] = await run_queue.dequeue(assistant_ids=assistant_ids, timeout=0)
+                item: Optional[Tuple[str, QueueMessage]] = await run_queue.dequeue(assistant_ids=assistant_ids, timeout=None)
                 if not item:
                     continue
                     
@@ -54,7 +54,7 @@ class AsyncWorker(BaseWorker):
                 if output_queue:
                     run_object = await data_store.get_run_by_id(thread_id, run_id)
                     if run_object:
-                        await output_queue.add_async(run_object.to_event(event_type.RUN_IN_PROGRESS))
+                        await output_queue.add(run_object.to_event(event_type.RUN_IN_PROGRESS))
 
                 # Build context
                 run_object = await data_store.get_run_by_id(thread_id, run_id)
@@ -81,8 +81,8 @@ class AsyncWorker(BaseWorker):
                     if output_queue:
                         run_object = await data_store.get_run_by_id(thread_id, run_id)
                         if run_object:
-                            await output_queue.add_async(run_object.to_event(event_type.RUN_COMPLETED))
-                            await output_queue.add_async(DoneEvent())
+                            await output_queue.add(run_object.to_event(event_type.RUN_COMPLETED))
+                            await output_queue.add(DoneEvent())
                     await run_queue.ack(receipt)
 
                 except QueueRateLimitError as e:
@@ -99,16 +99,16 @@ class AsyncWorker(BaseWorker):
                     error = {"code": "server_error", "message": "Run timeout"}
                     await data_store.update_run_status(thread_id, run_id, run_status.EXPIRED, error)
                     if output_queue and run_object:
-                        await output_queue.add_async(run_object.to_event(event_type.RUN_EXPIRED))
-                        await output_queue.add_async(ErrorEvent(error))
+                        await output_queue.add(run_object.to_event(event_type.RUN_EXPIRED))
+                        await output_queue.add(ErrorEvent(error))
                     await run_queue.ack(receipt)
 
                 except Exception as e:
                     error = {"code": "server_error", "message": str(e)}
                     await data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)
                     if output_queue and run_object:
-                        await output_queue.add_async(run_object.to_event(event_type.RUN_FAILED))
-                        await output_queue.add_async(ErrorEvent(error))
+                        await output_queue.add(run_object.to_event(event_type.RUN_FAILED))
+                        await output_queue.add(ErrorEvent(error))
                     if message.attempts < run_queue.retry_policy.max_attempts:
                         await run_queue.requeue(receipt, message)
                     else:

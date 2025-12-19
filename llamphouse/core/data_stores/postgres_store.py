@@ -127,10 +127,14 @@ class PostgresDataStore(BaseDataStore):
             result = MessageObject.model_validate(item.to_dict())
 
             if event_queue is not None:
-                await event_queue.add_async(result.to_event(event_type.MESSAGE_CREATED))
+                try:
+                    await event_queue.add(result.to_event(event_type.MESSAGE_CREATED))
+                except Exception:
+                    pass
+                
                 if status == message_status.COMPLETED:
-                    await event_queue.add_async(result.to_event(event_type.MESSAGE_IN_PROGRESS))
-                    await event_queue.add_async(result.to_event(event_type.MESSAGE_COMPLETED))
+                    await event_queue.add(result.to_event(event_type.MESSAGE_IN_PROGRESS))
+                    await event_queue.add(result.to_event(event_type.MESSAGE_COMPLETED))
 
             return result
 
@@ -348,7 +352,7 @@ class PostgresDataStore(BaseDataStore):
             )
 
             if event_queue is not None:
-                await event_queue.add_async(thread_obj.to_event(event_type.THREAD_CREATED))
+                await event_queue.add(thread_obj.to_event(event_type.THREAD_CREATED))
 
             for msg in req.messages or []:
                 await self.insert_message(thread_id, msg, event_queue=event_queue)
@@ -418,8 +422,8 @@ class PostgresDataStore(BaseDataStore):
             run_obj = RunObject.model_validate(new_run.to_dict())
 
             if event_queue is not None:
-                await event_queue.add_async(run_obj.to_event(event_type.RUN_CREATED))
-                await event_queue.add_async(run_obj.to_event(event_type.RUN_QUEUED))
+                await event_queue.add(run_obj.to_event(event_type.RUN_CREATED))
+                await event_queue.add(run_obj.to_event(event_type.RUN_QUEUED))
 
             for msg in run.additional_messages or []:
                 await self.insert_message(
@@ -579,10 +583,10 @@ class PostgresDataStore(BaseDataStore):
             step_obj = RunStepObject.model_validate(step.to_dict())
 
             if event_queue is not None:
-                await event_queue.add_async(step_obj.to_event(event_type.RUN_STEP_CREATED))
+                await event_queue.add(step_obj.to_event(event_type.RUN_STEP_CREATED))
                 if step_obj.status == run_step_status.COMPLETED:
-                    await event_queue.add_async(step_obj.to_event(event_type.RUN_STEP_IN_PROGRESS))
-                    await event_queue.add_async(step_obj.to_event(event_type.RUN_STEP_COMPLETED))
+                    await event_queue.add(step_obj.to_event(event_type.RUN_STEP_IN_PROGRESS))
+                    await event_queue.add(step_obj.to_event(event_type.RUN_STEP_COMPLETED))
 
             return step_obj
         except Exception:
@@ -679,7 +683,7 @@ class PostgresDataStore(BaseDataStore):
             if not run:
                 return None
             run.status = status
-            run.last_error = error
+            run.last_error = _to_jsonable(error)
             self.session.commit()
             self.session.refresh(run)
             return RunObject.model_validate(run.to_dict())

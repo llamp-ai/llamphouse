@@ -54,10 +54,13 @@ class InMemoryDataStore(BaseDataStore):
 
         # Send events if an event queue is provided
         if event_queue is not None:
-            await event_queue.add_async(message.to_event(event_type.MESSAGE_CREATED))
+            try:
+                await event_queue.add(message.to_event(event_type.MESSAGE_CREATED)) 
+            except Exception:
+                    pass
             if status == message_status.COMPLETED:
-                await event_queue.add_async(message.to_event(event_type.MESSAGE_IN_PROGRESS))
-                await event_queue.add_async(message.to_event(event_type.MESSAGE_COMPLETED))
+                await event_queue.add(message.to_event(event_type.MESSAGE_IN_PROGRESS))
+                await event_queue.add(message.to_event(event_type.MESSAGE_COMPLETED))
        
         return message
     
@@ -137,7 +140,7 @@ class InMemoryDataStore(BaseDataStore):
 
         # Send event if an event queue is provided
         if event_queue is not None:
-            await event_queue.add_async(self._threads[thread_id].to_event(event_type.THREAD_CREATED))
+            await event_queue.add(self._threads[thread_id].to_event(event_type.THREAD_CREATED))
         
         # Initialize message list for the thread
         self._messages[thread_id] = []
@@ -212,8 +215,8 @@ class InMemoryDataStore(BaseDataStore):
 
         # Send events if an event queue is provided
         if event_queue is not None:
-            await event_queue.add_async(new_run.to_event(event_type.RUN_CREATED))
-            await event_queue.add_async(new_run.to_event(event_type.RUN_QUEUED))
+            await event_queue.add(new_run.to_event(event_type.RUN_CREATED))
+            await event_queue.add(new_run.to_event(event_type.RUN_QUEUED))
 
         return new_run
 
@@ -321,10 +324,10 @@ class InMemoryDataStore(BaseDataStore):
 
         # Send events if an event queue is provided
         if event_queue is not None:
-            await event_queue.add_async(step.to_event(event_type.RUN_STEP_CREATED))
+            await event_queue.add(step.to_event(event_type.RUN_STEP_CREATED))
             if step.status == run_step_status.COMPLETED:
-                await event_queue.add_async(step.to_event(event_type.RUN_STEP_IN_PROGRESS))
-                await event_queue.add_async(step.to_event(event_type.RUN_STEP_COMPLETED))
+                await event_queue.add(step.to_event(event_type.RUN_STEP_IN_PROGRESS))
+                await event_queue.add(step.to_event(event_type.RUN_STEP_COMPLETED))
 
     def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         if not thread_id in self._threads:
