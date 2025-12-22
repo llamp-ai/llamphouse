@@ -6,7 +6,6 @@ from llamphouse.core.data_stores.postgres_store import PostgresDataStore
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from typing import Any, Callable, Dict
 from datetime import datetime, timezone
-import json
 
 load_dotenv(override=True)
 
@@ -16,8 +15,6 @@ SYSTEM_PROMPT = "You are a helpful assistant. When asked about time/date, always
 def get_current_time(_: dict[str, Any] | None = None) -> str:
     """Returns the current UTC datetime as an ISO-8601 string."""
     return datetime.now(timezone.utc).isoformat()
-
-TOOL_REGISTRY: Dict[str, Callable] = {"get_current_time": get_current_time}
 
 TOOL_SCHEMAS = [
     {
@@ -29,6 +26,8 @@ TOOL_SCHEMAS = [
         },
     },
 ]
+
+TOOL_REGISTRY: Dict[str, Callable] = {"get_current_time": get_current_time}
 
 # Create a custom assistant
 class CustomAssistant(Assistant):

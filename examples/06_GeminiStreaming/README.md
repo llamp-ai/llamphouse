@@ -1,11 +1,11 @@
-# Streaming Example
+# Gemini Streaming Example
 
-This example demonstrates how to use LLAMPHouse as a local server that supports streaming responses (similar to OpenAI streaming). It allows a client to send a message to an assistant and receive incremental text deltas in real time.
+This example demonstrates using LLAMPHouse as an OpenAI-compatible local server that streams responses, while the upstream model is Gemini (via `google-genai`).
 
 ## Prerequisites
 
 - Python 3.10+
-- `OPENAI_API_KEY`
+- `GEMINI_API_KEY` (required)
 - (Optional) PostgreSQL database (only if you want persistence)
 
 ## Setup
@@ -14,7 +14,7 @@ This example demonstrates how to use LLAMPHouse as a local server that supports 
 
    ```bash
    git clone https://github.com/llamp-ai/llamphouse.git
-   cd llamphouse/examples/05_Streaming
+   cd llamphouse/examples/06_GeminiStreaming
    ```
 2. Install dependencies:
 
@@ -23,7 +23,7 @@ This example demonstrates how to use LLAMPHouse as a local server that supports 
    ```
 3. Create your `.env` from `.env.sample`:
 
-   - `OPENAI_API_KEY=...` (required)
+   - `GEMINI_API_KEY=...` (required)
    - `DATABASE_URL=...` (optional; only for Postgres)
 
    ```bash
@@ -32,13 +32,13 @@ This example demonstrates how to use LLAMPHouse as a local server that supports 
 
 ## Streaming (How it works)
 
-- Server starts an OpenAI streaming completion [server.py](server.py#L25) with `stream=True`.
-- Server converts stream chunks into events using `context.handle_completion_stream(...)` + `get_adapter("openai")`.
+- Server creates a Gemini streaming generator via `client.models.generate_content_stream(...)` in [server.py](server.py#L28).
+- Stream chunks are normalized into LLAMPHouse “canonical” streaming events using `get_adapter("gemini")` + `context.handle_completion_stream(...)`.
 - `on_event(evt)` is a user-defined server-side callback (hook). LLAMPHouse will call it every time a new stream event is produced, so you can “intercept” the stream in real time and decide what to do with it.
 
   - Example usage patterns: print to console, log/trace, push deltas to a UI (WebSocket/SSE), or collect metrics.
   - In this example:
-    - `TextDelta` prints incremental text as it arrives.
+    - `TextDelta` logs a preview of each text delta (e.g., delta_len and the first few characters) as it arrives.
     - `ToolCallDelta` prints tool-call name
 - After stream finishes, the server stores the final assistant text via `context.insert_message(...)`.
 - Client uses `client.beta.threads.runs.stream(...)` and prints deltas in `on_text_delta`.
@@ -60,34 +60,29 @@ Notes:
 
 ### Option B: Postgres (optional)
 
-1. Ensure Postgres is running and set `DATABASE_URL` in `.env` (see `.env.sample`)
+1. Ensure Postgres is running and set `DATABASE_URL` in `.env` (see `.env.sample`).
+2. Switch in [server.py](server.py#L56) :
 
-   ```bash
-   docker run --rm -d --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -p 5432:5432 postgres
-   docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
-   ```
-2. Switch in [server.py](server.py#L53) :
+```py
+data_store = PostgresDataStore()
+```
 
-   ```python
-   data_store = PostgresDataStore()
-   ```
+3. Run migrations (from the `llamphouse/` folder that contains `migrations/`):
 
-   * Run migrations (from the `llamphouse/` folder that contains `migrations/`)
-
-     ```bash
-     cd ../..
-     alembic upgrade head
-     cd examples/05_Streaming
-     ```
+```sh
+cd ../..
+alembic upgrade head
+cd examples/06_GeminiStreaming
+```
 
 ## Choose `event_queue`
 
 This example can use different event queue implementations:
 
 - Default: `InMemoryEventQueue`
-- Optional: `JanusEventQueue`
+- Optional: `JanusEventQueue` for async support
 
-Switch in [server.py](server.py#L56):
+Switch in [server.py](server.py#L59):
 
 ```py
 event_queue_class = InMemoryEventQueue # or JanusEventQueue
@@ -97,7 +92,7 @@ event_queue_class = InMemoryEventQueue # or JanusEventQueue
 
 1. Navigate to the example directory:
    ```sh
-   cd llamphouse/examples/05_Streaming
+   cd llamphouse/examples/06_GeminiStreaming
    ```
 2. Start the server `http://127.0.0.1:8000`:
    ```sh
@@ -108,7 +103,7 @@ event_queue_class = InMemoryEventQueue # or JanusEventQueue
 
 1. Open a new terminal and navigate to the example directory:
    ```sh
-   cd llamphouse/examples/05_Streaming
+   cd llamphouse/examples/06_GeminiStreaming
    ```
 2. Run the client:
    ```sh
