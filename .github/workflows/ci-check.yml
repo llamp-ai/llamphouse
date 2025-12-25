@@ -44,4 +44,4 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest
+          python -m pytest tests/unit tests/contract tests/integration
