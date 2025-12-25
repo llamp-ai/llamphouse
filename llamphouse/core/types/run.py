@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from .message import Attachment, ImageFileContent, CreateMessageRequest, ImageURLContent, RefusalContent, TextContent
 from ..streaming.event import Event
 from .thread import CreateThreadRequest
-
+from .tool_call import Function
 
 class RequiredAction(BaseModel):
     type: Optional[str]
@@ -12,8 +12,8 @@ class RequiredAction(BaseModel):
 
 
 class LastError(BaseModel):
-    message: Optional[str]
-    code: Optional[str]
+    message: Optional[str] = None
+    code: Optional[str] = None
 
 
 class IncompleteDetails(BaseModel):
@@ -36,9 +36,11 @@ class ToolChoice(BaseModel):
     function: Optional[Dict]
 
 
-class ToolCall(BaseModel):
+class RunToolCall(BaseModel):
     type: str
-    function: Optional[Dict[str, str]] = None
+    function: Optional[Function] = None
+
+ToolCall = RunToolCall
 
 
 class ThreadObject(BaseModel):

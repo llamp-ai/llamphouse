@@ -12,20 +12,20 @@ class JanusEventQueue(BaseEventQueue):
             return
         try:
             await self.queue.async_q.put(event)
-        except janus.QueueShutdown:
+        except janus.QueueShutDown:
             self._closed = True
             return
 
     async def get(self) -> Event:
         try:
             return await self.queue.async_q.get()
-        except janus.QueueShutdown:
+        except janus.QueueShutDown:
             return None
     
     async def get_nowait(self) -> Event:
         try:
             return self.queue.async_q.get_nowait()
-        except janus.QueueShutdown:
+        except janus.QueueShutDown:
             return None
     
     async def close(self) -> None:

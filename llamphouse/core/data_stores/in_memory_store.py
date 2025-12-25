@@ -167,10 +167,12 @@ class InMemoryDataStore(BaseDataStore):
     async def delete_thread(self, thread_id: str) -> str | None:
         if thread_id in self._threads:
             del self._threads[thread_id]
-            if thread_id in self._messages:
-                del self._messages[thread_id]
-            # Also delete associated runs
-            self._runs = {run_id: run for run_id, run in self._runs.items() if run.thread_id != thread_id}
+            self._messages.pop(thread_id, None)
+
+            runs = self._runs.pop(thread_id, [])
+            for run in runs:
+                self._run_steps.pop(run.id, None)
+
             return thread_id
         return None
     
@@ -285,11 +287,12 @@ class InMemoryDataStore(BaseDataStore):
         tool_calls = getattr(latest_step.step_details, "tool_calls", []) or []
         for output in tool_outputs:
             for call in tool_calls:
-                if getattr(call, "id", None) == output.tool_call_id:
-                    if hasattr(call, "function"):
-                        call.function.output = output.output
+                call_obj = call.root if hasattr(call, "root") else call
+                if getattr(call_obj, "id", None) == output.tool_call_id:
+                    if hasattr(call_obj, "function"):
+                        call_obj.function.output = output.output
                     else:
-                        call.output = output.output  # fallback
+                        call_obj.output = output.output  # fallback
 
         latest_step.status = run_step_status.COMPLETED
         run.status = run_status.IN_PROGRESS
@@ -385,8 +388,14 @@ class InMemoryDataStore(BaseDataStore):
         run = next((r for r in self._runs[thread_id] if r.id == run_id), None)
         if not run:
             return None
+        if isinstance(error, dict) and "code" not in error:
+            error = {**error, "code": "server_error"}
+        elif isinstance(error, str):
+            error = {"message": error, "code": "server_error"}
+        elif error is not None:
+            error = {"message": str(error), "code": "server_error"}
         run.status = status
-        run.last_error = error
+        run.last_error = RunObject.model_validate({**run.model_dump(), "last_error": error}).last_error
         self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
         return run
 
@@ -394,13 +403,31 @@ class InMemoryDataStore(BaseDataStore):
         for run_id, steps in self._run_steps.items():
             for idx, step in enumerate(steps):
                 if step.id == run_step_id:
+                    if isinstance(error, dict):
+                        error = {**error, "code": error.get("code", "server_error")}
+                    elif isinstance(error, str):
+                        error = {"message": error, "code": "server_error"}
+                    elif error is not None:
+                        error = {"message": str(error), "code": "server_error"}
+
                     step.status = status
-                    step.last_error = error
+
                     if output and hasattr(step.step_details, "tool_calls"):
-                        tool_calls = step.step_details.tool_calls
-                        if tool_calls and hasattr(tool_calls[0], "function"):
-                            tool_calls[0].function.output = output
+                        tool_calls = step.step_details.tool_calls or []
+                        if tool_calls:
+                            call_obj = tool_calls[0].root if hasattr(tool_calls[0], "root") else tool_calls[0]
+                            if hasattr(call_obj, "function"):
+                                call_obj.function.output = output
+
+                    payload = step.model_dump()
+                    payload["status"] = status
+                    payload["last_error"] = error
+                    step = RunStepObject.model_validate(payload)
+
                     steps[idx] = step
                     self._run_steps[run_id] = steps
                     return step
+        return None
+    
+    def close(self) -> None:
         return None

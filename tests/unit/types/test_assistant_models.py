@@ -1,5 +1,3 @@
-import pytest
-from typing import List, Dict
 
 from llamphouse.core.types.assistant import (
     AssistantObject,
@@ -9,9 +7,14 @@ from llamphouse.core.types.assistant import (
     AssistantCreateResponse,
     ModifyAssistantRequest,
 )
+from datetime import datetime, timezone
+
+def _now():
+    return datetime.now(timezone.utc)
 
 def test_assistant_object_defaults():
-    obj = AssistantObject(id="123", model="gpt-4")
+    """Validates AssistantObject default fields (object, temperature, top_p, name, tools)."""
+    obj = AssistantObject(id="123", model="gpt-4", created_at=_now())
     assert obj.object == "assistant"
     assert obj.temperature == 0.7
     assert obj.top_p == 1.0
@@ -19,9 +22,10 @@ def test_assistant_object_defaults():
     assert obj.tools is None
 
 def test_assistant_list_response():
+    """Builds AssistantListResponse and verifies pagination fields are preserved."""
     assistants = [
-        AssistantObject(id="1", model="gpt-4"),
-        AssistantObject(id="2", model="gpt-3.5"),
+        AssistantObject(id="1", model="gpt-4", created_at=_now()),
+        AssistantObject(id="2", model="gpt-3.5", created_at=_now()),
     ]
     resp = AssistantListResponse(data=assistants, after="2", before="1")
     assert isinstance(resp.data, list)
@@ -29,6 +33,7 @@ def test_assistant_list_response():
     assert resp.before == "1"
 
 def test_assistant_list_request_defaults():
+    """Confirms AssistantListRequest default pagination settings."""
     req = AssistantListRequest()
     assert req.limit == 20
     assert req.order == "desc"
@@ -36,6 +41,7 @@ def test_assistant_list_request_defaults():
     assert req.before is None
 
 def test_assistant_create_request_defaults():
+    """Confirms AssistantCreateRequest default values when only model is provided."""
     req = AssistantCreateRequest(model="gpt-4")
     assert req.description is None
     assert req.instructions is None
@@ -46,6 +52,7 @@ def test_assistant_create_request_defaults():
     assert req.top_p == 1.0
 
 def test_assistant_create_response_fields():
+    """Validates AssistantCreateResponse maps all fields correctly."""
     resp = AssistantCreateResponse(
         id="abc",
         model="gpt-4",
@@ -69,6 +76,7 @@ def test_assistant_create_response_fields():
     assert resp.top_p == 0.9
 
 def test_modify_assistant_request_defaults():
+    """Ensures ModifyAssistantRequest default values are set as expected."""
     req = ModifyAssistantRequest()
     assert req.model is None
     assert req.name is None
@@ -80,10 +88,12 @@ def test_modify_assistant_request_defaults():
     assert req.response_format == "auto"
 
 def test_assistant_object_with_tools():
-    obj = AssistantObject(id="456", model="gpt-4", tools=["code", "search"])
+    """Accepts tools list on AssistantObject and preserves it."""
+    obj = AssistantObject(id="456", model="gpt-4", tools=["code", "search"], created_at=_now())
     assert obj.tools == ["code", "search"]
 
 def test_assistant_create_request_with_all_fields():
+    """Accepts full AssistantCreateRequest payload and preserves all custom fields."""
     req = AssistantCreateRequest(
         model="gpt-4",
         description="desc",

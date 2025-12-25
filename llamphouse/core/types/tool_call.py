@@ -1,5 +1,6 @@
 from typing import Optional, Union, List, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
+
 
 class CodeInterpreterOutputLogs(BaseModel):
     logs: str
@@ -12,8 +13,8 @@ class CodeInterpreterOutputImage(BaseModel):
     image: CodeInterpreterOutputImageImage
     type: Literal["image"]
 
-class CodeInterpreterOutput(BaseModel):
-    Union[CodeInterpreterOutputLogs, CodeInterpreterOutputImage]
+class CodeInterpreterOutput(RootModel[Union[CodeInterpreterOutputLogs, CodeInterpreterOutputImage]]):
+    pass
 
 class CodeInterpreter(BaseModel):
     input: str
@@ -57,5 +58,5 @@ class FunctionToolCall(BaseModel):
     function: Function
     type: Literal["function"]
 
-class ToolCall(BaseModel):
-    Union[CodeInterpreterToolCall, FileSearchToolCall, FunctionToolCall]
+class ToolCall(RootModel[Union[CodeInterpreterToolCall, FileSearchToolCall, FunctionToolCall]]):
+    pass

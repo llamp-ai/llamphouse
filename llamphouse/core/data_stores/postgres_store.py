@@ -2,12 +2,14 @@ import asyncio
 import logging
 import os
 import uuid
+import copy
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, List, Literal, Optional
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm.attributes import flag_modified
 
 from .base_data_store import BaseDataStore
 from .._utils._utils import get_max_db_connections
@@ -17,7 +19,7 @@ from ..types.assistant import AssistantObject
 from ..types.enum import event_type, message_status, run_status, run_step_status
 from ..types.list import ListResponse
 from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRequest, TextContent
-from ..types.run_step import CreateRunStepRequest, StepDetails, RunStepObject
+from ..types.run_step import CreateRunStepRequest, RunStepObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
 
@@ -212,9 +214,9 @@ class PostgresDataStore(BaseDataStore):
                 return None
             
             if modifications.metadata is not None:
-                base_meta = query.meta or {}
-                base_meta.update(modifications.metadata)
-                query.meta = base_meta
+                base_meta = dict(query.meta or {})
+                base_meta.update(modifications.metadata or {})
+                query.meta = _to_jsonable(base_meta)
 
             self.session.commit()
             self.session.refresh(query)
@@ -280,9 +282,9 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
             if modifications.metadata is not None:
-                base_meta = thread.meta or {}
-                base_meta.update(modifications.metadata)
-                thread.meta = base_meta
+                base_meta = dict(thread.meta or {})
+                base_meta.update(modifications.metadata or {})
+                thread.meta = _to_jsonable(base_meta)
 
             if modifications.tool_resources is not None:
                 thread.tool_resources = modifications.tool_resources
@@ -303,6 +305,10 @@ class PostgresDataStore(BaseDataStore):
     
     async def delete_thread(self, thread_id: str) -> str | None:
         try:
+            self.session.query(RunStep).filter(RunStep.thread_id == thread_id).delete()
+            self.session.query(Run).filter(Run.thread_id == thread_id).delete()
+            self.session.query(Message).filter(Message.thread_id == thread_id).delete()
+
             deleted = (
                 self.session.query(Thread)
                 .filter(Thread.id == thread_id)
@@ -311,6 +317,7 @@ class PostgresDataStore(BaseDataStore):
             if not deleted:
                 self.session.rollback()
                 return None
+            
             self.session.commit()
             return thread_id
 
@@ -493,8 +500,8 @@ class PostgresDataStore(BaseDataStore):
 
             if modifications.metadata is not None:
                 base_meta = dict(run.meta or {})
-                base_meta.update(modifications.metadata)
-                run.meta = base_meta
+                base_meta.update(modifications.metadata or {})
+                run.meta = _to_jsonable(base_meta)
 
             self.session.commit()
             self.session.refresh(run)
@@ -518,27 +525,49 @@ class PostgresDataStore(BaseDataStore):
 
             if run.status != run_status.REQUIRES_ACTION:
                 return None
-            
+
             step = (
                 self.session.query(RunStep)
-                .filter(RunStep.run_id == run_id, RunStep.thread_id == thread_id)
+                .filter(
+                    RunStep.run_id == run_id,
+                    RunStep.thread_id == thread_id,
+                    RunStep.type == "tool_calls",
+                )
                 .order_by(RunStep.created_at.desc())
                 .first()
             )
             if not step:
                 return None
+            
+            details = copy.deepcopy(step.step_details or {})
+            tool_calls = details.get("tool_calls", [])
 
-            tool_calls = step.step_details.get("tool_calls", []) if step.step_details else []
             for output in tool_outputs:
+                matched = False
                 for call in tool_calls:
-                    if call.get("id") == output.tool_call_id:
-                        call.setdefault("function", {})["output"] = output.output
+                    call_obj = call.get("root", call)
+                    if call_obj.get("id") == output.tool_call_id:
+                        call_obj.setdefault("function", {})["output"] = output.output
+                        if "root" in call:
+                            call["root"] = call_obj
+                        matched = True
+                        break
+                if not matched and len(tool_calls) == 1:
+                    call = tool_calls[0]
+                    call_obj = call.get("root", call)
+                    call_obj.setdefault("function", {})["output"] = output.output
+                    if "root" in call:
+                        call["root"] = call_obj
 
-            step.step_details = _to_jsonable({"tool_calls": tool_calls})
+            details["type"] = "tool_calls"
+            details["tool_calls"] = tool_calls
+            step.step_details = _to_jsonable(details)
+            flag_modified(step, "step_details")
+
             step.status = run_step_status.COMPLETED
-            run.status = run_status.IN_PROGRESS 
+            run.status = run_status.IN_PROGRESS
             run.required_action = None
-
+            
             self.session.commit()
             self.session.refresh(run)
 
@@ -682,6 +711,12 @@ class PostgresDataStore(BaseDataStore):
             )
             if not run:
                 return None
+
+            if isinstance(error, str):
+                error = {"message": error, "code": "server_error"}
+            elif isinstance(error, dict) and "code" not in error:
+                error = {**error, "code": "server_error"}
+
             run.status = status
             run.last_error = _to_jsonable(error)
             self.session.commit()
@@ -702,14 +737,28 @@ class PostgresDataStore(BaseDataStore):
             if not step:
                 return None
 
+            if isinstance(error, str):
+                error = {"message": error, "code": "server_error"}
+            elif isinstance(error, dict):
+                error = {**error, "code": error.get("code", "server_error")}
+
             step.status = status
             step.last_error = _to_jsonable(error)
-            if output and step.step_details:
-                tool_calls = step.step_details.get("tool_calls", [])
+
+            if output is not None and step.step_details:
+                details = copy.deepcopy(step.step_details or {})
+                tool_calls = details.get("tool_calls", [])
                 if tool_calls:
-                    tool_calls[0].setdefault("function", {})["output"] = output
-                    step.step_details = _to_jsonable({"tool_calls": tool_calls})
-            
+                    call = tool_calls[0]
+                    call_obj = call.get("root", call)
+                    call_obj.setdefault("function", {})["output"] = output
+                    if "root" in call:
+                        call["root"] = call_obj
+                    details["type"] = "tool_calls"
+                    details["tool_calls"] = tool_calls
+                    step.step_details = _to_jsonable(details)
+                    flag_modified(step, "step_details")
+
             self.session.commit()
             self.session.refresh(step)
             return RunStepObject.model_validate(step.to_dict())
@@ -718,3 +767,6 @@ class PostgresDataStore(BaseDataStore):
             self.session.rollback()
             logger.exception("update_run_step_status() failed")
             return None
+
+    def close(self) -> None:
+        self.session.close()

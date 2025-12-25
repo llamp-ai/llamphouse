@@ -63,7 +63,7 @@ async def retrieve_message(thread_id: str, message_id: str, req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
     finally:
-        db.session.close()
+        db.close()
 
 @router.post("/threads/{thread_id}/messages/{message_id}", response_model=MessageObject)
 async def modify_message(thread_id: str, message_id: str, request: ModifyMessageRequest, req: Request):

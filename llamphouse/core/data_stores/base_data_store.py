@@ -136,3 +136,7 @@ class BaseDataStore(ABC):
     async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
         """Update status/output/error of a run step."""
         pass
+
+    def close(self) -> None:
+        """Close any underlying resources (default: no-op)."""
+        return None
