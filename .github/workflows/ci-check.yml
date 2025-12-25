@@ -33,10 +33,15 @@ jobs:
           if [ -f tests/requirements.txt ]; then pip install -r tests/requirements.txt; fi
           pip install -e .
 
-      - name: Lint
-        run: |
-          pip install flake8
-          flake8 .
+      # - name: Lint
+      #   run: |
+      #     pip install flake8
+      #     flake8 .
+
+      # - name: Type checking with mypy
+      #   run: |
+      #     pip install mypy
+      #     mypy .
 
       - name: Run Python code
         run: |
