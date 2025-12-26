@@ -1,17 +1,17 @@
 > [!NOTE]
 > This package is still under development. Always use the latest version for better stability.
 
-
 <!-- PROJECT SHIELDS -->
-[![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![Unlicense License][license-shield]][license-url]
-[![LinkedIn][linkedin-shield]][linkedin-url]
 
+[Contributors][contributors-url]
+[Forks][forks-url]
+[Stargazers][stars-url]
+[Issues][issues-url]
+[Unlicense License][license-url]
+[LinkedIn][linkedin-url]
 
 <!-- PROJECT LOGO -->
+
 <br />
 <div align="center">
   <a href="https://github.com/llamp-ai/llamphouse">
@@ -34,8 +34,6 @@
   </p>
 </div>
 
-
-
 <!-- PROJECT DESCRIPTION -->
 
 # Introduction
@@ -51,7 +49,6 @@ LLAMPHouse provides a self-hosted, production-ready server that mimics OpenAI’
 ![assistant API](docs/img/assistant_api.png)
 
 Take control of your LLM infrastructure and build AI-powered apps on your own terms with LLAMPHouse. 🚀
-
 
 <!-- GETTING STARTED -->
 
@@ -122,7 +119,7 @@ Use Alembic when running the postgres data_store:
 1. ```bash
    docker run --rm -d --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -p 5432:5432 postgres
    ```
-2. ```
+2. ```bash
    docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
    ```
 
@@ -139,10 +136,8 @@ To downgrade back to the base version: `alembic downgrade base`
 - Assistants
 
   - ~~Create~~  ->  created in code
-
   - [X] List
   - [X] Retrieve
-
   - ~~Modify~~  ->  only in code
   - ~~Delete~~  ->  only in code
 - Threads
