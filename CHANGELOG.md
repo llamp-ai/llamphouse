@@ -12,11 +12,13 @@
 - Fix fastapi deprecated events
 - Easier setting and getting metadata values
 
-## [1.0.0] - 25/12/2025
+## [1.0.0] - 26/12/2025
 
-* Add pluggable data_store module with in-memory and Postgres backends
-* Add in memory event queue
-* add adapters(OpenAI, Gemini, Anthropic) for support streaming event
+- Introduced a pluggable data_store architecture with in-memory and Postgres backends.
+- Added event queues with in-memory and Janus implementations.
+- Added streaming adapters for OpenAI, Gemini, and Anthropic.
+- Expanded automated testing across unit, contract, integration, and streaming layers.
+- Updated examples to align with the new pluggable backend/streaming flow.
 
 ## [0.0.8] - 22/04/2025
 

@@ -88,12 +88,12 @@ jobs:
       run: |
         python -m twine upload dist/*
 
-    - name: Keep dev branch up to date
-      if: env.SHOULD_RELEASE == 'true'
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git fetch origin dev
-        git checkout -B dev origin/dev
-        git merge --ff-only origin/main
-        git push origin dev
+    # - name: Keep dev branch up to date
+    #   if: env.SHOULD_RELEASE == 'true'
+    #   run: |
+    #     git config user.name "github-actions[bot]"
+    #     git config user.email "github-actions[bot]@users.noreply.github.com"
+    #     git fetch origin dev
+    #     git checkout -B dev origin/dev
+    #     git merge --ff-only origin/main
+    #     git push origin dev
