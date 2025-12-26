@@ -1,4 +1,4 @@
-> [!NOTE]  
+> [!NOTE]
 > This package is still under development. Always use the latest version for better stability.
 
 
@@ -18,18 +18,18 @@
     <img src="docs/img/llamphouse.png" alt="Logo" width="80" height="80">
   </a>
 
-  <h3 align="center">LLAMPHouse</h3>
+<h3 align="center">LLAMPHouse</h3>
 
-  <p align="center">
+<p align="center">
     Serving Your LLM Apps, Scalable and Reliable.
     <br />
     <a href="https://github.com/llamp-ai/llamphouse/tree/main/docs"><strong>Explore the docs »</strong></a>
     <br />
     <br />
     <!-- <a href="https://github.com/llamp-ai/llamphouse">View Demo</a> -->
-    &middot;
+    ·
     <a href="https://github.com/llamp-ai/llamphouse/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
-    &middot;
+    ·
     <a href="https://github.com/llamp-ai/llamphouse/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
   </p>
 </div>
@@ -37,6 +37,7 @@
 
 
 <!-- PROJECT DESCRIPTION -->
+
 # Introduction
 
 Building LLM-powered applications is easier than ever, with countless frameworks helping you craft intelligent workflows in Python. But when it’s time to deploy at scale, the challenges begin.
@@ -53,46 +54,77 @@ Take control of your LLM infrastructure and build AI-powered apps on your own te
 
 
 <!-- GETTING STARTED -->
+
 ## Getting Started
+
+Requires Python 3.10.
 
 ```
 pip install llamphouse
-````
+```
 
-Set the database URL in the environment variable: 
+LLAMPHouse uses an in-memory data store by default (no database required).
+To enable Postgres, set:
+
 ```
 DATABASE_URL="postgresql://postgres:password@localhost/llamphouse"
 ```
 
-
 <!-- USAGE EXAMPLES -->
+
 ## Usage
 
-_For examples, please refer to the [Examples](examples/)_
+LLAMPHouse supports pluggable backends:
 
+- data_store: in_memory (default) or postgres
+- event queue: in_memory or janus
+
+_Streaming adapters are available for OpenAI, Gemini, and Anthropic.
+See [Examples](examples/) for full runnable samples._
 
 <!-- DEVELOPMENT -->
+
 ## Development
 
 ### Local
+
 1. Clone the repository
-1. Install the library `pip install .`
+2. Install the library `pip install .`
 
 ### Build
-This is only required if you want to push the package to PyPi.
+
+This is only required if you want to push the package to PyPI.
+
 1. `python setup.py sdist bdist_wheel`
-1. `git tag -a v1.0.0 -m "Release version 1.0.0"`
-1. `git push`
+2. `git tag -a v1.0.0 -m "Release version 1.0.0"`
+3. `git push`
 
 ### Testing
-1. Build/Install the latest solution locally
-1. Run the test: `pytest`
 
-### Database
+1. Install the package locally.
+2. Run tests:
 
-To run a local database:
-1. `docker run --rm -d --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -p 5432:5432 postgres`
-1. `docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'`
+   ```bash
+   python -m pytest tests/unit tests/contract tests/integration
+   ```
+3. Optional Postgres tests:
+
+   - set `DATABASE_URL` and run:
+
+     ```bash
+     python -m pytest -m postgres
+     ```
+
+### Database (Postgres only)
+
+Use Alembic when running the postgres data_store:
+
+1. ```bash
+   docker run --rm -d --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -p 5432:5432 postgres
+   ```
+2. ```
+   docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
+   ```
 
 To create a new database revision: `alembic revision --autogenerate -m "Added account table"`
 
@@ -100,60 +132,73 @@ To upgrade the database with the latest revision: `alembic upgrade head`
 
 To downgrade back to the base version: `alembic downgrade base`
 
-
 <!-- ENDPOINTS -->
+
 ## Included API endpoints
 
 - Assistants
-    - ~~Create~~  ->  created in code
-    - [x] List
-    - [x] Retrieve
-    - ~~Modify~~  ->  only in code
-    - ~~Delete~~  ->  only in code
+
+  - ~~Create~~  ->  created in code
+
+  - [X] List
+  - [X] Retrieve
+
+  - ~~Modify~~  ->  only in code
+  - ~~Delete~~  ->  only in code
 - Threads
-    - [x] Create
-    - [x] Retrieve
-    - [x] Modify
-    - [x] Delete
+
+  - [X] Create
+  - [X] Retrieve
+  - [X] Modify
+  - [X] Delete
 - Messages
-    - [x] Create
-    - [x] List
-    - [x] Retrieve
-    - [x] Modify
-    - [x] Delete
+
+  - [X] Create
+  - [X] List
+  - [X] Retrieve
+  - [X] Modify
+  - [X] Delete
 - Runs
-    - [x] Create
-    - [x] Create thread and run
-    - [x] List
-    - [x] Retrieve
-    - [x] Modify
-    - [x] Submit tool outputs
-    - [x] Cancel
+
+  - [X] Create
+  - [X] Create thread and run
+  - [X] List
+  - [X] Retrieve
+  - [X] Modify
+  - [X] Submit tool outputs
+  - [X] Cancel
 - Run steps
-    - [x] List
-    - [x] Retrieve
+
+  - [X] List
+  - [X] Retrieve
 - Vector stores
-    - [ ] Create  ->  depends on implementation
-    - [ ] List
-    - [ ] Retrieve
-    - [ ] Modify
-    - [ ] Delete  ->  depends on implementation
+
+  - [ ] Create  ->  depends on implementation
+  - [ ] List
+  - [ ] Retrieve
+  - [ ] Modify
+  - [ ] Delete  ->  depends on implementation
 - Vector store files
-    - [ ] Create
-    - [ ] List
-    - [ ] Retrieve
-    - [ ] Delete
+
+  - [ ] Create
+  - [ ] List
+  - [ ] Retrieve
+  - [ ] Delete
 - Vector store file batches
-    - [ ] Create
-    - [ ] Retrieve
-    - [ ] Cancel
-    - [ ] List
+
+  - [ ] Create
+  - [ ] Retrieve
+  - [ ] Cancel
+  - [ ] List
 - Streaming
-    - [ ] Message delta
-    - [ ] Run step object
-    - [ ] Assistant stream
+
+  - [X] Run streaming (SSE)
+  - [ ] Message delta
+  - [ ] Run step object
+  - [ ] Assistant stream
 
 <!-- CONTRIBUTING -->
+
 ## Contributing
 
 Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
@@ -173,20 +218,20 @@ Don't forget to give the project a star! Thanks again!
   <img src="https://contrib.rocks/image?repo=llamp-ai/llamphouse" alt="contrib.rocks image" />
 </a>
 
-
 <!-- LICENSE -->
+
 ## License
 
 See [`LICENSE`](LICENSE) for more information.
 
-
 <!-- CONTACT -->
+
 ## Contact
 
 Project Admin: Pieter van der Deen - [email](mailto:pieter@llamp.ai)
 
-
 <!-- MARKDOWN LINKS & IMAGES -->
+
 [contributors-shield]: https://img.shields.io/github/contributors/llamp-ai/llamphouse?style=for-the-badge
 [contributors-url]: https://github.com/llamp-ai/llamphouse/graphs/contributors
 [forks-shield]: https://img.shields.io/github/forks/llamp-ai/llamphouse?style=for-the-badge
