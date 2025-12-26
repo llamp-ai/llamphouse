@@ -36,6 +36,7 @@ async def list_assistants(
         assistants = assistants[:limit]
         return AssistantListResponse(
             data=[AssistantObject(
+                created_at=assistant.created_at,
                 id=assistant.id,
                 object=assistant.object,
                 model=assistant.model,
@@ -61,6 +62,7 @@ async def retrieve_assistant(req: Request, assistant_id: str):
             raise HTTPException(status_code=404, detail="Assistant not found.")
 
         return AssistantObject(
+            created_at=assistant.created_at,
             id=assistant.id,
             object=assistant.object,
             model=assistant.model,

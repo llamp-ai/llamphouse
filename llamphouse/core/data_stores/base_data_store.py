@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Optional, List
-from ..assistant import Assistant
+from typing import Any, AsyncIterator, Optional, List, TYPE_CHECKING
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
 from ..types.assistant import AssistantObject
@@ -10,13 +9,16 @@ from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, RunStepObject
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 
+if TYPE_CHECKING:
+    from ..assistant import Assistant
+
 class BaseDataStore(ABC):
 
     def __init__(self):
-        self.assistants: list[Assistant] = []
+        self.assistants: list["Assistant"] = []
         pass
 
-    def init(self, assistants: list[Assistant]) -> None:
+    def init(self, assistants: list["Assistant"]) -> None:
         """Set the list of assistants."""
         self.assistants = assistants
 
@@ -119,3 +121,22 @@ class BaseDataStore(ABC):
     def get_run_step_by_id(self, thread_id: str, run_id: str, step_id: str) -> RunStepObject | None:
         """Retrieve a run step by its ID within a specific thread and run."""
         pass
+
+    @abstractmethod
+    async def get_latest_run_step_by_run_id(self, run_id: str) -> RunStepObject | None:
+        """Retrieve the most recent run step for a run."""
+        pass
+
+    @abstractmethod
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+        """Update status of a run."""
+        pass
+
+    @abstractmethod
+    async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
+        """Update status/output/error of a run step."""
+        pass
+
+    def close(self) -> None:
+        """Close any underlying resources (default: no-op)."""
+        return None

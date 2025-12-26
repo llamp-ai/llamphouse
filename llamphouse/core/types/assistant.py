@@ -10,12 +10,12 @@ class AssistantObject(BaseModel):
     metadata: Optional[object] = {}
     model: str
     name: Optional[str] = None
-    object: Literal["assistant"] = "assistant"
     response_format: Optional[Union[str, Dict]] = "auto"
     temperature: Optional[float] = 0.7
     tool_resources: Optional[object] = {}
     tools: Optional[List[str]] = None
     top_p: Optional[float] = 1.0
+    object: Literal["assistant"] = "assistant"
 
 class AssistantListResponse(BaseModel):
     data: List[AssistantObject]

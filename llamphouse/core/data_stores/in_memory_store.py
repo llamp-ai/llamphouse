@@ -24,11 +24,9 @@ class InMemoryDataStore(BaseDataStore):
 
     async def listen(self) -> AsyncIterator[Any]:
         while True:
-            # Check for any runs with status 'queued'
-            queued_runs = [run for run in self._runs.values() if getattr(run, "status", None) == run_status.QUEUED]
-            if queued_runs:
-                for run in queued_runs:
-                    yield run
+            queued_runs = [run for runs in self._runs.values() for run in runs if getattr(run, "status", None) == run_status.QUEUED]
+            for run in queued_runs:
+                yield run
             await asyncio.sleep(0.1)
 
     async def ack(self, item: Any) -> None:
@@ -56,10 +54,13 @@ class InMemoryDataStore(BaseDataStore):
 
         # Send events if an event queue is provided
         if event_queue is not None:
-            await event_queue.add_async(message.to_event(event_type.MESSAGE_CREATED))
+            try:
+                await event_queue.add(message.to_event(event_type.MESSAGE_CREATED)) 
+            except Exception:
+                    pass
             if status == message_status.COMPLETED:
-                await event_queue.add_async(message.to_event(event_type.MESSAGE_IN_PROGRESS))
-                await event_queue.add_async(message.to_event(event_type.MESSAGE_COMPLETED))
+                await event_queue.add(message.to_event(event_type.MESSAGE_IN_PROGRESS))
+                await event_queue.add(message.to_event(event_type.MESSAGE_COMPLETED))
        
         return message
     
@@ -139,7 +140,7 @@ class InMemoryDataStore(BaseDataStore):
 
         # Send event if an event queue is provided
         if event_queue is not None:
-            await event_queue.add_async(self._threads[thread_id].to_event(event_type.THREAD_CREATED))
+            await event_queue.add(self._threads[thread_id].to_event(event_type.THREAD_CREATED))
         
         # Initialize message list for the thread
         self._messages[thread_id] = []
@@ -166,10 +167,12 @@ class InMemoryDataStore(BaseDataStore):
     async def delete_thread(self, thread_id: str) -> str | None:
         if thread_id in self._threads:
             del self._threads[thread_id]
-            if thread_id in self._messages:
-                del self._messages[thread_id]
-            # Also delete associated runs
-            self._runs = {run_id: run for run_id, run in self._runs.items() if run.thread_id != thread_id}
+            self._messages.pop(thread_id, None)
+
+            runs = self._runs.pop(thread_id, [])
+            for run in runs:
+                self._run_steps.pop(run.id, None)
+
             return thread_id
         return None
     
@@ -214,8 +217,8 @@ class InMemoryDataStore(BaseDataStore):
 
         # Send events if an event queue is provided
         if event_queue is not None:
-            await event_queue.add_async(new_run.to_event(event_type.RUN_CREATED))
-            await event_queue.add_async(new_run.to_event(event_type.RUN_QUEUED))
+            await event_queue.add(new_run.to_event(event_type.RUN_CREATED))
+            await event_queue.add(new_run.to_event(event_type.RUN_QUEUED))
 
         return new_run
 
@@ -275,7 +278,30 @@ class InMemoryDataStore(BaseDataStore):
             logger.debug(f"Run {run_id} in thread {thread_id} is not in REQUIRES_ACTION state.")
             return None
         # Check that the tool outputs correspond to the run steps
-        
+        steps = self._run_steps.get(run_id, [])
+        if not steps:
+            logger.debug(f"No steps found for run {run_id}")
+            return None
+        latest_step = max(steps, key=lambda s: s.created_at)
+
+        tool_calls = getattr(latest_step.step_details, "tool_calls", []) or []
+        for output in tool_outputs:
+            for call in tool_calls:
+                call_obj = call.root if hasattr(call, "root") else call
+                if getattr(call_obj, "id", None) == output.tool_call_id:
+                    if hasattr(call_obj, "function"):
+                        call_obj.function.output = output.output
+                    else:
+                        call_obj.output = output.output  # fallback
+
+        latest_step.status = run_step_status.COMPLETED
+        run.status = run_status.IN_PROGRESS
+        run.required_action = None
+
+        self._run_steps[run_id] = [s if s.id != latest_step.id else latest_step for s in steps]
+        self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
+
+        return run
 
     async def insert_run_step(self, thread_id: str, run_id: str, step: CreateRunStepRequest, status: str = run_step_status.COMPLETED, event_queue: BaseEventQueue = None) -> RunStepObject | None:
         if not thread_id in self._threads:
@@ -301,10 +327,10 @@ class InMemoryDataStore(BaseDataStore):
 
         # Send events if an event queue is provided
         if event_queue is not None:
-            await event_queue.add_async(step.to_event(event_type.RUN_STEP_CREATED))
+            await event_queue.add(step.to_event(event_type.RUN_STEP_CREATED))
             if step.status == run_step_status.COMPLETED:
-                await event_queue.add_async(step.to_event(event_type.RUN_STEP_IN_PROGRESS))
-                await event_queue.add_async(step.to_event(event_type.RUN_STEP_COMPLETED))
+                await event_queue.add(step.to_event(event_type.RUN_STEP_IN_PROGRESS))
+                await event_queue.add(step.to_event(event_type.RUN_STEP_COMPLETED))
 
     def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         if not thread_id in self._threads:
@@ -349,3 +375,59 @@ class InMemoryDataStore(BaseDataStore):
             return None
         step = next((s for s in self._run_steps.get(run_id, []) if s.id == step_id), None)
         return step
+
+    async def get_latest_run_step_by_run_id(self, run_id: str) -> RunStepObject | None:
+        steps = self._run_steps.get(run_id, [])
+        if not steps:
+            return None
+        return max(steps, key=lambda s: s.created_at)
+
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+        if thread_id not in self._runs:
+            return None
+        run = next((r for r in self._runs[thread_id] if r.id == run_id), None)
+        if not run:
+            return None
+        if isinstance(error, dict) and "code" not in error:
+            error = {**error, "code": "server_error"}
+        elif isinstance(error, str):
+            error = {"message": error, "code": "server_error"}
+        elif error is not None:
+            error = {"message": str(error), "code": "server_error"}
+        run.status = status
+        run.last_error = RunObject.model_validate({**run.model_dump(), "last_error": error}).last_error
+        self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
+        return run
+
+    async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
+        for run_id, steps in self._run_steps.items():
+            for idx, step in enumerate(steps):
+                if step.id == run_step_id:
+                    if isinstance(error, dict):
+                        error = {**error, "code": error.get("code", "server_error")}
+                    elif isinstance(error, str):
+                        error = {"message": error, "code": "server_error"}
+                    elif error is not None:
+                        error = {"message": str(error), "code": "server_error"}
+
+                    step.status = status
+
+                    if output and hasattr(step.step_details, "tool_calls"):
+                        tool_calls = step.step_details.tool_calls or []
+                        if tool_calls:
+                            call_obj = tool_calls[0].root if hasattr(tool_calls[0], "root") else tool_calls[0]
+                            if hasattr(call_obj, "function"):
+                                call_obj.function.output = output
+
+                    payload = step.model_dump()
+                    payload["status"] = status
+                    payload["last_error"] = error
+                    step = RunStepObject.model_validate(payload)
+
+                    steps[idx] = step
+                    self._run_steps[run_id] = steps
+                    return step
+        return None
+    
+    def close(self) -> None:
+        return None

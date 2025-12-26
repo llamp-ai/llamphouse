@@ -5,18 +5,35 @@ import janus
 class JanusEventQueue(BaseEventQueue):
     def __init__(self):
         self.queue = janus.Queue()
+        self._closed = False
 
-    def add(self, event: Event) -> None:
-        self.queue.sync_q.put(event)
-
-    async def add_async(self, event: Event) -> None:
-        await self.queue.async_q.put(event)
+    async def add(self, event: Event) -> None:
+        if self._closed:
+            return
+        try:
+            await self.queue.async_q.put(event)
+        except janus.QueueShutDown:
+            self._closed = True
+            return
 
     async def get(self) -> Event:
-        return await self.queue.async_q.get()
+        try:
+            return await self.queue.async_q.get()
+        except janus.QueueShutDown:
+            return None
+    
+    async def get_nowait(self) -> Event:
+        try:
+            return self.queue.async_q.get_nowait()
+        except janus.QueueShutDown:
+            return None
+    
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.queue.close()
+        await self.queue.wait_closed()
     
     def empty(self) -> bool:
         return self.queue.async_q.empty()
-    
-    def task_done(self) -> None:
-        self.queue.async_q.task_done()

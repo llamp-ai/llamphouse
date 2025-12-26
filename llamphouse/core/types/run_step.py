@@ -1,7 +1,7 @@
-from typing import Optional, Union, List, Literal
+from typing import Optional, Union, List, Literal, Annotated
 from .tool_call import ToolCall
 from ..streaming.event import Event
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 class MessageCreation(BaseModel):
@@ -15,9 +15,10 @@ class MessageCreationStepDetails(BaseModel):
     message_creation: MessageCreation
     type: Literal["message_creation"]
 
-
-class StepDetails(BaseModel):
-    Union[MessageCreationStepDetails, ToolCallsStepDetails]
+StepDetails = Annotated[
+    Union[MessageCreationStepDetails, ToolCallsStepDetails],
+    Field(discriminator="type"),
+]
 
 class LastError(BaseModel):
     code: Literal["server_error", "rate_limit_exceeded"]

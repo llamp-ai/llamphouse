@@ -8,6 +8,7 @@ from ..assistant import Assistant
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..streaming.event import Event, DoneEvent, ErrorEvent
 from ..data_stores.base_data_store import BaseDataStore
+from llamphouse.core.queue.base_queue import BaseQueue
 from typing import List, Optional
 import asyncio
 import logging
@@ -40,11 +41,23 @@ async def create_run(
             output_queue: BaseEventQueue = req.app.state.event_queues[task_key]
         else:
             output_queue = None
+
+        run_queue: BaseQueue = req.app.state.run_queue
         
         # store run in db
         run = await db.insert_run(thread_id, run=request, assistant=assistant, event_queue=output_queue)
         if not run:
             raise HTTPException(status_code=404, detail="Thread not found.")
+
+        if run_queue:
+            await run_queue.enqueue({
+                "run_id": run.id,
+                "thread_id": thread_id,
+                "assistant_id": run.assistant_id,
+            })
+
+        if not output_queue:
+            return run
 
         # check if stream is enabled
         if output_queue:
@@ -73,19 +86,24 @@ async def create_run(
                             "message": str(e)
                         }).to_sse()
                         break
+                    
                 # Cleanup the queue after the stream ends
-                # Clear all remaining items in the janus queue
-                while not output_queue.empty():
-                    await output_queue.get()
-                    output_queue.task_done()
+                try:
+                    while not output_queue.empty():
+                        try:
+                            await output_queue.get_nowait()
+                        except Exception:
+                            break
+                finally:
+                    await output_queue.close()
+
                 # Remove the event queue after the stream ends
                 if task_key in req.app.state.event_queues:
                     del req.app.state.event_queues[task_key]
 
             # Return the streaming response
             return StreamingResponse(event_stream(), media_type="text/event-stream")
-        
-        return run
+
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
@@ -153,7 +171,7 @@ async def retrieve_run(
         db: BaseDataStore = req.app.state.data_store
 
         # Retrieve the run
-        run = db.get_run_by_id(thread_id, run_id)
+        run = await db.get_run_by_id(thread_id, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found in thread.")
         
@@ -186,34 +204,58 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
         # Get the data store from the app state
         db: BaseDataStore = req.app.state.data_store
 
-        thread = db.get_thread_by_id(thread_id)
+        thread = await db.get_thread_by_id(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found.")
         
-        run = db.get_run_by_id(run_id)
+        run = await db.get_run_by_id(thread_id, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found.")
         if run.status != run_status.REQUIRES_ACTION:
             raise HTTPException(status_code=400, detail="Run is not in 'requires_action' status.")
 
-        latest_run_step = db.get_latest_run_step_by_run_id(run_id)
+        latest_run_step = await db.get_latest_run_step_by_run_id(run_id)
         if not latest_run_step:
             raise HTTPException(status_code=404, detail="No run step found for this run.")
 
-        if not latest_run_step.step_details or "tool_calls" not in latest_run_step.step_details:
+        step_details = latest_run_step.step_details
+        tool_calls = getattr(step_details, "tool_calls", None)
+        if tool_calls is None and isinstance(step_details, dict):
+            tool_calls = step_details.get("tool_calls")
+        if not tool_calls:
             raise HTTPException(status_code=400, detail="No tool calls found in the latest run step.")
-        
-        tool_calls = latest_run_step.step_details["tool_calls"]
-        
+
         for tool_output in request.tool_outputs:
             for tool_call in tool_calls:
-                if tool_call["id"] == tool_output.tool_call_id:
-                    tool_call["output"] = tool_output.output
-                    break
+                # resolve tool_call_id from object or dict
+                if isinstance(tool_call, dict):
+                    tool_call_id = tool_call.get("id")
+                elif hasattr(tool_call, "model_dump"):
+                    tool_call_id = tool_call.model_dump().get("id")
+                else:
+                    tool_call_id = getattr(tool_call, "id", None)
 
-        latest_run_step.step_details = {"tool_calls": tool_calls}
-        latest_run_step.status = run_step_status.COMPLETED
-        db.session.commit()
+                if tool_call_id != tool_output.tool_call_id:
+                    continue
+
+                # set output back on the tool call
+                if isinstance(tool_call, dict):
+                    tool_call.setdefault("function", {})["output"] = tool_output.output
+                elif hasattr(tool_call, "function"):
+                    tool_call.function.output = tool_output.output
+                elif hasattr(tool_call, "model_dump"):
+                    data = tool_call.model_dump()
+                    data.setdefault("function", {})["output"] = tool_output.output
+                    tool_call = data
+
+        if hasattr(step_details, "tool_calls"):
+            step_details.tool_calls = tool_calls
+        else:
+            latest_run_step.step_details = {"tool_calls": tool_calls}
+
+        latest_run_step = await db.update_run_step_status(latest_run_step.id, run_step_status.COMPLETED)
+        await db.update_run_status(thread_id, run_id, run_status.IN_PROGRESS)
+        run = await db.get_run_by_id(thread_id, run_id)
 
         return RunObject(
             id=run.id,
@@ -232,7 +274,7 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
             model=run.model,
             instructions=run.instructions,
             tools=run.tools,
-            metadata=run.meta,
+            metadata=run.metadata,
             usage=run.usage,
             temperature=run.temperature,
             top_p=run.top_p,
@@ -249,17 +291,17 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.post("/threads/{thread_id}/runs/{run_id}/cancel", response_model=RunObject)
-async def cancel_run(thread_id: str, run_id: str):
+async def cancel_run(thread_id: str, run_id: str, req: Request):
     try:
-        db = DatabaseManager()
-        run = db.get_run_by_id(run_id)
+        db: BaseDataStore = req.app.state.data_store
+
+        run = await db.get_run_by_id(thread_id, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found.")
         if run.status != run_status.QUEUED:
             raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
         
-        run.status = run_status.CANCELLED
-        db.session.commit()
+        run = await db.update_run_status(thread_id, run_id, run_status.CANCELLED)
 
         return RunObject(
             id=run.id,
@@ -278,7 +320,7 @@ async def cancel_run(thread_id: str, run_id: str):
             model=run.model,
             instructions=run.instructions,
             tools=run.tools,
-            metadata=run.meta,
+            metadata=run.metadata,
             usage=run.usage,
             temperature=run.temperature,
             top_p=run.top_p,
@@ -293,8 +335,6 @@ async def cancel_run(thread_id: str, run_id: str):
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    finally:
-        db.session.close()
 
 def handle_stream_event(event, db: DatabaseManager, thread_id, request, assistant):
     if event['event'] == event_type.THREAD_CREATED:
