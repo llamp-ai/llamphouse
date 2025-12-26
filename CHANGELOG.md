@@ -20,10 +20,9 @@
 - Expanded automated testing across unit, contract, integration, and streaming layers.
 - Updated examples to align with the new pluggable backend/streaming flow.
 
-## [0.0.8] - 22/04/2025
+## [0.0.8] - 14/08/2025
 
-- Support OpenAI streaming
-- Add example
+- Fix messages being limited to 20 items
 
 ## [0.0.7] - 19/02/2025
 
