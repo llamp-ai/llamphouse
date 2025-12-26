@@ -54,7 +54,7 @@ Take control of your LLM infrastructure and build AI-powered apps on your own te
 
 ## Getting Started
 
-Requires Python 3.10.
+Requires Python 3.10+.
 
 ```
 pip install llamphouse
