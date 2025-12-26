@@ -1,29 +1,29 @@
 from typing import Optional, List, Literal, Dict
-from ..types.message import MessageObject, InitialMessage
+from ..types.message import CreateMessageRequest
 from pydantic import BaseModel
-
-
-class ToolResources(BaseModel):
-    code_interpreter: Optional[List[str]] = None
-    file_search: Optional[List[str]] = None
+from ..streaming.event import Event
+from datetime import datetime
 
 
 class ThreadObject(BaseModel):
     id: str
-    created_at: int
-    tool_resources: Optional[ToolResources] = None
+    created_at: datetime
+    tool_resources: Optional[object] = {}
     metadata: Optional[object] = {}
     object: Literal["thread"] = "thread"
 
+    def to_event(self, event: str) -> Event:
+        return Event(event=event, data=self.model_dump_json())
+
 
 class CreateThreadRequest(BaseModel):
-    tool_resources: Optional[ToolResources] = None
+    tool_resources: Optional[object] = {}
     metadata: Optional[object] = {}
-    messages: Optional[List[InitialMessage]] = None
+    messages: Optional[List[CreateMessageRequest]] = []
 
 
 class ModifyThreadRequest(BaseModel):
-    tool_resources: Optional[ToolResources] = None
+    tool_resources: Optional[object] = {}
     metadata: Optional[object] = {}
 
 

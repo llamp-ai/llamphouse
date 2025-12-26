@@ -13,7 +13,7 @@ def main():
     client.beta.threads.messages.create(empty_thread.id, role="user", content="How are you")
 
     # Create new run in specific thread & assistant
-    new_run =client.beta.threads.runs.create_and_poll(assistant_id="my-assistant", thread_id=empty_thread.id, temperature=1)
+    new_run = client.beta.threads.runs.create_and_poll(assistant_id="my-assistant", thread_id=empty_thread.id, temperature=1)
     print(f"Run finished: {new_run}")
 
 if __name__ == "__main__":

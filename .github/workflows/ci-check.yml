@@ -2,38 +2,51 @@ name: CI for PRs to dev
 
 on:
   pull_request:
-    branches:
-      - dev  # Trigger on pull requests targeting the 'dev' branch
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
 
 jobs:
   test:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.10"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        pip install .
+      - uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-    # - name: Lint code with flake8
-    #   run: |
-    #     pip install flake8
-    #     flake8 .
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f tests/requirements.txt ]; then pip install -r tests/requirements.txt; fi
+          pip install -e .
 
-    # - name: Type checking with mypy
-    #   run: |
-    #     pip install mypy
-    #     mypy .
+      # - name: Lint
+      #   run: |
+      #     pip install flake8
+      #     flake8 .
 
-    - name: Run Python code
-      run: |
-        python -m compileall .
+      # - name: Type checking with mypy
+      #   run: |
+      #     pip install mypy
+      #     mypy .
+
+      - name: Run Python code
+        run: |
+          python -m compileall .
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/unit tests/contract tests/integration

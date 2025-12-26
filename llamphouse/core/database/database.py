@@ -1,20 +1,22 @@
+from datetime import datetime, timezone
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from .models import Thread, Message, Run, RunStep
 from ..types import thread, message, run
-from ..types.enum import run_status, run_step_status
+from ..types.enum import run_status, run_step_status, message_status
 from .._utils._utils import get_max_db_connections
+from typing import Literal
 from dotenv import load_dotenv
 import uuid
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost/llamphouse")
-POOL_SIZE = int(os.getenv("POOL_SIZE", "100"))
+POOL_SIZE = int(os.getenv("POOL_SIZE", "20"))
 engine = create_engine(DATABASE_URL, pool_size=int(POOL_SIZE))
 SessionLocal = sessionmaker(autocommit=False, bind=engine)
-MAX_POOL_SIZE = get_max_db_connections(engine)
+MAX_POOL_SIZE = get_max_db_connections(engine) or 20
 
 if MAX_POOL_SIZE and POOL_SIZE > MAX_POOL_SIZE:
     raise ValueError(f"Input POOL_SIZE ({POOL_SIZE}) exceeds the database's maximum allowed ({MAX_POOL_SIZE}).")
@@ -41,7 +43,7 @@ class DatabaseManager:
             print(f"An error occurred: {e}")
             return None
         
-    def insert_message(self, thread_id: str, message: message.CreateMessageRequest):
+    def insert_message(self, thread_id: str, message: message.CreateMessageRequest, status: str = message_status.IN_PROGRESS):
         try:
             metadata = message.metadata if message.metadata else {}
             message_id = metadata.get("message_id", str(uuid.uuid4()))
@@ -51,7 +53,8 @@ class DatabaseManager:
                 content=message.content,
                 attachments=message.attachments,
                 meta=message.metadata or {},
-                thread_id=thread_id
+                thread_id=thread_id,
+                status=status
             )
             self.session.add(item)
             self.session.commit()
@@ -101,7 +104,8 @@ class DatabaseManager:
                 run_id=run_id,
                 type=step_type,
                 status=status,
-                step_details=step_details
+                step_details=step_details,
+                completed_at=int(datetime.now(timezone.utc).timestamp()) if status == run_step_status.COMPLETED else None
             )
             self.session.add(item)
             self.session.commit()
@@ -192,7 +196,7 @@ class DatabaseManager:
             self,
             thread_id: str, 
             limit: int = 20, 
-            order: str = "desc", 
+            order: Literal["desc", "asc"] = "desc", 
             after: str = None, 
             before: str = None
         ) -> list[Message]:
@@ -215,7 +219,7 @@ class DatabaseManager:
             self,
             thread_id: str, 
             limit: int = 20, 
-            order: str = "desc", 
+            order: Literal["desc", "asc"] = "desc", 
             after: str = None, 
             before: str = None
         ) -> list[Message]:
@@ -238,7 +242,7 @@ class DatabaseManager:
             thread_id: str, 
             run_id: str,
             limit: int = 20, 
-            order: str = "desc", 
+            order: Literal["desc", "asc"] = "desc", 
             after: str = None, 
             before: str = None
         ) -> list[RunStep]:
