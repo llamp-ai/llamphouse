@@ -187,10 +187,9 @@ To downgrade back to the base version: `alembic downgrade base`
   - [ ] List
 - Streaming
 
-  - [X] Run streaming (SSE)
-  - [ ] Message delta
-  - [ ] Run step object
-  - [ ] Assistant stream
+  - [X] Message delta
+  - [X] Run step object
+  - [X] Assistant stream
 
 <!-- CONTRIBUTING -->
 
