@@ -4,4 +4,4 @@ SQLAlchemy>=1.4.0,<2
 psycopg2-binary>=2.9.9,<3
 alembic>=1.17.2,<2
 python-dotenv>=1.2.1,<2
-janus>=2.0.0,<3.0.0
+janus>=2.0.0,<3
