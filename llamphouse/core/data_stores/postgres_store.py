@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
-
+from .retention import RetentionPolicy, PurgeStats
 from .base_data_store import BaseDataStore
 from .._utils._utils import get_max_db_connections
 from ..database.models import Message, Run, Thread, RunStep
@@ -767,6 +767,50 @@ class PostgresDataStore(BaseDataStore):
             self.session.rollback()
             logger.exception("update_run_step_status() failed")
             return None
+
+    async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
+        cutoff = policy.cutoff()
+        cutoff_naive = cutoff.replace(tzinfo=None)
+        batch = policy.batch_limit()
+        stats = PurgeStats()
+
+        try:
+            q = self.session.query(Thread.id).filter(Thread.created_at < cutoff_naive)
+            if batch:
+                q = q.order_by(Thread.created_at.asc()).limit(batch)
+            thread_ids = [row[0] for row in q.all()]
+
+            stats.threads = len(thread_ids)
+            if not thread_ids:
+                policy.log(
+                    f"retention purge dry_run={policy.dry_run} batch={batch} "
+                    f"threads=0 messages=0 runs=0 run_steps=0"
+                )
+                return stats
+
+            stats.runs = self.session.query(Run).filter(Run.thread_id.in_(thread_ids)).count()
+            stats.messages = self.session.query(Message).filter(Message.thread_id.in_(thread_ids)).count()
+            stats.run_steps = self.session.query(RunStep).filter(RunStep.thread_id.in_(thread_ids)).count()
+
+            if policy.dry_run:
+                policy.log(
+                    f"retention purge dry_run={policy.dry_run} batch={batch} "
+                    f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+                )
+                return stats
+            
+            self.session.query(Thread).filter(Thread.id.in_(thread_ids)).delete(synchronize_session=False)
+            self.session.commit()
+
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={batch} "
+                f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+            )
+            return stats
+        except Exception:
+            self.session.rollback()
+            logger.exception("purge_expired() failed")
+            return stats
 
     def close(self) -> None:
         self.session.close()

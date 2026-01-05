@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from .base_data_store import BaseDataStore
+from .retention import RetentionPolicy, PurgeStats
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..types.assistant import AssistantObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
@@ -72,17 +73,9 @@ class InMemoryDataStore(BaseDataStore):
         messages.sort(key=lambda m: m.created_at, reverse=(order == "desc"))
         # Apply pagination
         if after:
-            try:
-                index = next(i for i, msg in enumerate(messages) if msg.id == after)
-                messages = messages[index + 1:]
-            except StopIteration:
-                messages = []
+            messages = [m for m in messages if m.id > after]
         if before:
-            try:
-                index = next(i for i, msg in enumerate(messages) if msg.id == before)
-                messages = messages[:index]
-            except StopIteration:
-                messages = []
+            messages = [m for m in messages if m.id < before]
         # Apply limit
         limited_messages = messages[:limit]
         has_more = len(messages) > limit
@@ -230,17 +223,9 @@ class InMemoryDataStore(BaseDataStore):
         runs.sort(key=lambda r: r.created_at, reverse=(order == "desc"))
         # Apply pagination
         if after:
-            try:
-                index = next(i for i, run in enumerate(runs) if run.id == after)
-                runs = runs[index + 1:]
-            except StopIteration:
-                runs = []
+            runs = [r for r in runs if r.id > after]
         if before:
-            try:
-                index = next(i for i, run in enumerate(runs) if run.id == before)
-                runs = runs[:index]
-            except StopIteration:
-                runs = []
+            runs = [r for r in runs if r.id < before]
         # Apply limit
         limited_runs = runs[:limit]
         has_more = len(runs) > limit
@@ -311,7 +296,7 @@ class InMemoryDataStore(BaseDataStore):
             return None
         step_id = step.metadata.get("step_id", str(uuid.uuid4()))
         if step.step_details.type == "message_creation":
-            status = message_status.COMPLETED
+            status = run_step_status.COMPLETED
         step = RunStepObject(
             id=step_id,
             thread_id=thread_id,
@@ -332,6 +317,8 @@ class InMemoryDataStore(BaseDataStore):
                 await event_queue.add(step.to_event(event_type.RUN_STEP_IN_PROGRESS))
                 await event_queue.add(step.to_event(event_type.RUN_STEP_COMPLETED))
 
+        return step
+
     def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         if not thread_id in self._threads:
             return None
@@ -343,17 +330,9 @@ class InMemoryDataStore(BaseDataStore):
         steps.sort(key=lambda s: s.created_at, reverse=(order == "desc"))
         # Apply pagination
         if after:
-            try:
-                index = next(i for i, step in enumerate(steps) if step.id == after)
-                steps = steps[index + 1:]
-            except StopIteration:
-                steps = []
+            steps = [s for s in steps if s.id > after]
         if before:
-            try:
-                index = next(i for i, step in enumerate(steps) if step.id == before)
-                steps = steps[:index]
-            except StopIteration:
-                steps = []
+            steps = [s for s in steps if s.id < before]
         # Apply limit
         limited_steps = steps[:limit]
         has_more = len(steps) > limit
@@ -428,6 +407,68 @@ class InMemoryDataStore(BaseDataStore):
                     self._run_steps[run_id] = steps
                     return step
         return None
+    
+    async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
+        cutoff = policy.cutoff()
+        limit = policy.batch_limit()
+        stats = PurgeStats()
+
+        expired_threads = [
+            (thread_id, thread)
+            for thread_id, thread in self._threads.items()
+            if thread.created_at < cutoff
+        ]
+        expired_threads.sort(key=lambda item: item[1].created_at)
+        if limit:
+            expired_threads = expired_threads[:limit]
+
+        thread_ids = {thread_id for thread_id, _ in expired_threads}
+        stats.threads = len(thread_ids)
+        if not thread_ids:
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={limit} "
+                f"threads=0 messages=0 runs=0 run_steps=0"
+            )
+            return stats
+        
+        stats.messages = sum(
+            1 for thread_id, messages in self._messages.items()
+            if thread_id in thread_ids
+            for _ in messages
+        )
+        stats.runs = sum(
+            1 for thread_id, runs in self._runs.items()
+            if thread_id in thread_ids
+            for _ in runs
+        )
+        run_ids = {
+            run.id for thread_id, runs in self._runs.items()
+            if thread_id in thread_ids for run in runs
+        }
+        stats.run_steps = sum(
+            len(steps) for run_id, steps in self._run_steps.items()
+            if run_id in run_ids
+        )
+
+        if policy.dry_run:
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={limit} "
+                f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+            )
+            return stats
+        
+        for thread_id in thread_ids:
+            self._messages.pop(thread_id, None)
+            runs = self._runs.pop(thread_id, [])
+            for run in runs:
+                self._run_steps.pop(run.id, None)
+            self._threads.pop(thread_id, None)
+
+        policy.log(
+            f"retention purge dry_run={policy.dry_run} batch={limit} "
+            f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+        )
+        return stats
     
     def close(self) -> None:
         return None

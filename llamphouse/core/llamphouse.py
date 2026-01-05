@@ -11,6 +11,7 @@ from .auth.base_auth import BaseAuth
 from .streaming.event_queue.base_event_queue import BaseEventQueue
 from .streaming.event_queue.janus_event_queue import JanusEventQueue
 from .streaming.event_queue.in_memory_event_queue import InMemoryEventQueue
+from .data_stores.retention import RetentionPolicy
 from .data_stores.base_data_store import BaseDataStore
 from .data_stores.in_memory_store import InMemoryDataStore
 from .queue.base_queue import BaseQueue
@@ -46,6 +47,8 @@ access_handler.setFormatter(access_formatter)
 uvicorn_access.handlers = [access_handler]
 uvicorn_access.propagate = True
 
+DEFAULT_RETENTION_POLICY = RetentionPolicy(ttl_days=365, interval_seconds=24 * 60 * 60, batch_size=1000, dry_run=False, enabled=False,)
+
 class LLAMPHouse:
     def __init__(self, 
                  assistants: List[Assistant] = [],
@@ -54,6 +57,7 @@ class LLAMPHouse:
                  event_queue_class: Optional[BaseEventQueue] = None,
                  data_store: Optional[BaseDataStore] = None,
                  run_queue: Optional[BaseQueue] = None,
+                 retention_policy: Optional[RetentionPolicy] = None,
                  ):
         self.assistants = assistants
         self.worker = worker
@@ -64,6 +68,8 @@ class LLAMPHouse:
         self.fastapi.state.queue_class = event_queue_class or InMemoryEventQueue
         self.fastapi.state.data_store = data_store or InMemoryDataStore()
         self.fastapi.state.run_queue = run_queue or InMemoryQueue()
+        self.retention_policy = retention_policy or DEFAULT_RETENTION_POLICY
+        self._retention_task: Optional[asyncio.Task] = None
 
         if self.fastapi.state.data_store:
             self.fastapi.state.data_store.init(assistants)
@@ -110,12 +116,31 @@ ______[===]______
                 run_queue=self.fastapi.state.run_queue,
             )
 
+            if self.retention_policy and self.retention_policy.enabled:
+                async def _retention_loop():
+                    while True:
+                        try:
+                            await self.fastapi.state.data_store.purge_expired(self.retention_policy)
+                        except Exception:
+                            llamphouse_logger.exception("retention purge failed")
+                        await asyncio.sleep(self.retention_policy.interval_seconds)
+
+                self._retention_task = asyncio.create_task(_retention_loop())
+
         @self.fastapi.on_event("shutdown")
         async def on_shutdown():
             llamphouse_logger.info("Server shutting down...")
             if self.worker:
                 llamphouse_logger.info("Stopping worker...")
                 self.worker.stop()
+
+            if self._retention_task:
+                self._retention_task.cancel()
+                try:
+                    await self._retention_task
+                except asyncio.CancelledError:
+                    pass
+
         self.__print_ignite(host, port)
         uvicorn.run(self.fastapi, host=host, port=port, reload=reload)
 

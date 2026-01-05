@@ -56,7 +56,7 @@ class Thread(Base):
     tool_resources = Column(JSONType)
     meta = Column(JSONType)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, server_default=func.now(), index=True)
     
     messages = relationship("Message", back_populates="thread")
     runs = relationship("Run", back_populates="thread")
@@ -86,7 +86,7 @@ class Message(Base):
     __tablename__ = 'messages'
 
     id = Column(String, primary_key=True, index=True)
-    thread_id = Column(String, ForeignKey('threads.id'), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
     status = Column(message_status_enum, nullable=False, server_default='in_progress')
     incomplete_details = Column(JSONType)
     role = Column(role_enum, nullable=False)
@@ -98,7 +98,7 @@ class Message(Base):
     completed_at = Column(Integer)
     incomplete_at = Column(Integer)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, server_default=func.now(), index=True)
 
     thread = relationship("Thread", back_populates="messages")
 
@@ -151,7 +151,7 @@ class Run(Base):
     tool_choice = Column(JSONType)
     parallel_tool_calls = Column(Boolean, nullable=False, server_default="false")
     response_format = Column(JSONType, nullable=False, server_default='"auto"')
-    thread_id = Column(String, ForeignKey('threads.id'), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
     assistant_id = Column(String, nullable=False)
     expires_at = Column(Integer)
     started_at = Column(Integer)
@@ -159,7 +159,7 @@ class Run(Base):
     failed_at = Column(Integer)
     completed_at = Column(Integer)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, server_default=func.now(), index=True)
     reasoning_effort = Column(String, nullable=False, server_default='medium')
     
     thread = relationship("Thread", back_populates="runs")
@@ -213,8 +213,8 @@ class RunStep(Base):
     id = Column(String, primary_key=True, index=True)
     object = Column(String, nullable=False, default="thread.run.step")
     assistant_id = Column(String, nullable=False)
-    thread_id = Column(String, ForeignKey('threads.id'), nullable=False)
-    run_id = Column(String, ForeignKey('runs.id'), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(String, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
     type = Column(step_type_enum, nullable=False)
     status = Column(run_step_status_enum, nullable=False)
     step_details = Column(JSONType)
@@ -227,7 +227,7 @@ class RunStep(Base):
     failed_at = Column(Integer)
     completed_at = Column(Integer)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     thread = relationship("Thread", back_populates="run_steps")
     run = relationship("Run", back_populates="run_steps")
