@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, Request
-from llamphouse.core.database.database import DatabaseManager
 from fastapi.responses import StreamingResponse
 from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, ModifyRunRequest, SubmitRunToolOutputRequest
+from ..types.thread import CreateThreadRequest
+from ..types.run_step import CreateRunStepRequest, RunStepObject
 from ..types.enum import run_status, run_step_status, message_status, event_type
 from ..types.list import ListResponse
 from ..assistant import Assistant
@@ -336,54 +337,73 @@ async def cancel_run(thread_id: str, run_id: str, req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
-def handle_stream_event(event, db: DatabaseManager, thread_id, request, assistant):
-    if event['event'] == event_type.THREAD_CREATED:
-        db.insert_stream_thread(event['data'])
-    elif event['event'] == event_type.RUN_CREATED:
-        db.insert_run(thread_id, run=request, assistant=assistant)
-    elif event['event'] == event_type.RUN_QUEUED:
-        db.update_run_status(event['data']["id"], run_status.QUEUED)
-    elif event['event'] == event_type.RUN_IN_PROGRESS:
-        db.update_run_status(event['data']["id"], run_status.IN_PROGRESS)
-    elif event['event'] == event_type.RUN_REQUIRES_ACTION:
-        db.update_run_status(event['data']["id"], run_status.REQUIRES_ACTION)
-    elif event['event'] == event_type.RUN_COMPLETED:
-        db.update_run_status(event['data']["id"], run_status.COMPLETED)
-    elif event['event'] == event_type.RUN_FAILED:
-        db.update_run_status(event['data']["id"], run_status.FAILED, event['data']["error"])
-    elif event['event'] == event_type.RUN_CANCELLING:
-        db.update_run_status(event['data']["id"], run_status.CANCELLING)
-    elif event['event'] == event_type.RUN_CANCELLED:
-        db.update_run_status(event['data']["id"], run_status.CANCELLED)
-    elif event['event'] == event_type.RUN_EXPIRED:
-        db.update_run_status(event['data']["id"], run_status.EXPIRED)
-    elif event['event'] == event_type.RUN_STEP_CREATED:
-        db.insert_run_step(event['data'])
-    elif event['event'] == event_type.RUN_STEP_IN_PROGRESS:
-        db.update_run_step_status(event['data']["id"], run_step_status.IN_PROGRESS)
-    elif event['event'] == event_type.RUN_STEP_DELTA:
-        pass
-    elif event['event'] == event_type.RUN_STEP_COMPLETED:
-        db.update_run_step_status(event['data']["id"], run_step_status.COMPLETED)
-    elif event['event'] == event_type.RUN_STEP_FAILED:
-        db.update_run_step_status(event['data']["id"], run_step_status.FAILED)
-    elif event['event'] == event_type.RUN_STEP_CANCELLED:
-        db.update_run_step_status(event['data']["id"], run_step_status.CANCELLED)
-    elif event['event'] == event_type.RUN_STEP_EXPIRED:
-        db.update_run_step_status(event['data']["id"], run_step_status.EXPIRED)
-    elif event['event'] == event_type.MESSAGE_CREATED:
-        pass
-        # db.insert_stream_message(event['data']["id"], event['data']["thread_id"], event['data'])
-    # elif event['event'] == event_type.MESSAGE_IN_PROGRESS:
-    #     db.update_message_status(event['data']["id"], message_status.IN_PROGRESS)
-    # elif event['event'] == event_type.MESSAGE_DELTA:
-    #     pass
-    #     # db.update_stream_message(event['data']["id"], event['data'].get("text", ""))
-    # elif event['event'] == event_type.MESSAGE_COMPLETED:
-    #     db.update_message_status(event['data']["id"], message_status.COMPLETED)
-    # elif event['event'] == event_type.MESSAGE_INCOMPLETE:
-    #     db.update_message_status(event['data']["id"], message_status.INCOMPLETE)
-    elif event['event'] == event_type.ERROR:
-        db.update_run_status(event['data']["id"], run_status.FAILED, event['data']["error"])
-    elif event['event'] == event_type.DONE:
-        db.update_run_status(event['data']["id"], run_status.COMPLETED)
+async def handle_stream_event(event: dict, db: BaseDataStore, thread_id: str, request: RunCreateRequest, assistant: Assistant):
+    evt = event.get("event")
+    data = event.get("data", {}) or {}
+
+    if evt == event_type.THREAD_CREATED:
+        thread_req = CreateThreadRequest(
+            tool_resources=data.get("tool_resource", {}),
+            metadat={**data.get("metadata", {}), "thread_id": data.get("id", thread_id)},
+            messages=[]
+        )
+        await db.insert_thread(thread_req)
+
+    elif evt == event_type.RUN_CREATED:
+        await db.insert_run(thread_id, request, assistant)
+
+    elif evt in {
+        event_type.RUN_QUEUED,
+        event_type.RUN_IN_PROGRESS,
+        event_type.RUN_REQUIRES_ACTION,
+        event_type.RUN_COMPLETED,
+        event_type.RUN_FAILED,
+        event_type.RUN_CANCELLING,
+        event_type.RUN_CANCELLED,
+        event_type.RUN_EXPIRED,
+    }:
+        status_map = {
+            event_type.RUN_QUEUED: run_status.QUEUED,
+            event_type.RUN_IN_PROGRESS: run_status.IN_PROGRESS,
+            event_type.RUN_REQUIRES_ACTION: run_status.REQUIRES_ACTION,
+            event_type.RUN_COMPLETED: run_status.COMPLETED,
+            event_type.RUN_FAILED: run_status.FAILED,
+            event_type.RUN_CANCELLING: run_status.CANCELLING,
+            event_type.RUN_CANCELLED: run_status.CANCELLED,
+            event_type.RUN_EXPIRED: run_status.EXPIRED,
+        }
+        run_id = data.get("id")
+        if run_id:
+            await db.update_run_status(thread_id, run_id, status_map[evt], data.get("error"))
+
+    elif evt == event_type.RUN_STEP_CREATED:
+        step_obj = RunStepObject.model_validate(data)
+        step_req = CreateRunStepRequest(
+            assistant_id=step_obj.assistant_id,
+            metadata={**(step_obj.metadata or {}), "step_id": step_obj.id},
+            step_details=step_obj.step_details,
+        )
+        await db.insert_run_step(step_obj.thread_id, step_obj.run_id, step_req, status=step_obj.status)
+
+    elif evt in {
+        event_type.RUN_STEP_IN_PROGRESS,
+        event_type.RUN_STEP_COMPLETED,
+        event_type.RUN_STEP_FAILED,
+        event_type.RUN_STEP_CANCELLED,
+        event_type.RUN_STEP_EXPIRED,
+    }:
+        step_status_map = {
+            event_type.RUN_STEP_IN_PROGRESS: run_step_status.IN_PROGRESS,
+            event_type.RUN_STEP_COMPLETED: run_step_status.COMPLETED,
+            event_type.RUN_STEP_FAILED: run_step_status.FAILED,
+            event_type.RUN_STEP_CANCELLED: run_step_status.CANCELLED,
+            event_type.RUN_STEP_EXPIRED: run_step_status.EXPIRED,
+        }
+        step_id = data.get("id")
+        if step_id:
+            await db.update_run_step_status(step_id, step_status_map[evt], error=data.get("error"))
+
+    elif evt == event_type.ERROR:
+        run_id = data.get("id")
+        if run_id:
+            await db.update_run_status(thread_id, run_id, run_status.FAILED, data.get("error"))

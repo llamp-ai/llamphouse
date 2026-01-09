@@ -4,6 +4,7 @@ from llamphouse.core.context import Context
 from openai import OpenAI
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
+from llamphouse.core.data_stores.retention import RetentionPolicy
 
 load_dotenv(override=True)
 
@@ -34,8 +35,11 @@ def main():
     # data store choice
     data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore() for in-memory testing
 
+    # retention policy
+    retention_policy = RetentionPolicy(ttl_days=30, interval_seconds=24*60*60, batch_size=100, dry_run=False, enabled=True)
+
     # Create a new LLAMPHouse instance
-    llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=data_store)
+    llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=data_store, retention_policy=retention_policy)
     
     # Start the LLAMPHouse server
     llamphouse.ignite(host="127.0.0.1", port=8000)

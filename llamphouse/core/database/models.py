@@ -55,8 +55,8 @@ class Thread(Base):
     name = Column(String, nullable=False)
     tool_resources = Column(JSONType)
     meta = Column(JSONType)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    created_at = Column(DateTime, server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     
     messages = relationship("Message", back_populates="thread")
     runs = relationship("Run", back_populates="thread")
@@ -97,8 +97,8 @@ class Message(Base):
     meta = Column(JSONType)
     completed_at = Column(Integer)
     incomplete_at = Column(Integer)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    created_at = Column(DateTime, server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     thread = relationship("Thread", back_populates="messages")
 
@@ -158,8 +158,8 @@ class Run(Base):
     cancelled_at = Column(Integer)
     failed_at = Column(Integer)
     completed_at = Column(Integer)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    created_at = Column(DateTime, server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     reasoning_effort = Column(String, nullable=False, server_default='medium')
     
     thread = relationship("Thread", back_populates="runs")
