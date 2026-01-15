@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llamphouse"
+description = "LLAMPHouse OpenAI Assistant Server"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "llamp.ai", email = "pieter@llamp.ai" }]
+dynamic = ["version", "dependencies"]
+
+[tool.setuptools.packages.find]
+include = ["llamphouse.core", "llamphouse.core.*"]
+namespaces = true
+
+[tool.setuptools.dynamic]
+version = { attr = "llamphouse.__version__" }
+dependencies = { file = ["requirements.txt"] }

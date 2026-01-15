@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Optional, List, TYPE_CHECKING
+from .retention import RetentionPolicy, PurgeStats
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
 from ..types.assistant import AssistantObject
@@ -135,6 +136,11 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
         """Update status/output/error of a run step."""
+        pass
+
+    @abstractmethod
+    async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
+        """Purge records older than policy cutoff (respects dry_run/batch_size)."""
         pass
 
     def close(self) -> None:

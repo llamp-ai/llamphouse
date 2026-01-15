@@ -1,8 +1,9 @@
 from typing import Any, AsyncIterator, Optional, List
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from .base_data_store import BaseDataStore
+from .retention import RetentionPolicy, PurgeStats
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..types.assistant import AssistantObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
@@ -21,6 +22,15 @@ class InMemoryDataStore(BaseDataStore):
         self._runs: dict[str, RunObject] = {}
         self._messages: dict[str, list[MessageObject]] = {}
         self._run_steps: dict[str, list[RunStepObject]] = {}
+        self._last_created_at: Optional[datetime] = None
+
+    def _next_created_at(self) -> datetime:
+        now = datetime.now(timezone.utc)
+        last = self._last_created_at
+        if last and now <= last:
+            now = last + timedelta(microseconds=1)
+        self._last_created_at = now
+        return now
 
     async def listen(self) -> AsyncIterator[Any]:
         while True:
@@ -45,7 +55,7 @@ class InMemoryDataStore(BaseDataStore):
             role=message.role,
             content=[TextContent(text=message.content)] if type(message.content) is str else message.content,
             attachments=message.attachments,
-            created_at=datetime.now(timezone.utc),
+            created_at = self._next_created_at(),
             thread_id=thread_id,
             status=status,
             completed_at=datetime.now(timezone.utc) if status == message_status.COMPLETED else None
@@ -67,30 +77,38 @@ class InMemoryDataStore(BaseDataStore):
     async def list_messages(self, thread_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         if thread_id not in self._threads:
             return None
-        messages = self._messages.get(thread_id, [])
+        messages = list(self._messages.get(thread_id, []))
         # Apply ordering
-        messages.sort(key=lambda m: m.created_at, reverse=(order == "desc"))
+        messages.sort(key=lambda m: (m.created_at, m.id), reverse=(order == "desc"))
         # Apply pagination
-        if after:
-            try:
-                index = next(i for i, msg in enumerate(messages) if msg.id == after)
-                messages = messages[index + 1:]
-            except StopIteration:
-                messages = []
-        if before:
-            try:
-                index = next(i for i, msg in enumerate(messages) if msg.id == before)
-                messages = messages[:index]
-            except StopIteration:
-                messages = []
+        def _cursor_tuple(cursor_id):
+            msg = next((m for m in messages if m.id == cursor_id), None)
+            if not msg:
+                return None
+            return (msg.created_at, msg.id)
+
+        def _after_filter(m, cursor):
+            return (m.created_at, m.id) > cursor if order == "asc" else (m.created_at, m.id) < cursor
+
+        def _before_filter(m, cursor):
+            return (m.created_at, m.id) < cursor if order == "asc" else (m.created_at, m.id) > cursor
+        
+        cursor = _cursor_tuple(after)
+        if cursor:
+            messages = [m for m in messages if _after_filter(m, cursor)]
+
+        cursor = _cursor_tuple(before)
+        if cursor:
+            messages = [m for m in messages if _before_filter(m, cursor)]
+
         # Apply limit
-        limited_messages = messages[:limit]
+        limited = messages[:limit]
         has_more = len(messages) > limit
-        first_id = limited_messages[0].id if limited_messages else None
-        last_id = limited_messages[-1].id if limited_messages else None
+        first_id = limited[0].id if limited else None
+        last_id = limited[-1].id if limited else None
 
         return ListResponse(
-            data=limited_messages,
+            data=limited,
             first_id=first_id,
             last_id=last_id,
             has_more=has_more
@@ -133,7 +151,7 @@ class InMemoryDataStore(BaseDataStore):
             return None
         self._threads[thread_id] = ThreadObject(
             id=thread_id,
-            created_at=datetime.now(timezone.utc),
+            created_at = self._next_created_at(),
             metadata=thread.metadata,
             tool_resources=thread.tool_resources
         )
@@ -187,7 +205,7 @@ class InMemoryDataStore(BaseDataStore):
         run_id = run.metadata.get("run_id", str(uuid.uuid4()))
         new_run = RunObject(
             id=run_id,
-            created_at=datetime.now(timezone.utc),
+            created_at = self._next_created_at(),
             thread_id=thread_id,
             assistant_id=run.assistant_id,
             model=run.model or assistant.model,
@@ -225,22 +243,30 @@ class InMemoryDataStore(BaseDataStore):
     async def list_runs(self, thread_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse:
         if thread_id not in self._threads:
             return None
-        runs = self._runs[thread_id]
+        runs = list(self._runs.get(thread_id, []))
         # Apply ordering
-        runs.sort(key=lambda r: r.created_at, reverse=(order == "desc"))
-        # Apply pagination
-        if after:
-            try:
-                index = next(i for i, run in enumerate(runs) if run.id == after)
-                runs = runs[index + 1:]
-            except StopIteration:
-                runs = []
-        if before:
-            try:
-                index = next(i for i, run in enumerate(runs) if run.id == before)
-                runs = runs[:index]
-            except StopIteration:
-                runs = []
+        runs.sort(key=lambda r: (r.created_at, r.id), reverse=(order == "desc"))
+        
+        def _cursor_tuple(cursor_id):
+            run = next((r for r in runs if r.id == cursor_id), None)
+            if not run:
+                return None
+            return (run.created_at, run.id)
+
+        def _after_filter(r, cursor):
+            return (r.created_at, r.id) > cursor if order == "asc" else (r.created_at, r.id) < cursor
+
+        def _before_filter(r, cursor):
+            return (r.created_at, r.id) < cursor if order == "asc" else (r.created_at, r.id) > cursor
+
+        cursor = _cursor_tuple(after)
+        if cursor:
+            runs = [r for r in runs if _after_filter(r, cursor)]
+
+        cursor = _cursor_tuple(before)
+        if cursor:
+            runs = [r for r in runs if _before_filter(r, cursor)]
+
         # Apply limit
         limited_runs = runs[:limit]
         has_more = len(runs) > limit
@@ -311,13 +337,13 @@ class InMemoryDataStore(BaseDataStore):
             return None
         step_id = step.metadata.get("step_id", str(uuid.uuid4()))
         if step.step_details.type == "message_creation":
-            status = message_status.COMPLETED
+            status = run_step_status.COMPLETED
         step = RunStepObject(
             id=step_id,
             thread_id=thread_id,
             run_id=run_id,
             assistant_id=run.assistant_id,
-            created_at=datetime.now(timezone.utc),
+            created_at = self._next_created_at(),
             metadata=step.metadata,
             step_details=step.step_details,
             type=step.step_details.type,
@@ -332,28 +358,38 @@ class InMemoryDataStore(BaseDataStore):
                 await event_queue.add(step.to_event(event_type.RUN_STEP_IN_PROGRESS))
                 await event_queue.add(step.to_event(event_type.RUN_STEP_COMPLETED))
 
+        return step
+
     def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
-        if not thread_id in self._threads:
+        if thread_id not in self._threads:
             return None
         run = next((r for r in self._runs[thread_id] if r.id == run_id), None)
         if not run:
             return None
-        steps = self._run_steps.get(run_id, [])
+        steps = list(self._run_steps.get(run_id, []))
         # Apply ordering
-        steps.sort(key=lambda s: s.created_at, reverse=(order == "desc"))
-        # Apply pagination
-        if after:
-            try:
-                index = next(i for i, step in enumerate(steps) if step.id == after)
-                steps = steps[index + 1:]
-            except StopIteration:
-                steps = []
-        if before:
-            try:
-                index = next(i for i, step in enumerate(steps) if step.id == before)
-                steps = steps[:index]
-            except StopIteration:
-                steps = []
+        steps.sort(key=lambda s: (s.created_at, s.id), reverse=(order == "desc"))
+        
+        def _cursor_tuple(cursor_id):
+            step = next((s for s in steps if s.id == cursor_id), None)
+            if not step:
+                return None
+            return (step.created_at, step.id)
+
+        def _after_filter(s, cursor):
+            return (s.created_at, s.id) > cursor if order == "asc" else (s.created_at, s.id) < cursor
+
+        def _before_filter(s, cursor):
+            return (s.created_at, s.id) < cursor if order == "asc" else (s.created_at, s.id) > cursor
+
+        cursor = _cursor_tuple(after)
+        if cursor:
+            steps = [s for s in steps if _after_filter(s, cursor)]
+
+        cursor = _cursor_tuple(before)
+        if cursor:
+            steps = [s for s in steps if _before_filter(s, cursor)]
+
         # Apply limit
         limited_steps = steps[:limit]
         has_more = len(steps) > limit
@@ -428,6 +464,68 @@ class InMemoryDataStore(BaseDataStore):
                     self._run_steps[run_id] = steps
                     return step
         return None
+    
+    async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
+        cutoff = policy.cutoff()
+        limit = policy.batch_limit()
+        stats = PurgeStats()
+
+        expired_threads = [
+            (thread_id, thread)
+            for thread_id, thread in self._threads.items()
+            if thread.created_at < cutoff
+        ]
+        expired_threads.sort(key=lambda item: item[1].created_at)
+        if limit:
+            expired_threads = expired_threads[:limit]
+
+        thread_ids = {thread_id for thread_id, _ in expired_threads}
+        stats.threads = len(thread_ids)
+        if not thread_ids:
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={limit} "
+                f"threads=0 messages=0 runs=0 run_steps=0"
+            )
+            return stats
+        
+        stats.messages = sum(
+            1 for thread_id, messages in self._messages.items()
+            if thread_id in thread_ids
+            for _ in messages
+        )
+        stats.runs = sum(
+            1 for thread_id, runs in self._runs.items()
+            if thread_id in thread_ids
+            for _ in runs
+        )
+        run_ids = {
+            run.id for thread_id, runs in self._runs.items()
+            if thread_id in thread_ids for run in runs
+        }
+        stats.run_steps = sum(
+            len(steps) for run_id, steps in self._run_steps.items()
+            if run_id in run_ids
+        )
+
+        if policy.dry_run:
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={limit} "
+                f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+            )
+            return stats
+        
+        for thread_id in thread_ids:
+            self._messages.pop(thread_id, None)
+            runs = self._runs.pop(thread_id, [])
+            for run in runs:
+                self._run_steps.pop(run.id, None)
+            self._threads.pop(thread_id, None)
+
+        policy.log(
+            f"retention purge dry_run={policy.dry_run} batch={limit} "
+            f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+        )
+        return stats
     
     def close(self) -> None:
         return None

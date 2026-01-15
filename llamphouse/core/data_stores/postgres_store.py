@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
-
+from .retention import RetentionPolicy, PurgeStats
 from .base_data_store import BaseDataStore
 from .._utils._utils import get_max_db_connections
 from ..database.models import Message, Run, Thread, RunStep
@@ -153,14 +153,44 @@ class PostgresDataStore(BaseDataStore):
 
             query = self.session.query(Message).filter(Message.thread_id == thread_id)
             if order == "asc":
-                query = query.order_by(Message.created_at.asc())
+                query = query.order_by(Message.created_at.asc(), Message.id.asc())
             else:
-                query = query.order_by(Message.created_at.desc())
+                query = query.order_by(Message.created_at.desc(), Message.id.desc())
 
-            if after:
-                query = query.filter(Message.id > after)
-            if before:
-                query = query.filter(Message.id < before)
+            def _apply_cursor(query, cursor_id, mode):
+                if not cursor_id:
+                    return query
+                cursor = (
+                    self.session.query(Message.id, Message.created_at)
+                    .filter(Message.thread_id == thread_id, Message.id == cursor_id)
+                    .first()
+                )
+                if not cursor:
+                    return query
+                
+                c_id, c_created = cursor
+                if mode == "after":
+                    if order == "asc":
+                        return query.filter(
+                           (Message.created_at > c_created) |
+                            ((Message.created_at == c_created) & (Message.id > c_id)) 
+                        )
+                    return query.filter(
+                        (Message.created_at < c_created) |
+                        ((Message.created_at == c_created) & (Message.id < c_id))
+                    )
+                if order == "asc":
+                    return query.filter(
+                        (Message.created_at < c_created) |
+                        ((Message.created_at == c_created) & (Message.id < c_id))
+                    )
+                return query.filter(
+                    (Message.created_at > c_created) |
+                    ((Message.created_at == c_created) & (Message.id > c_id))
+                )
+
+            query = _apply_cursor(query, after, "after")
+            query = _apply_cursor(query, before, "before")
 
             rows = query.limit(limit + 1).all()
             has_more = len(rows) > limit
@@ -459,14 +489,46 @@ class PostgresDataStore(BaseDataStore):
 
             query = self.session.query(Run).filter(Run.thread_id==thread_id)
             if order == "asc":
-                query = query.order_by(Run.created_at.asc())
+                query = query.order_by(Run.created_at.asc(), Run.id.asc())
             else:
-                query = query.order_by(Run.created_at.desc())
+                query = query.order_by(Run.created_at.desc(), Run.id.desc())
 
-            if after:
-                query = query.filter(Run.id > after)
-            if before:
-                query = query.filter(Run.id < before)
+            def _apply_cursor(query, cursor_id, mode):
+                if not cursor_id:
+                    return query
+                cursor = (
+                    self.session.query(Run.id, Run.created_at)
+                    .filter(Run.thread_id == thread_id, Run.id == cursor_id)
+                    .first()
+                )
+
+                if not cursor:
+                    return query
+                c_id, c_created = cursor
+                if mode == "after":
+                    if order == "asc":
+                        return query.filter(
+                            (Run.created_at > c_created) | 
+                            ((Run.created_at == c_created) & (Run.id > c_id))
+                        )
+                    return query.filter(
+                        (Run.created_at < c_created) |
+                        ((Run.created_at == c_created) & (Run.id < c_id))
+                    )
+                    
+                if order == "asc":
+                    return query.filter(
+                        (Run.created_at < c_created) | 
+                        ((Run.created_at == c_created) & (Run.id < c_id))
+                    )
+                
+                return query.filter(
+                    (Run.created_at > c_created) | 
+                    ((Run.created_at == c_created) & (Run.id > c_id))
+                )
+
+            query = _apply_cursor(query, after, "after")
+            query = _apply_cursor(query, before, "before")
 
             rows = query.limit(limit + 1).all()
             has_more = len(rows) > limit
@@ -635,14 +697,48 @@ class PostgresDataStore(BaseDataStore):
 
             query = self.session.query(RunStep).filter(RunStep.thread_id == thread_id, RunStep.run_id == run_id)
             if order == "asc":
-                query = query.order_by(RunStep.created_at.asc())
+                query = query.order_by(RunStep.created_at.asc(), RunStep.id.asc())
             else:
-                query = query.order_by(RunStep.created_at.desc())
+                query = query.order_by(RunStep.created_at.desc(), RunStep.id.desc())
 
-            if after:
-                query = query.filter(RunStep.id > after)
-            if before:
-                query = query.filter(RunStep.id < before)
+            def _apply_cursor(query, cursor_id, mode):
+                if not cursor_id:
+                    return query
+                cursor = (
+                    self.session.query(RunStep.id, RunStep.created_at)
+                    .filter(
+                        RunStep.thread_id==thread_id, 
+                        RunStep.run_id==run_id, 
+                        RunStep.id==cursor_id)
+                    .first()
+                )
+                
+                if not cursor:
+                    return query
+                c_id, c_created = cursor
+                if mode == "after":
+                    if order == "asc":
+                        return query.filter(
+                            (RunStep.created_at > c_created) |
+                            ((RunStep.created_at == c_created) & (RunStep.id > c_id))
+                        )
+                    return query.filter(
+                        (RunStep.created_at < c_created) |
+                        ((RunStep.created_at == c_created) & (RunStep.id < c_id))
+                    )
+                
+                if order == "asc":
+                    return query.filter(
+                        (RunStep.created_at < c_created) |
+                        ((RunStep.created_at == c_created) & (RunStep.id < c_id))
+                    )
+                return query.filter(
+                    (RunStep.created_at > c_created) |
+                    ((RunStep.created_at == c_created) & (RunStep.id > c_id))
+                )
+            
+            query = _apply_cursor(query, after, "after")
+            query = _apply_cursor(query, before, "before")
 
             rows = query.limit(limit + 1).all()
             has_more = len(rows) > limit
@@ -767,6 +863,43 @@ class PostgresDataStore(BaseDataStore):
             self.session.rollback()
             logger.exception("update_run_step_status() failed")
             return None
+
+    async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
+        cutoff = policy.cutoff()
+        batch = policy.batch_limit()
+        stats = PurgeStats()
+
+        try:
+            q = self.session.query(Thread.id).filter(Thread.created_at < cutoff)
+            if batch:
+                q = q.order_by(Thread.created_at.asc()).limit(batch)
+
+            thread_ids = [row[0] for row in q.all()]
+            if not thread_ids:
+                policy.log(
+                    f"retention purge dry_run={policy.dry_run} batch={batch} "
+                    f"threads=0 messages=0 runs=0 run_steps=0"
+                )
+                return stats
+
+            stats.threads = len(thread_ids)
+            stats.runs = self.session.query(Run).filter(Run.thread_id.in_(thread_ids)).count()
+            stats.messages = self.session.query(Message).filter(Message.thread_id.in_(thread_ids)).count()
+            stats.run_steps = self.session.query(RunStep).filter(RunStep.thread_id.in_(thread_ids)).count()
+
+            if not policy.dry_run:
+                self.session.query(Thread).filter(Thread.id.in_(thread_ids)).delete(synchronize_session=False)
+                self.session.commit()
+
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={batch} "
+                f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+            )
+            return stats
+        except Exception:
+            self.session.rollback()
+            logger.exception("purge_expired() failed")
+            return stats
 
     def close(self) -> None:
         self.session.close()
