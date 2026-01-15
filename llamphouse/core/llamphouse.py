@@ -2,6 +2,7 @@ from typing import List, Optional
 import uvicorn
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from .routes import all_routes
 from .assistant import Assistant
 from .workers.base_worker import BaseWorker
@@ -16,6 +17,9 @@ from .data_stores.base_data_store import BaseDataStore
 from .data_stores.in_memory_store import InMemoryDataStore
 from .queue.base_queue import BaseQueue
 from .queue.in_memory_queue import InMemoryQueue
+from .tracing import setup_tracing
+
+import os
 import asyncio
 import logging
 
@@ -70,6 +74,12 @@ class LLAMPHouse:
         self.fastapi.state.run_queue = run_queue or InMemoryQueue()
         self.retention_policy = retention_policy or DEFAULT_RETENTION_POLICY
         self._retention_task: Optional[asyncio.Task] = None
+
+        setup_tracing()
+        # FastAPIInstrumentor.instrument_app(
+        #     self.fastapi,
+        #     exclude_spans=["send"]
+        # )
 
         if self.fastapi.state.data_store:
             self.fastapi.state.data_store.init(assistants)

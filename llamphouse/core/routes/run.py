@@ -10,6 +10,7 @@ from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..streaming.event import Event, DoneEvent, ErrorEvent
 from ..data_stores.base_data_store import BaseDataStore
 from llamphouse.core.queue.base_queue import BaseQueue
+from opentelemetry import propagate
 from typing import List, Optional
 import asyncio
 import logging
@@ -51,10 +52,17 @@ async def create_run(
             raise HTTPException(status_code=404, detail="Thread not found.")
 
         if run_queue:
+            carrier = {}
+            try:
+                propagate.inject(carrier)
+            except Exception:
+                carrier = {}
+                
             await run_queue.enqueue({
                 "run_id": run.id,
                 "thread_id": thread_id,
                 "assistant_id": run.assistant_id,
+                "metadata": {"traceparent": carrier},
             })
 
         if not output_queue:

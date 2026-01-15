@@ -8,8 +8,12 @@ from typing import Any, Optional, Dict, Tuple, Sequence
 from .base_queue import BaseQueue
 from .types import QueueMessage, RetryPolicy, RateLimitPolicy
 from .exceptions import QueueRateLimitError, QueueRetryExceeded
+from ..tracing import get_tracer
+from opentelemetry.trace import Status, StatusCode
 
+queue_tracer = get_tracer("llamphouse.queue")
 logger = logging.getLogger("llamphouse.queue.in_memory")
+
 
 class InMemoryQueue(BaseQueue):
     def __init__(self, retry_policy: Optional[RetryPolicy] = None, rate_limit: Optional[RateLimitPolicy] = None) -> None:
@@ -33,61 +37,84 @@ class InMemoryQueue(BaseQueue):
         ready = schedule_at if schedule_at is not None else time.time()
         key = self._assistant_key(message)
 
-        # Rate limit per key
-        limiter = self._rate_history.setdefault(key, deque())
-        now = time.time()
-        window = self.rate_limit.window_seconds
-        while limiter and now - limiter[0] > window:
-            limiter.popleft()
-        if len(limiter) >= self.rate_limit.max_per_minute:
-            logger.info("enqueue rate limit exceeded for key=%s", key)
-            raise QueueRateLimitError(key, self.rate_limit.max_per_minute, window)
-        limiter.append(now)
+        with queue_tracer.start_as_current_span(
+            "queue.enqueue",
+            attributes={
+                "queue.backend": "in_memory", 
+                "assistant.key": key},
+        ) as span:
+            start = time.time()
+            # Rate limit per key
+            limiter = self._rate_history.setdefault(key, deque())
+            now = time.time()
+            window = self.rate_limit.window_seconds
+            while limiter and now - limiter[0] > window:
+                limiter.popleft()
+            if len(limiter) >= self.rate_limit.max_per_minute:
+                logger.info("enqueue rate limit exceeded for key=%s", key)
+                raise QueueRateLimitError(key, self.rate_limit.max_per_minute, window)
+            limiter.append(now)
 
-        async with self._not_empty:
-            heap = self._queues.setdefault(key, [])
-            heapq.heappush(heap, (ready, receipt, message))
-            self._pending[receipt] = message
-            self._not_empty.notify()
+            async with self._not_empty:
+                heap = self._queues.setdefault(key, [])
+                heapq.heappush(heap, (ready, receipt, message))
+                self._pending[receipt] = message
+                self._not_empty.notify()
 
-        logger.debug("enqueue: key=%s run_id=%s receipt=%s ready=%s", key, message.run_id, receipt, ready)
-        return receipt
+            logger.debug("enqueue: key=%s run_id=%s receipt=%s ready=%s", key, message.run_id, receipt, ready)
+            span.set_status(Status(StatusCode.OK))
+            span.set_attribute("queue.latency_ms", (time.time() - start) * 1000)
+            span.set_attribute("queue.size.pending", len(heap))
+            return receipt
 
     async def dequeue(self, assistant_ids: Optional[Sequence[str]] = None, timeout: Optional[float] = None) -> Optional[Tuple[str, QueueMessage]]:
-        start = time.time()
-        keys = list(assistant_ids) if assistant_ids else None
-        while True:
-            async with self._not_empty:
-                while True:
-                    now = time.time()
-                    receipt_message = self._pop_ready(keys, now)
-                    if receipt_message:
-                        receipt, message = receipt_message
-                        message.increment_attempts()
-                        # max_attempts check; if exceeded, drop and continue
-                        if message.attempts > self.retry_policy.max_attempts:
-                            self._pending.pop(receipt, None)
-                            logger.debug("dequeue: drop receipt=%s attempts=%s (max=%s)", receipt, message.attempts, self.retry_policy.max_attempts)
-                            raise QueueRetryExceeded(message.run_id, message.attempts, self.retry_policy.max_attempts)
-                        logger.debug("dequeue: key=%s run_id=%s receipt=%s attempts=%s", self._assistant_key(message), message.run_id, receipt, message.attempts)
-                        return receipt, message
-                    
-                    # no ready item; compute next wake time
-                    next_ready = self._next_ready_ts(keys)
-                    remaining = None if timeout is None else timeout - (now - start)
-                    if timeout is not None and remaining <= 0:
-                        return None
-                    sleep_for = None
-                    if next_ready is not None:
-                        # Wake up at the earliest ready time, but not beyond overall timeout
-                        sleep_for = max(0.0, min(next_ready - now, remaining if remaining is not None else next_ready - now))
-                    elif remaining is not None:
-                        # No items scheduled; use the remaining timeout as wake-up window
-                        sleep_for = remaining
-                    try:
-                        await asyncio.wait_for(self._not_empty.wait(), timeout=sleep_for)
-                    except asyncio.TimeoutError:
-                        return None
+        with queue_tracer.start_as_current_span(
+            "queue.dequeue",
+            attributes={
+                "queue.backend": "in_memory",
+                "assistant.keys": ",".join(assistant_ids) if assistant_ids else "any",
+                **({"timeout": timeout} if timeout is not None else {}),
+            },
+        ) as span:
+            start = time.time()
+            keys = list(assistant_ids) if assistant_ids else None
+            while True:
+                async with self._not_empty:
+                    while True:
+                        now = time.time()
+                        receipt_message = self._pop_ready(keys, now)
+                        if receipt_message:
+                            receipt, message = receipt_message
+                            message.increment_attempts()
+                            # max_attempts check; if exceeded, drop and continue
+                            if message.attempts > self.retry_policy.max_attempts:
+                                self._pending.pop(receipt, None)
+                                logger.debug("dequeue: drop receipt=%s attempts=%s (max=%s)", receipt, message.attempts, self.retry_policy.max_attempts)
+                                raise QueueRetryExceeded(message.run_id, message.attempts, self.retry_policy.max_attempts)
+                            logger.debug("dequeue: key=%s run_id=%s receipt=%s attempts=%s", self._assistant_key(message), message.run_id, receipt, message.attempts)
+                            span.set_status(Status(StatusCode.OK))
+                            span.set_attribute("queue.latency_ms", (time.time() - start) * 1000)
+                            return receipt, message
+                        
+                        # no ready item; compute next wake time
+                        next_ready = self._next_ready_ts(keys)
+                        remaining = None if timeout is None else timeout - (now - start)
+                        if timeout is not None and remaining <= 0:
+                            return None
+                        sleep_for = None
+                        if next_ready is not None:
+                            # Wake up at the earliest ready time, but not beyond overall timeout
+                            sleep_for = max(0.0, min(next_ready - now, remaining if remaining is not None else next_ready - now))
+                        elif remaining is not None:
+                            # No items scheduled; use the remaining timeout as wake-up window
+                            sleep_for = remaining
+                        try:
+                            await asyncio.wait_for(self._not_empty.wait(), timeout=sleep_for)
+                        except asyncio.TimeoutError:
+                            span.add_event("queue.dequeue.timeout", {"timeout": timeout})
+                            span.set_attribute("queue.latency_ms", (time.time() - start) * 1000)
+                            span.set_status(Status(StatusCode.ERROR))
+                            return None
 
     def _pop_ready(self, keys: Optional[Sequence[str]], now: float):
         queue_keys = keys or list(self._queues.keys())
@@ -116,14 +143,23 @@ class InMemoryQueue(BaseQueue):
         if not msg:
             return
         backoff = delay if delay is not None else self.retry_policy.next_backoff(msg.attempts)
-        ready = time.time() + backoff
         key = self._assistant_key(msg)
-        async with self._not_empty:
-            heap = self._queues.setdefault(key, [])
-            heapq.heappush(heap, (ready, receipt, msg))
-            self._pending[receipt] = msg
-            self._not_empty.notify()
-            logger.debug("requeue key=%s receipt=%s delay=%.3f attempts=%s", key, receipt, backoff, msg.attempts if msg else None)
+        with queue_tracer.start_as_current_span(
+            "queue.requeue",
+            attributes={
+                "queue.backend": "in_memory",
+                "assistant.key": key,
+                "backoff_s": backoff,
+                "attempts": msg.attempts,
+            },
+        ):
+            ready = time.time() + backoff
+            async with self._not_empty:
+                heap = self._queues.setdefault(key, [])
+                heapq.heappush(heap, (ready, receipt, msg))
+                self._pending[receipt] = msg
+                self._not_empty.notify()
+                logger.debug("requeue key=%s receipt=%s delay=%.3f attempts=%s", key, receipt, backoff, msg.attempts if msg else None)
 
     async def size(self) -> int:
         async with self._lock:

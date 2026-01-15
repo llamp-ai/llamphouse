@@ -3,6 +3,8 @@ import uuid
 import traceback
 from inspect import isawaitable
 from typing import Any, Callable, Dict, Optional
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from .types.message import Attachment, CreateMessageRequest, MessageObject, ModifyMessageRequest
 from .types.run_step import ToolCallsStepDetails, CreateRunStepRequest
 from .types.run import ToolOutput, RunObject, ModifyRunRequest
@@ -17,7 +19,13 @@ from .streaming.stream_events import (
     CanonicalStreamEvent,
     StreamError,
     StreamFinished,
+    StreamStarted,
+    TextDelta,
+    TextSnapshot,
+    ToolCallDelta,
 )
+
+stream_tracer = trace.get_tracer("llamphouse.streaming")
 
 def _tap_sync(evt: CanonicalStreamEvent, on_event: Optional[Callable[[CanonicalStreamEvent], Any]]) -> None:
     if not on_event:
@@ -47,7 +55,8 @@ class Context:
             thread_id: str = None, 
             queue: Optional[BaseEventQueue] = None, 
             data_store: Optional[BaseDataStore] = None, 
-            loop = None
+            loop = None,
+            traceparent: Optional[dict[str, str]] = None,
     ):
         self.assistant_id = assistant_id
         self.thread_id = thread_id
@@ -59,6 +68,7 @@ class Context:
         self.run: RunObject = run
         self.__queue = queue
         self.__loop = loop
+        self.traceparent = traceparent or {}
 
     @classmethod
     async def create(cls, **kwargs) -> "Context":
@@ -218,40 +228,161 @@ class Context:
     def handle_completion_stream(self, stream, adapter: Optional[BaseStreamAdapter] = None, on_event: Optional[Callable[[CanonicalStreamEvent], Any]] = None,) -> str:
         adapter = adapter or OpenAIChatCompletionAdapter()
         emitter = StreamingEmitter(self._send_event, self.assistant_id, self.thread_id, self.run_id)
-                
-        try:
-            for evt in adapter.iter_events(stream):
-                _tap_sync(evt, on_event)
-                emitter.handle(evt)
-            
-        except Exception as e:
-            error_evt = StreamError(message=str(e), code="CompletionStreamError", raw=traceback.format_exc())
-            _tap_sync(error_evt, on_event)
-            emitter.handle(error_evt)
 
-            finish_evt = StreamFinished(reason="error")
-            _tap_sync(finish_evt, on_event)
-            emitter.handle(finish_evt)
-        
-        return emitter.content
+        with stream_tracer.start_as_current_span(
+            "streaming.handle_completion_stream",
+            attributes={
+                "assistant.id": self.assistant_id,
+                "thread.id": self.thread_id,
+                "run.id": self.run_id,
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.stream": True,
+            },
+        ) as span:
+            try:
+                if self.run and self.run.model:
+                    span.set_attribute("gen_ai.request.model", self.run.model)
+                    span.set_attribute("gen_ai.response.model", self.run.model)
+                for evt in adapter.iter_events(stream):
+                    _tap_sync(evt, on_event)
+                    emitter.handle(evt)
+
+                    if isinstance(evt, StreamStarted):
+                        span.add_event("stream.started")
+                    elif isinstance(evt, TextDelta):
+                        span.add_event(
+                            "stream.text_delta",
+                            {"delta_len": len(evt.text or ""), "index": evt.index, "message.id": evt.message_id or ""},
+                        )
+                    elif isinstance(evt, TextSnapshot):
+                        span.add_event(
+                            "stream.text_snapshot",
+                            {"full_len": len(evt.full_text or ""), "message.id": evt.message_id or ""},
+                        )
+                    elif isinstance(evt, ToolCallDelta):
+                        span.add_event(
+                            "stream.tool_call_delta",
+                            {
+                                "index": evt.index,
+                                "tool_call.id": evt.tool_call_id or "",
+                                "name": evt.name or "",
+                                "arguments_delta_len": len(evt.arguments_delta or ""),
+                            },
+                        )
+                    elif isinstance(evt, StreamError):
+                        span.add_event("stream.error", {"code": evt.code or "", "message": evt.message})
+                    elif isinstance(evt, StreamFinished):
+                        span.add_event("stream.finished", {"reason": evt.reason})
+                        span.set_attribute("gen_ai.response.finish_reason", evt.reason)
+
+                        if evt.usage:
+                            prompt = evt.usage.get("prompt_tokens")
+                            completion = evt.usage.get("completion_tokens")
+                            total = evt.usage.get("total_tokens")
+                            if prompt is not None:
+                                span.set_attribute("gen_ai.usage.input_tokens", int(prompt))
+                            if completion is not None:
+                                span.set_attribute("gen_ai.usage.output_tokens", int(completion))
+                            if total is not None:
+                                span.set_attribute("gen_ai.usage.total_tokens", int(total))
+
+                span.set_attribute("result.content_len", len(emitter.content))
+                span.set_status(Status(StatusCode.OK))
+                
+            except Exception as e:
+                error_evt = StreamError(message=str(e), code="CompletionStreamError", raw=traceback.format_exc())
+                _tap_sync(error_evt, on_event)
+                emitter.handle(error_evt)
+                span.add_event("stream.error", {"code": error_evt.code or "", "message": error_evt.message})
+
+                finish_evt = StreamFinished(reason="error")
+                _tap_sync(finish_evt, on_event)
+                emitter.handle(finish_evt)
+                span.add_event("stream.finished", {"reason": finish_evt.reason})
+
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+            
+            return emitter.content
 
     async def handle_completion_stream_async(self, stream, adapter: Optional[BaseStreamAdapter] = None, on_event: Optional[Callable[[CanonicalStreamEvent], Any]] = None,) -> str:
         adapter = adapter or OpenAIChatCompletionAdapter()
         emitter = StreamingEmitter(self._send_event, self.assistant_id, self.thread_id, self.run_id)
 
-        try:
-            async for evt in adapter.aiter_events(stream):
-                await _tap_async(evt, on_event)
-                emitter.handle(evt)
-        except Exception as e:
-            error_evt = StreamError(message=str(e), code="CompletionStreamError", raw=traceback.format_exc())
-            await _tap_async(error_evt, on_event)
-            emitter.handle(error_evt)
+        with stream_tracer.start_as_current_span(
+            "streaming.handle_completion_stream_async",
+            attributes={
+                "assistant.id": self.assistant_id,
+                "thread.id": self.thread_id,
+                "run.id": self.run_id,
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.stream": True,
+            },
+        ) as span:
+            try:
+                if self.run and self.run.model:
+                    span.set_attribute("gen_ai.request.model", self.run.model)
+                    span.set_attribute("gen_ai.response.model", self.run.model)
+                async for evt in adapter.aiter_events(stream):
+                    await _tap_async(evt, on_event)
+                    emitter.handle(evt)
 
-            finish_evt = StreamFinished(reason="error")
-            await _tap_async(finish_evt, on_event)
-            emitter.handle(finish_evt)
-            raise
+                    if isinstance(evt, StreamStarted):
+                        span.add_event("stream.started")
+                    elif isinstance(evt, TextDelta):
+                        span.add_event(
+                            "stream.text_delta",
+                            {"delta_len": len(evt.text or ""), "index": evt.index, "message.id": evt.message_id or ""},
+                        )
+                    elif isinstance(evt, TextSnapshot):
+                        span.add_event(
+                            "stream.text_snapshot",
+                            {"full_len": len(evt.full_text or ""), "message.id": evt.message_id or ""},
+                        )
+                    elif isinstance(evt, ToolCallDelta):
+                        span.add_event(
+                            "stream.tool_call_delta",
+                            {
+                                "index": evt.index,
+                                "tool_call.id": evt.tool_call_id or "",
+                                "name": evt.name or "",
+                                "arguments_delta_len": len(evt.arguments_delta or ""),
+                            },
+                        )
+                    elif isinstance(evt, StreamError):
+                        span.add_event("stream.error", {"code": evt.code or "", "message": evt.message})
+                    elif isinstance(evt, StreamFinished):
+                        span.add_event("stream.finished", {"reason": evt.reason})
+                        span.set_attribute("gen_ai.response.finish_reason", evt.reason)
 
-        return emitter.content
+                        if evt.usage:
+                            prompt = evt.usage.get("prompt_tokens")
+                            completion = evt.usage.get("completion_tokens")
+                            total = evt.usage.get("total_tokens")
+                            if prompt is not None:
+                                span.set_attribute("gen_ai.usage.input_tokens", int(prompt))
+                            if completion is not None:
+                                span.set_attribute("gen_ai.usage.output_tokens", int(completion))
+                            if total is not None:
+                                span.set_attribute("gen_ai.usage.total_tokens", int(total))
+
+                span.set_attribute("result.content_len", len(emitter.content))
+                span.set_status(Status(StatusCode.OK))
+
+            except Exception as e:
+                error_evt = StreamError(message=str(e), code="CompletionStreamError", raw=traceback.format_exc())
+                await _tap_async(error_evt, on_event)
+                emitter.handle(error_evt)
+                span.add_event("stream.error", {"code": error_evt.code or "", "message": error_evt.message})
+
+                finish_evt = StreamFinished(reason="error")
+                await _tap_async(finish_evt, on_event)
+                emitter.handle(finish_evt)
+                span.add_event("stream.finished", {"reason": finish_evt.reason})
+
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+                raise
+
+            return emitter.content
         

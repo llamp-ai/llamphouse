@@ -16,33 +16,55 @@ from llamphouse.core.streaming.stream_events import TextDelta, ToolCallDelta, St
 import logging
 logging.basicConfig(level=logging.INFO)
 
+import os
+from langfuse import Langfuse
+
+langfuse = Langfuse(
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    host=os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"),
+)
+
 open_client = OpenAI()
 
 class CustomAssistant(Assistant):
     async def run(self, context: Context):
         messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
+        
+        with langfuse.start_as_current_span(
+            name="llamphouse.run",
+            input={"model": "gpt-4o-mini", "messages": messages},
+            metadata={"assistant_id": self.id, "thread_id": context.thread_id, "run_id": context.run_id},
+        ) as span:
 
-        stream = open_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            stream=True,
-        )
+            try:
+                stream = open_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    stream=True,
+                )
 
-        def on_event(evt):
-            if isinstance(evt, TextDelta):
-                print(evt.text, end="", flush=True)
-            elif isinstance(evt, ToolCallDelta):
-                print(f"\n[tool_delta] name={evt.name} args+= {evt.arguments_delta!r}", flush=True)
-            elif isinstance(evt, StreamError):
-                print(f"\n[stream_error] {evt.code}: {evt.message}", flush=True)
-            elif isinstance(evt, StreamFinished):
-                print(f"\n[finished] reason={evt.reason}", flush=True)
+                def on_event(evt):
+                    if isinstance(evt, TextDelta):
+                        print(evt.text, end="", flush=True)
+                    elif isinstance(evt, ToolCallDelta):
+                        print(f"\n[tool_delta] name={evt.name} args+= {evt.arguments_delta!r}", flush=True)
+                    elif isinstance(evt, StreamError):
+                        print(f"\n[stream_error] {evt.code}: {evt.message}", flush=True)
+                    elif isinstance(evt, StreamFinished):
+                        print(f"\n[finished] reason={evt.reason}", flush=True)
 
-        adapter = get_adapter("openai")
+                adapter = get_adapter("openai")
 
-        full_text = await asyncio.to_thread(context.handle_completion_stream, stream, adapter, on_event)
-        if full_text and full_text.strip():
-            await context.insert_message(full_text)
+                full_text = await asyncio.to_thread(context.handle_completion_stream, stream, adapter, on_event)
+                span.update(output=full_text)
+                
+                if full_text and full_text.strip():
+                    await context.insert_message(full_text)
+            
+            except Exception as e:
+                span.update(level="ERROR", status_message=str(e))
+                raise
 
 
 def main():
