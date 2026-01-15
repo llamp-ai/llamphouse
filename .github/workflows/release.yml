@@ -65,7 +65,7 @@ jobs:
     - name: Extract release notes
       if: env.SHOULD_RELEASE == 'true'
       id: extract-release-notes
-      uses: ffurrer2/extract-release-notes@v2
+      uses: ffurrer2/extract-release-notes@v3
 
     - name: Create GitHub Release
       if: env.SHOULD_RELEASE == 'true'
