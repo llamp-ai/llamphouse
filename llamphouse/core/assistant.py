@@ -1,6 +1,7 @@
 from typing import List, Optional
 from abc import ABC, abstractmethod
 import uuid
+from datetime import datetime, timezone
 from .context import Context
 
 class Assistant(ABC):
@@ -24,6 +25,7 @@ class Assistant(ABC):
         self.top_p = top_p
         self.instructions = instructions
         self.tools = tools or []
+        self.created_at = datetime.now(timezone.utc)
 
         # If name is provided, use it as the ID
         # If no ID and no name is provided, generate a random UUID

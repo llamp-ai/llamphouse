@@ -3,14 +3,33 @@
 ## [Unreleased]
 
 - Add tracing and monitoring
-- Streaming
 - LangChain utilities
 - LangGraph utilities
 - Cleanup error messages
 - Cleanup db object to OpenAI object (see types/message.py from_db_message)
 - Fix completed_at, failed_at, expired_at, ... times on the run
-- Fix fastapi deprecated events
 - Easier setting and getting metadata values
+
+## [1.0.0] - 9/1/2026
+
+### Added
+
+- Introduced a pluggable data_store architecture with in-memory and Postgres backends.
+- Added event queues with in-memory and Janus implementations.
+- Added streaming adapters for OpenAI, Gemini, and Anthropic.
+- Added **Data Retention Policy** support with automated purge functionality for both In-Memory and Postgres backends.
+- Added a **Tox compatibility matrix** to ensure stable performance across multiple dependency versions (FastAPI 0.100.0 to latest).
+- Added a comprehensive **Purge Example** demonstrating data lifecycle management.
+- Added **GeminiStreaming example** demonstrating real-time output integration with the new pluggable streaming architecture.
+
+### Changed
+
+- **Refactored API lifecycle management**: Migrated from deprecated `startup`/`shutdown` events to the modern FastAPI `lifespan` context manager for improved resource handling.
+- Updated examples to align with the new pluggable backend/streaming flow.
+
+### Testing
+
+- Expanded testing across unit, contract, integration, and streaming layers.
 
 ## [0.0.8] - 14/08/2025
 

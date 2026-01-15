@@ -1,3 +1,4 @@
+import traceback
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from .._exceptions import APIError
@@ -11,6 +12,8 @@ class CatchExceptionsMiddleware(BaseHTTPMiddleware):
             response = e.to_JSON_response()
 
         except Exception as e:
+            print(f"Unhandled exception: {str(e)}")
+            print(traceback.format_exc())
             response = JSONResponse({
                 "error": {
                     "message": str(e),
