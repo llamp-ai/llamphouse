@@ -2,7 +2,7 @@ name: Release on Merge to Main
 
 on:
   workflow_run:
-    workflows: ["CI for PRs to dev"]
+    workflows: ["CI for PRs and Pushes (dev & main)"]
     types: [completed]
 
 jobs:
@@ -15,13 +15,13 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: 0
         ref: ${{ github.event.workflow_run.head_sha }}
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: "3.10"
 
@@ -65,7 +65,7 @@ jobs:
     - name: Extract release notes
       if: env.SHOULD_RELEASE == 'true'
       id: extract-release-notes
-      uses: ffurrer2/extract-release-notes@v2
+      uses: ffurrer2/extract-release-notes@v3
 
     - name: Create GitHub Release
       if: env.SHOULD_RELEASE == 'true'
