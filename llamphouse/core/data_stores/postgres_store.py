@@ -1600,5 +1600,42 @@ class PostgresDataStore(BaseDataStore):
                 logger.exception("purge_expired() failed")
                 return stats
 
+    async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
+        cutoff = policy.cutoff()
+        batch = policy.batch_limit()
+        stats = PurgeStats()
+
+        try:
+            q = self.session.query(Thread.id).filter(Thread.created_at < cutoff)
+            if batch:
+                q = q.order_by(Thread.created_at.asc()).limit(batch)
+
+            thread_ids = [row[0] for row in q.all()]
+            if not thread_ids:
+                policy.log(
+                    f"retention purge dry_run={policy.dry_run} batch={batch} "
+                    f"threads=0 messages=0 runs=0 run_steps=0"
+                )
+                return stats
+
+            stats.threads = len(thread_ids)
+            stats.runs = self.session.query(Run).filter(Run.thread_id.in_(thread_ids)).count()
+            stats.messages = self.session.query(Message).filter(Message.thread_id.in_(thread_ids)).count()
+            stats.run_steps = self.session.query(RunStep).filter(RunStep.thread_id.in_(thread_ids)).count()
+
+            if not policy.dry_run:
+                self.session.query(Thread).filter(Thread.id.in_(thread_ids)).delete(synchronize_session=False)
+                self.session.commit()
+
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={batch} "
+                f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+            )
+            return stats
+        except Exception:
+            self.session.rollback()
+            logger.exception("purge_expired() failed")
+            return stats
+
     def close(self) -> None:
         self.session.close()

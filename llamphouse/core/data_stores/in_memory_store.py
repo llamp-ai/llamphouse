@@ -929,6 +929,8 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
 
+        return step
+
     def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         attrs = {
             "store.backend": "in_memory",
@@ -1336,6 +1338,68 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
+    
+    async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
+        cutoff = policy.cutoff()
+        limit = policy.batch_limit()
+        stats = PurgeStats()
+
+        expired_threads = [
+            (thread_id, thread)
+            for thread_id, thread in self._threads.items()
+            if thread.created_at < cutoff
+        ]
+        expired_threads.sort(key=lambda item: item[1].created_at)
+        if limit:
+            expired_threads = expired_threads[:limit]
+
+        thread_ids = {thread_id for thread_id, _ in expired_threads}
+        stats.threads = len(thread_ids)
+        if not thread_ids:
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={limit} "
+                f"threads=0 messages=0 runs=0 run_steps=0"
+            )
+            return stats
+        
+        stats.messages = sum(
+            1 for thread_id, messages in self._messages.items()
+            if thread_id in thread_ids
+            for _ in messages
+        )
+        stats.runs = sum(
+            1 for thread_id, runs in self._runs.items()
+            if thread_id in thread_ids
+            for _ in runs
+        )
+        run_ids = {
+            run.id for thread_id, runs in self._runs.items()
+            if thread_id in thread_ids for run in runs
+        }
+        stats.run_steps = sum(
+            len(steps) for run_id, steps in self._run_steps.items()
+            if run_id in run_ids
+        )
+
+        if policy.dry_run:
+            policy.log(
+                f"retention purge dry_run={policy.dry_run} batch={limit} "
+                f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+            )
+            return stats
+        
+        for thread_id in thread_ids:
+            self._messages.pop(thread_id, None)
+            runs = self._runs.pop(thread_id, [])
+            for run in runs:
+                self._run_steps.pop(run.id, None)
+            self._threads.pop(thread_id, None)
+
+        policy.log(
+            f"retention purge dry_run={policy.dry_run} batch={limit} "
+            f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+        )
+        return stats
     
     def close(self) -> None:
         return None
