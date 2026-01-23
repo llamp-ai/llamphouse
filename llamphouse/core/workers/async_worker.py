@@ -1,10 +1,11 @@
 import asyncio
 import logging
 import inspect
+import json
 from typing import Optional, Sequence, Tuple
 from opentelemetry import propagate, context as otel_context
 from opentelemetry.trace import Status, StatusCode
-from ..tracing import get_tracer
+from ..tracing import get_tracer, span_context
 from ..types.enum import run_status, event_type
 from .base_worker import BaseWorker
 from ..assistant import Assistant
@@ -16,8 +17,8 @@ from ..queue.base_queue import BaseQueue
 from ..queue.types import QueueMessage
 from ..queue.exceptions import QueueRateLimitError, QueueRetryExceeded
 
-logger = logging.getLogger(__name__)
-tracer = get_tracer(__name__)
+logger = logging.getLogger("llamphouse.worker")
+tracer = get_tracer("llamphouse.worker")
 
 class AsyncWorker(BaseWorker):
     def __init__(self, time_out: float = 30.0):
@@ -40,28 +41,43 @@ class AsyncWorker(BaseWorker):
                     continue
                     
                 receipt, message = item
+                ctx = otel_context.get_current()
                 carrier = (message.metadata or {}).get("traceparent", {})
                 if carrier:
                     ctx = propagate.extract(carrier)
                     token = otel_context.attach(ctx)
 
                 run_id, thread_id, assistant_id = message.run_id, message.thread_id, message.assistant_id
-                with tracer.start_as_current_span(
+                with span_context(
+                    tracer,
                     "llamphouse.worker.run",
-                    # context=ctx, 
+                    context=ctx, 
                     attributes={
                         "run.id": run_id,
-                        "thread.id": thread_id,
                         "assistant.id": assistant_id,
                         "queue.attempt": message.attempts,
+                        "gen_ai.system": "llamphouse",
                     },
                 ) as span:
-
                     try:
+                        input_payload = {
+                            "thread_id": thread_id,
+                            "run_id": run_id,
+                            "assistant_id": assistant_id,
+                            "attempt": message.attempts,
+                        }
+                        span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
+
                         # Resolve assistant
                         assistant = next((a for a in assistants if a.id == assistant_id), None)
                         if not assistant:
                             await run_queue.ack(receipt)
+                            span.set_status(Status(StatusCode.ERROR))
+                            span.add_event("assistant.not_found")
+                            span.set_attribute(
+                                "output.value",
+                                json.dumps({"status": "failed", "reason": "assistant.not_found"}, ensure_ascii=True),
+                            )
                             logger.error("Assistant %s not found for run %s", assistant_id, run_id)
                             if thread_id and run_id:
                                 await data_store.update_run_status(thread_id, run_id, run_status.FAILED, {
@@ -80,11 +96,17 @@ class AsyncWorker(BaseWorker):
                         # Build context
                         run_object = await data_store.get_run_by_id(thread_id, run_id)
                         if not run_object:
+                            span.set_status(Status(StatusCode.ERROR))
+                            span.add_event("run.not_found")
+                            span.set_attribute(
+                                "output.value",
+                                json.dumps({"status": "failed", "reason": "run.not_found"}, ensure_ascii=True),
+                            )
                             await run_queue.ack(receipt)
                             continue
 
                         span.set_attribute("gen_ai.operation.name", "chat")
-                        span.set_attribute("thread.id", thread_id)
+                        span.set_attribute("session.id", thread_id)
                         span.set_attribute("run.id", run_id)
                         span.set_attribute("assistant.id", assistant_id)
 
@@ -125,6 +147,11 @@ class AsyncWorker(BaseWorker):
                         else:
                             await asyncio.wait_for(asyncio.to_thread(assistant.run, context), timeout=self.time_out)
                         
+                        output_payload = {"status": "completed", "run_id": run_id}
+                        span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True, default=str))
+                        if run_object and run_object.model:
+                            span.set_attribute("gen_ai.response.model", run_object.model)
+                        span.set_attribute("gen_ai.response.status", "completed")
                         span.set_status(Status(StatusCode.OK))
 
                         if thread_id and run_id:
@@ -143,6 +170,9 @@ class AsyncWorker(BaseWorker):
                             "error.code": error["code"],
                             "error.message": error["message"],
                         })
+                        output_payload = {"status": "failed", "error": error}
+                        span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True))
+                        span.set_attribute("gen_ai.response.status", "failed")
                         span.set_status(Status(StatusCode.ERROR))
                         if thread_id and run_id:
                             await data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)
@@ -155,6 +185,9 @@ class AsyncWorker(BaseWorker):
                             "error.code": error["code"],
                             "error.message": error["message"],
                         })
+                        output_payload = {"status": "failed", "error": error}
+                        span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True))
+                        span.set_attribute("gen_ai.response.status", "failed")
                         span.set_status(Status(StatusCode.ERROR))
                         if thread_id and run_id:
                             await data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)                    
@@ -168,6 +201,9 @@ class AsyncWorker(BaseWorker):
                             "error.message": error["message"],
                             "timeout_s": self.time_out,
                         })
+                        output_payload = {"status": "expired", "error": error}
+                        span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True))
+                        span.set_attribute("gen_ai.response.status", "expired")
                         span.set_status(Status(StatusCode.ERROR))
                         if thread_id and run_id:
                             await data_store.update_run_status(thread_id, run_id, run_status.EXPIRED, error)
@@ -183,6 +219,9 @@ class AsyncWorker(BaseWorker):
                             "error.code": error["code"],
                             "error.message": error["message"],
                         })
+                        output_payload = {"status": "failed", "error": error}
+                        span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True))
+                        span.set_attribute("gen_ai.response.status", "failed")
                         span.set_status(Status(StatusCode.ERROR))
                         if thread_id and run_id:
                             await data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)

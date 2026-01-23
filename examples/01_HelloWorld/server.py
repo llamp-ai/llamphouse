@@ -33,7 +33,7 @@ def main():
     my_assistant = CustomAssistant("my-assistant")
 
     # data store choice
-    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore() for in-memory testing
+    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore()
 
     # retention policy
     retention_policy = RetentionPolicy(ttl_days=30, interval_seconds=24*60*60, batch_size=100, dry_run=False, enabled=True)

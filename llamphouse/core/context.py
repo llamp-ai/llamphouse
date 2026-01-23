@@ -1,10 +1,11 @@
 import asyncio
 import uuid
 import traceback
+import json
 from inspect import isawaitable
 from typing import Any, Callable, Dict, Optional
-from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+from .tracing import get_tracer, span_context
 from .types.message import Attachment, CreateMessageRequest, MessageObject, ModifyMessageRequest
 from .types.run_step import ToolCallsStepDetails, CreateRunStepRequest
 from .types.run import ToolOutput, RunObject, ModifyRunRequest
@@ -25,7 +26,20 @@ from .streaming.stream_events import (
     ToolCallDelta,
 )
 
-stream_tracer = trace.get_tracer("llamphouse.streaming")
+stream_tracer = get_tracer("llamphouse.streaming")
+
+def _content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    parts = []
+    for item in content or []:
+        text = getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else None)
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+def _clip(val: str, max_len: int = 2000) -> str:
+    return val[:max_len] if val else val
 
 def _tap_sync(evt: CanonicalStreamEvent, on_event: Optional[Callable[[CanonicalStreamEvent], Any]]) -> None:
     if not on_event:
@@ -229,17 +243,31 @@ class Context:
         adapter = adapter or OpenAIChatCompletionAdapter()
         emitter = StreamingEmitter(self._send_event, self.assistant_id, self.thread_id, self.run_id)
 
-        with stream_tracer.start_as_current_span(
-            "streaming.handle_completion_stream",
+        with span_context(
+            stream_tracer,
+            "llamphouse.streaming.handle_completion_stream",
             attributes={
                 "assistant.id": self.assistant_id,
-                "thread.id": self.thread_id,
+                "session.id": self.thread_id,
                 "run.id": self.run_id,
+                "gen_ai.system": "llamphouse",
                 "gen_ai.operation.name": "chat",
                 "gen_ai.request.stream": True,
             },
         ) as span:
             try:
+                input_payload = {
+                    "assistant_id": self.assistant_id,
+                    "thread_id": self.thread_id,
+                    "run_id": self.run_id,
+                    "model": self.run.model if self.run else None,
+                    "messages": [
+                        {"role": m.role, "text": _clip(_content_to_text(m.content))}
+                        for m in (self.messages or [])
+                    ],
+                }
+                span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
+
                 if self.run and self.run.model:
                     span.set_attribute("gen_ai.request.model", self.run.model)
                     span.set_attribute("gen_ai.response.model", self.run.model)
@@ -286,6 +314,8 @@ class Context:
                             if total is not None:
                                 span.set_attribute("gen_ai.usage.total_tokens", int(total))
 
+                span.set_attribute("output.value", json.dumps({"text": _clip(emitter.content)}, ensure_ascii=True))
+                span.set_attribute("gen_ai.response.status", "completed")
                 span.set_attribute("result.content_len", len(emitter.content))
                 span.set_status(Status(StatusCode.OK))
                 
@@ -299,7 +329,9 @@ class Context:
                 _tap_sync(finish_evt, on_event)
                 emitter.handle(finish_evt)
                 span.add_event("stream.finished", {"reason": finish_evt.reason})
-
+                span.set_attribute("output.value", json.dumps({"error": str(e)}, ensure_ascii=True))
+                span.set_attribute("gen_ai.response.status", "failed")
+                span.set_attribute("gen_ai.response.finish_reason", "error")
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
             
@@ -309,17 +341,31 @@ class Context:
         adapter = adapter or OpenAIChatCompletionAdapter()
         emitter = StreamingEmitter(self._send_event, self.assistant_id, self.thread_id, self.run_id)
 
-        with stream_tracer.start_as_current_span(
-            "streaming.handle_completion_stream_async",
+        with span_context(
+            stream_tracer,
+            "llamphouse.streaming.handle_completion_stream_async",
             attributes={
                 "assistant.id": self.assistant_id,
-                "thread.id": self.thread_id,
+                "session.id": self.thread_id,
                 "run.id": self.run_id,
+                "gen_ai.system": "llamphouse",
                 "gen_ai.operation.name": "chat",
                 "gen_ai.request.stream": True,
             },
         ) as span:
             try:
+                input_payload = {
+                    "assistant_id": self.assistant_id,
+                    "thread_id": self.thread_id,
+                    "run_id": self.run_id,
+                    "model": self.run.model if self.run else None,
+                    "messages": [
+                        {"role": m.role, "text": _clip(_content_to_text(m.content))}
+                        for m in (self.messages or [])
+                    ],
+                }
+                span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
+
                 if self.run and self.run.model:
                     span.set_attribute("gen_ai.request.model", self.run.model)
                     span.set_attribute("gen_ai.response.model", self.run.model)
@@ -366,6 +412,8 @@ class Context:
                             if total is not None:
                                 span.set_attribute("gen_ai.usage.total_tokens", int(total))
 
+                span.set_attribute("output.value", json.dumps({"text": _clip(emitter.content)}, ensure_ascii=True))
+                span.set_attribute("gen_ai.response.status", "completed")
                 span.set_attribute("result.content_len", len(emitter.content))
                 span.set_status(Status(StatusCode.OK))
 
@@ -379,7 +427,9 @@ class Context:
                 await _tap_async(finish_evt, on_event)
                 emitter.handle(finish_evt)
                 span.add_event("stream.finished", {"reason": finish_evt.reason})
-
+                span.set_attribute("output.value", json.dumps({"error": str(e)}, ensure_ascii=True))
+                span.set_attribute("gen_ai.response.finish_reason", "error")
+                span.set_attribute("gen_ai.response.status", "failed")
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise

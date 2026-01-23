@@ -3,17 +3,17 @@ import time
 import uuid
 import heapq
 import logging
+import json
 from collections import deque
 from typing import Any, Optional, Dict, Tuple, Sequence
 from .base_queue import BaseQueue
 from .types import QueueMessage, RetryPolicy, RateLimitPolicy
 from .exceptions import QueueRateLimitError, QueueRetryExceeded
-from ..tracing import get_tracer
+from ..tracing import get_tracer, span_context
 from opentelemetry.trace import Status, StatusCode
 
 queue_tracer = get_tracer("llamphouse.queue")
 logger = logging.getLogger("llamphouse.queue.in_memory")
-
 
 class InMemoryQueue(BaseQueue):
     def __init__(self, retry_policy: Optional[RetryPolicy] = None, rate_limit: Optional[RateLimitPolicy] = None) -> None:
@@ -37,13 +37,23 @@ class InMemoryQueue(BaseQueue):
         ready = schedule_at if schedule_at is not None else time.time()
         key = self._assistant_key(message)
 
-        with queue_tracer.start_as_current_span(
-            "queue.enqueue",
+        with span_context(
+            queue_tracer,
+            "llamphouse.queue.enqueue",
             attributes={
                 "queue.backend": "in_memory", 
                 "assistant.key": key},
         ) as span:
             start = time.time()
+
+            input_payload = {
+                "assistant_id": message.assistant_id,
+                "thread_id": message.thread_id,
+                "run_id": message.run_id,
+                "schedule_at": schedule_at,
+            }
+            span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
+
             # Rate limit per key
             limiter = self._rate_history.setdefault(key, deque())
             now = time.time()
@@ -52,6 +62,15 @@ class InMemoryQueue(BaseQueue):
                 limiter.popleft()
             if len(limiter) >= self.rate_limit.max_per_minute:
                 logger.info("enqueue rate limit exceeded for key=%s", key)
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event(
+                    "queue.rate_limit_exceeded",
+                    {"assistant.key": key, "limit": self.rate_limit.max_per_minute, "window_s": window},
+                )
+                span.set_attribute(
+                    "output.value",
+                    json.dumps({"status": "failed", "reason": "rate_limit_exceeded"}, ensure_ascii=True),
+                )
                 raise QueueRateLimitError(key, self.rate_limit.max_per_minute, window)
             limiter.append(now)
 
@@ -62,14 +81,20 @@ class InMemoryQueue(BaseQueue):
                 self._not_empty.notify()
 
             logger.debug("enqueue: key=%s run_id=%s receipt=%s ready=%s", key, message.run_id, receipt, ready)
-            span.set_status(Status(StatusCode.OK))
+            output_payload = {
+                "receipt": receipt,
+                "ready_at": ready,
+                "queue.size.pending": len(heap),
+            }
+            span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True))
             span.set_attribute("queue.latency_ms", (time.time() - start) * 1000)
-            span.set_attribute("queue.size.pending", len(heap))
+            span.set_status(Status(StatusCode.OK))
             return receipt
 
     async def dequeue(self, assistant_ids: Optional[Sequence[str]] = None, timeout: Optional[float] = None) -> Optional[Tuple[str, QueueMessage]]:
-        with queue_tracer.start_as_current_span(
-            "queue.dequeue",
+        with span_context(
+            queue_tracer,
+            "llamphouse.queue.dequeue",
             attributes={
                 "queue.backend": "in_memory",
                 "assistant.keys": ",".join(assistant_ids) if assistant_ids else "any",
@@ -77,6 +102,12 @@ class InMemoryQueue(BaseQueue):
             },
         ) as span:
             start = time.time()
+            input_payload = {
+                "assistant_ids": list(assistant_ids) if assistant_ids else None,
+                "timeout": timeout,
+            }
+            span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
+
             keys = list(assistant_ids) if assistant_ids else None
             while True:
                 async with self._not_empty:
@@ -92,6 +123,14 @@ class InMemoryQueue(BaseQueue):
                                 logger.debug("dequeue: drop receipt=%s attempts=%s (max=%s)", receipt, message.attempts, self.retry_policy.max_attempts)
                                 raise QueueRetryExceeded(message.run_id, message.attempts, self.retry_policy.max_attempts)
                             logger.debug("dequeue: key=%s run_id=%s receipt=%s attempts=%s", self._assistant_key(message), message.run_id, receipt, message.attempts)
+                            output_payload = {
+                                "receipt": receipt,
+                                "run_id": message.run_id,
+                                "thread_id": message.thread_id,
+                                "assistant_id": message.assistant_id,
+                                "attempts": message.attempts,
+                            }
+                            span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True))
                             span.set_status(Status(StatusCode.OK))
                             span.set_attribute("queue.latency_ms", (time.time() - start) * 1000)
                             return receipt, message
@@ -100,6 +139,8 @@ class InMemoryQueue(BaseQueue):
                         next_ready = self._next_ready_ts(keys)
                         remaining = None if timeout is None else timeout - (now - start)
                         if timeout is not None and remaining <= 0:
+                            span.set_attribute("output.value", json.dumps({"result": "empty"}, ensure_ascii=True))
+                            span.set_status(Status(StatusCode.OK))
                             return None
                         sleep_for = None
                         if next_ready is not None:
@@ -114,6 +155,7 @@ class InMemoryQueue(BaseQueue):
                             span.add_event("queue.dequeue.timeout", {"timeout": timeout})
                             span.set_attribute("queue.latency_ms", (time.time() - start) * 1000)
                             span.set_status(Status(StatusCode.ERROR))
+                            span.set_attribute("output.value", json.dumps({"result": "timeout"}, ensure_ascii=True))
                             return None
 
     def _pop_ready(self, keys: Optional[Sequence[str]], now: float):
@@ -144,15 +186,26 @@ class InMemoryQueue(BaseQueue):
             return
         backoff = delay if delay is not None else self.retry_policy.next_backoff(msg.attempts)
         key = self._assistant_key(msg)
-        with queue_tracer.start_as_current_span(
-            "queue.requeue",
+        with span_context(
+            queue_tracer,
+            "llamphouse.queue.requeue",
             attributes={
                 "queue.backend": "in_memory",
                 "assistant.key": key,
                 "backoff_s": backoff,
                 "attempts": msg.attempts,
             },
-        ):
+        ) as span:
+            input_payload = {
+                "receipt": receipt,
+                "run_id": msg.run_id,
+                "thread_id": msg.thread_id,
+                "assistant_id": msg.assistant_id,
+                "attempts": msg.attempts,
+                "backoff_s": backoff,
+            }
+            span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
+
             ready = time.time() + backoff
             async with self._not_empty:
                 heap = self._queues.setdefault(key, [])
@@ -160,6 +213,13 @@ class InMemoryQueue(BaseQueue):
                 self._pending[receipt] = msg
                 self._not_empty.notify()
                 logger.debug("requeue key=%s receipt=%s delay=%.3f attempts=%s", key, receipt, backoff, msg.attempts if msg else None)
+
+            output_payload = {
+                "ready_at": ready,
+                "queue.size.pending": len(heap),
+            }
+            span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True))
+            span.set_status(Status(StatusCode.OK))
 
     async def size(self) -> int:
         async with self._lock:

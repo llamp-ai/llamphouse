@@ -3,9 +3,9 @@ import logging
 import os
 import uuid
 import copy
+import json
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, List, Literal, Optional
-
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,7 +14,7 @@ from opentelemetry.trace import Status, StatusCode
 from .retention import RetentionPolicy, PurgeStats
 from .base_data_store import BaseDataStore
 from .._utils._utils import get_max_db_connections
-from ..tracing import get_tracer
+from ..tracing import get_tracer, span_context
 from ..database.models import Message, Run, Thread, RunStep
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..types.assistant import AssistantObject
@@ -47,6 +47,22 @@ def _to_jsonable(val):
     if isinstance(val, dict):
         return {k: _to_jsonable(v) for k, v in val.items()}
     return val
+
+def _content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    parts = []
+    for item in content or []:
+        text = getattr(item, "text", None) or (item.get("text") if isinstance(item, dict) else None)
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+def _clip(val: str, max_len: int = 2000) -> str:
+    return val[:max_len] if val else val
+
+def _json_dump(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=True, default=str)
 
 class PostgresDataStore(BaseDataStore):
     def __init__(self, db_session: Session = None):
@@ -106,18 +122,29 @@ class PostgresDataStore(BaseDataStore):
             raise
 
     async def insert_message(self, thread_id: str, message: CreateMessageRequest, status: str = message_status.COMPLETED, event_queue: BaseEventQueue = None) -> MessageObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.insert_message",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.insert_message",
             attributes={
                 "store.backend": "postgres",
-            "thread.id": thread_id,
+                "session.id": thread_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "message.create",
             },
         ) as span:
             try:
+                input_payload = {
+                    "thread_id": thread_id,
+                    "role": message.role,
+                    "text": _clip(_content_to_text(message.content)),
+                }
+                span.set_attribute("input.value", _json_dump(input_payload))
+
                 thread = self.session.query(Thread).filter(Thread.id == thread_id).first()
                 if not thread:
                     span.add_event("thread.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"message_id": None, "status": None}))
                     return None
                 metadata = message.metadata if message.metadata else {}
                 message_id = metadata.get("message_id", str(uuid.uuid4()))
@@ -150,6 +177,11 @@ class PostgresDataStore(BaseDataStore):
                         await event_queue.add(result.to_event(event_type.MESSAGE_IN_PROGRESS))
                         await event_queue.add(result.to_event(event_type.MESSAGE_COMPLETED))
 
+                output_payload = {
+                    "message_id": result.id,
+                    "status": result.status,
+                }
+                span.set_attribute("output.value", _json_dump(output_payload))
                 span.set_status(Status(StatusCode.OK))
                 return result
 
@@ -163,24 +195,42 @@ class PostgresDataStore(BaseDataStore):
     async def list_messages(self, thread_id: str, limit: int = 20, order: Literal["desc", "asc"] = "desc", after: Optional[str] = None, before: Optional[str] = None) -> ListResponse | None:
         attrs = {
             "store.backend": "postgres",
-            "thread.id": thread_id,
+            "session.id": thread_id,
             "limit": limit,
             "order": order,
+            "gen_ai.conversation.id": thread_id,
+            "gen_ai.operation.name": "messages.list",
         }
         if after is not None:
             attrs["after"] = after
         if before is not None:
             attrs["before"] = before
         
-        with store_tracer.start_as_current_span(
-            "data_store.list_messages",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_messages",
             attributes=attrs
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "limit": limit,
+                        "order": order,
+                        "after": after,
+                        "before": before,
+                    }),
+                )
+
                 thread = self.session.query(Thread).filter(Thread.id == thread_id).first()
                 if not thread:
                     span.add_event("thread.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute(
+                        "output.value",
+                        _json_dump({"count": 0, "first_id": None, "last_id": None, "has_more": False}),
+                    )
                     return None
 
                 query = self.session.query(Message).filter(Message.thread_id == thread_id)
@@ -233,9 +283,15 @@ class PostgresDataStore(BaseDataStore):
                 first_id = messages[0].id if messages else None
                 last_id = messages[-1].id if messages else None
 
-                span.set_attribute("result.count", len(messages))
-                span.set_attribute("result.has_more", has_more)
+                output_payload = {
+                    "count": len(messages),
+                    "first_id": first_id,
+                    "last_id": last_id,
+                    "has_more": has_more,
+                }
+                span.set_attribute("output.value", _json_dump(output_payload))
                 span.set_status(Status(StatusCode.OK))
+                
                 return ListResponse(
                     data=messages, 
                     first_id=first_id, 
@@ -251,15 +307,21 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
     async def get_message_by_id(self, thread_id: str, message_id: str) -> MessageObject | None:
-        with  store_tracer.start_as_current_span(
-            "data_store.get_message_by_id",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.get_message_by_id",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
                 "message.id": message_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "message.get",
             },
         ) as span:
             try:
+                input_payload = {"thread_id": thread_id, "message.id": message_id}
+                span.set_attribute("input.value", _json_dump(input_payload))
+
                 query = (
                     self.session.query(Message)
                     .filter(Message.thread_id == thread_id, Message.id == message_id)
@@ -268,14 +330,25 @@ class PostgresDataStore(BaseDataStore):
                 if not query:
                     span.add_event("message.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"message_id": None, "status": None}))
                     return None
 
                 message = query.to_dict()
                 if isinstance(message.get("content"), str):
                     message["content"] = [TextContent(text=message["content"])]
 
+                result = MessageObject.model_validate(message)
+
+                output_payload = {
+                    "message_id": result.id,
+                    "status": result.status,
+                    "role": result.role,
+                    "text": _clip(_content_to_text(result.content)),
+                }
+                span.set_attribute("output.value", _json_dump(output_payload))
                 span.set_status(Status(StatusCode.OK))
-                return MessageObject.model_validate(message)
+                return result
+            
             except Exception as e:
                 self.session.rollback()
                 span.record_exception(e)
@@ -284,15 +357,25 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
     async def update_message(self, thread_id: str, message_id: str, modifications: ModifyMessageRequest) -> MessageObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.update_message",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.update_message",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
                 "message.id": message_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "message.update",
             },
         ) as span:
             try:
+                input_payload = {
+                    "thread_id": thread_id,
+                    "message.id": message_id,
+                    "metadata": modifications.metadata,
+                }
+                span.set_attribute("input.value", _json_dump(input_payload))
+
                 query = (
                     self.session.query(Message)
                     .filter(Message.thread_id == thread_id, Message.id == message_id)
@@ -301,6 +384,7 @@ class PostgresDataStore(BaseDataStore):
                 if not query:
                     span.add_event("message.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"message_id": None, "status": None}))
                     return None
                 
                 if modifications.metadata is not None:
@@ -315,8 +399,12 @@ class PostgresDataStore(BaseDataStore):
                 if isinstance(message.get("content"), str):
                     message["content"] =  [TextContent(text=message["content"])]
 
+                result = MessageObject.model_validate(message)
+
+                output_payload = {"message_id": result.id, "status": result.status}
+                span.set_attribute("output.value", _json_dump(output_payload))
                 span.set_status(Status(StatusCode.OK))
-                return MessageObject.model_validate(message)
+                return result
 
             except Exception as e:
                 self.session.rollback()
@@ -326,15 +414,23 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
     async def delete_message(self, thread_id: str, message_id: str) -> str | None:
-        with store_tracer.start_as_current_span(
-            "data_store.delete_message",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.delete_message",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
                 "message.id": message_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "message.delete",
             },
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({"thread_id": thread_id, "message.id": message_id}),
+                )
+
                 deleted = (
                     self.session.query(Message)
                     .filter(Message.thread_id == thread_id, Message.id == message_id)
@@ -344,9 +440,11 @@ class PostgresDataStore(BaseDataStore):
                     self.session.rollback()
                     span.add_event("message.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"message_id": None, "deleted": False}))
                     return None
                 self.session.commit()
                 span.set_status(Status(StatusCode.OK))
+                span.set_attribute("output.value", _json_dump({"message_id": message_id, "deleted": True}))
                 return message_id
 
             except Exception as e:
@@ -357,14 +455,19 @@ class PostgresDataStore(BaseDataStore):
                 return None
     
     async def get_thread_by_id(self, thread_id: str) -> ThreadObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.get_thread_by_id",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.get_thread_by_id",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "thread.get",
             },
         ) as span:
             try:
+                span.set_attribute("input.value", _json_dump({"thread_id": thread_id}))
+
                 thread = (
                     self.session.query(Thread)
                     .filter(Thread.id == thread_id)
@@ -373,9 +476,18 @@ class PostgresDataStore(BaseDataStore):
                 if not thread:
                     span.add_event("thread.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "has_thread": False}))
                     return None
 
                 span.set_status(Status(StatusCode.OK))
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({
+                        "thread_id": thread.id,
+                        "created_at": thread.created_at,
+                        "has_thread": True,
+                    }),
+                )
                 return ThreadObject(
                     id=thread.id,
                     created_at=thread.created_at,
@@ -389,96 +501,10 @@ class PostgresDataStore(BaseDataStore):
                 logger.exception("get_thread_by_id() failed")
                 return None
 
-    async def update_thread(self, thread_id: str, modifications: ModifyThreadRequest) -> ThreadObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.update_thread",
-            attributes={
-                "store.backend": "postgres",
-                "thread.id": thread_id,
-            },
-        ) as span:
-            try:
-                thread = (
-                    self.session.query(Thread)
-                    .filter(Thread.id == thread_id)
-                    .first()
-                )
-                if not thread:
-                    span.add_event("thread.not_found")
-                    span.set_status(Status(StatusCode.ERROR))  
-                    return None
-
-                if modifications.metadata is not None:
-                    base_meta = dict(thread.meta or {})
-                    base_meta.update(modifications.metadata or {})
-                    thread.meta = _to_jsonable(base_meta)
-
-                if modifications.tool_resources is not None:
-                    thread.tool_resources = modifications.tool_resources
-
-                self.session.commit()
-                self.session.refresh(thread)
-                span.set_status(Status(StatusCode.OK))
-                return ThreadObject(
-                    id=thread.id,
-                    created_at=thread.created_at,
-                    tool_resources=thread.tool_resources,
-                    metadata=thread.meta or {},
-                )
-            except Exception as e:
-                self.session.rollback()
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR))
-                logger.exception("update_thread() failed")
-                return None
-    
-    async def delete_thread(self, thread_id: str) -> str | None:
-        with store_tracer.start_as_current_span(
-            "data_store.delete_thread",
-            attributes={
-                "store.backend": "postgres",
-                "thread.id": thread_id,
-            },
-        ) as span:
-            try:
-                thread = (
-                    self.session.query(Thread)
-                    .filter(Thread.id == thread_id)
-                    .first()
-                )
-                if not thread:
-                    span.add_event("thread.not_found")
-                    span.set_status(Status(StatusCode.ERROR))
-                    return None
-                
-                self.session.query(RunStep).filter(RunStep.thread_id == thread_id).delete()
-                self.session.query(Run).filter(Run.thread_id == thread_id).delete()
-                self.session.query(Message).filter(Message.thread_id == thread_id).delete()
-
-                deleted = (
-                    self.session.query(Thread)
-                    .filter(Thread.id == thread_id)
-                    .delete()
-                )
-                if not deleted:
-                    self.session.rollback()
-                    span.add_event("thread.not_deleted") 
-                    span.set_status(StatusCode.ERROR)
-                    return None
-                
-                self.session.commit()
-                span.set_status(Status(StatusCode.OK))
-                return thread_id
-            except Exception as e:
-                self.session.rollback()
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR))
-                logger.exception("deleted_thread() failed")
-                return None
-    
     async def insert_thread(self, thread: CreateThreadRequest, event_queue: BaseEventQueue = None) -> ThreadObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.insert_thread",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.insert_thread",
             attributes={
                 "store.backend": "postgres", 
             },
@@ -486,7 +512,19 @@ class PostgresDataStore(BaseDataStore):
             try:
                 metadata = thread.metadata or {}
                 thread_id = metadata.get("thread_id", str(uuid.uuid4()))
-                span.set_attribute("thread.id", thread_id)
+                span.set_attribute("session.id", thread_id)
+                span.set_attribute("gen_ai.conversation.id", thread_id)
+                span.set_attribute("gen_ai.operation.name", "thread.create")
+
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "metadata": metadata,
+                        "tool_resources": thread.tool_resources,
+                        "message_count": len(thread.messages or []),
+                    }),
+                )
 
                 existing = (
                     self.session.query(Thread)
@@ -496,6 +534,7 @@ class PostgresDataStore(BaseDataStore):
                 if existing:
                     span.add_event("thread.already_exists")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "created": False}))
                     return None
 
                 req = thread
@@ -523,6 +562,7 @@ class PostgresDataStore(BaseDataStore):
                 for msg in req.messages or []:
                     await self.insert_message(thread_id, msg, event_queue=event_queue)
                 span.set_status(Status(StatusCode.OK))
+                span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "created": True}))
                 return thread_obj
 
             except Exception as e:
@@ -531,17 +571,133 @@ class PostgresDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 logger.exception("insert_thread() failed")
                 return None
-        
-    async def get_run_by_id(self, thread_id: str, run_id: str) -> RunObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.get_run_by_id",
+            
+    async def update_thread(self, thread_id: str, modifications: ModifyThreadRequest) -> ThreadObject | None:
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.update_thread",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
-                "run.id": run_id,
+                "session.id": thread_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "thread.update",
             },
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "metadata": modifications.metadata,
+                        "tool_resources": modifications.tool_resources,
+                    }),
+                )
+                thread = (
+                    self.session.query(Thread)
+                    .filter(Thread.id == thread_id)
+                    .first()
+                )
+                if not thread:
+                    span.add_event("thread.not_found")
+                    span.set_status(Status(StatusCode.ERROR)) 
+                    span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "updated": False})) 
+                    return None
+
+                if modifications.metadata is not None:
+                    base_meta = dict(thread.meta or {})
+                    base_meta.update(modifications.metadata or {})
+                    thread.meta = _to_jsonable(base_meta)
+
+                if modifications.tool_resources is not None:
+                    thread.tool_resources = modifications.tool_resources
+
+                self.session.commit()
+                self.session.refresh(thread)
+                span.set_status(Status(StatusCode.OK))
+                span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "updated": True}))
+                return ThreadObject(
+                    id=thread.id,
+                    created_at=thread.created_at,
+                    tool_resources=thread.tool_resources,
+                    metadata=thread.meta or {},
+                )
+            except Exception as e:
+                self.session.rollback()
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+                logger.exception("update_thread() failed")
+                return None
+    
+    async def delete_thread(self, thread_id: str) -> str | None:
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.delete_thread",
+            attributes={
+                "store.backend": "postgres",
+                "session.id": thread_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "thread.delete",
+            },
+        ) as span:
+            try:
+                span.set_attribute("input.value", _json_dump({"thread_id": thread_id}))
+
+                thread = (
+                    self.session.query(Thread)
+                    .filter(Thread.id == thread_id)
+                    .first()
+                )
+                if not thread:
+                    span.add_event("thread.not_found")
+                    span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "deleted": False}))
+                    return None
+                
+                self.session.query(RunStep).filter(RunStep.thread_id == thread_id).delete()
+                self.session.query(Run).filter(Run.thread_id == thread_id).delete()
+                self.session.query(Message).filter(Message.thread_id == thread_id).delete()
+
+                deleted = (
+                    self.session.query(Thread)
+                    .filter(Thread.id == thread_id)
+                    .delete()
+                )
+                if not deleted:
+                    self.session.rollback()
+                    span.add_event("thread.not_deleted") 
+                    span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute(
+                        "output.value",
+                        _json_dump({"thread_id": thread_id, "deleted": False}),
+                    )
+                    return None
+                
+                self.session.commit()
+                span.set_status(Status(StatusCode.OK))
+                span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "deleted": True}))
+                return thread_id
+            except Exception as e:
+                self.session.rollback()
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+                logger.exception("deleted_thread() failed")
+                return None
+        
+    async def get_run_by_id(self, thread_id: str, run_id: str) -> RunObject | None:
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.get_run_by_id",
+            attributes={
+                "store.backend": "postgres",
+                "session.id": thread_id,
+                "run.id": run_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "run.get",
+            },
+        ) as span:
+            try:
+                span.set_attribute("input.value", _json_dump({"thread_id": thread_id, "run.id": run_id}))
+
                 run = (
                     self.session.query(Run)
                     .filter(Run.thread_id == thread_id, Run.id == run_id)
@@ -550,11 +706,23 @@ class PostgresDataStore(BaseDataStore):
                 if not run:
                     span.add_event("run.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"run_id": None, "status": None}))
                     return None
 
                 run_data = run.to_dict()
+                result = RunObject.model_validate(run_data)
+
                 span.set_status(Status(StatusCode.OK))
-                return RunObject.model_validate(run_data)
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({
+                        "run_id": result.id,
+                        "status": result.status,
+                        "model": result.model,
+                        "assistant_id": result.assistant_id,
+                    }),
+                )                
+                return result
 
             except Exception as e:
                 self.session.rollback()
@@ -564,15 +732,29 @@ class PostgresDataStore(BaseDataStore):
                 return None
   
     async def insert_run(self, thread_id: str, run: RunCreateRequest, assistant: AssistantObject, event_queue: BaseEventQueue = None) -> RunObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.insert_run",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.insert_run",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
                 "assistant.id": assistant.id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "run.create",
             }
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "assistant_id": assistant.id,
+                        "model": run.model or assistant.model,
+                        "instructions": _clip(run.instructions or ""),
+                        "tools": run.tools,
+                        "additional_messages": len(run.additional_messages or []),
+                    }),
+                )
                 thread = (
                     self.session.query(Thread)
                     .filter(Thread.id == thread_id)
@@ -581,6 +763,7 @@ class PostgresDataStore(BaseDataStore):
                 if not thread:
                     span.add_event("thread.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"run_id": None, "status": None}))
                     return None
 
                 metadata = run.metadata or {}
@@ -625,6 +808,15 @@ class PostgresDataStore(BaseDataStore):
                     )
 
                 span.set_status(Status(StatusCode.OK))
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({
+                        "run_id": run_obj.id,
+                        "status": run_obj.status,
+                        "model": run_obj.model,
+                        "assistant_id": run_obj.assistant_id,
+                    }),
+                )
                 return run_obj
 
             except Exception as e:            
@@ -637,20 +829,33 @@ class PostgresDataStore(BaseDataStore):
     async def list_runs(self, thread_id: str, limit: int = 20, order: Literal["desc", "asc"] = "desc", after: Optional[str] = None, before: Optional[str] = None) -> ListResponse | None:
         attrs = {
             "store.backend": "postgres",
-            "thread.id": thread_id,
+            "session.id": thread_id,
             "limit": limit,
             "order": order,
+            "gen_ai.conversation.id": thread_id,
+            "gen_ai.operation.name": "runs.list",
         }
         if after is not None:
             attrs["after"] = after
         if before is not None:
             attrs["before"] = before
         
-        with store_tracer.start_as_current_span(
-            "data_store.list_runs",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_runs",
             attributes=attrs
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "limit": limit,
+                        "order": order,
+                        "after": after,
+                        "before": before,
+                    }),
+                )
                 thread = (
                     self.session.query(Thread)
                     .filter(Thread.id == thread_id)
@@ -659,6 +864,10 @@ class PostgresDataStore(BaseDataStore):
                 if not thread:
                     span.add_event("thread.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute(
+                        "output.value",
+                        _json_dump({"count": 0, "first_id": None, "last_id": None, "has_more": False}),
+                    )
                     return None
 
                 query = self.session.query(Run).filter(Run.thread_id==thread_id)
@@ -712,8 +921,13 @@ class PostgresDataStore(BaseDataStore):
                 first_id = runs[0].id if runs else None
                 last_id = runs[-1].id if runs else None
 
-                span.set_attribute("result.count", len(runs))
-                span.set_attribute("result.has_more", has_more)
+                output_payload = {
+                    "count": len(runs),
+                    "first_id": first_id,
+                    "last_id": last_id,
+                    "has_more": has_more,
+                }
+                span.set_attribute("output.value", _json_dump(output_payload))
                 span.set_status(Status(StatusCode.OK))
                 return ListResponse(
                     data=runs,
@@ -730,15 +944,30 @@ class PostgresDataStore(BaseDataStore):
                 return None
    
     async def update_run(self, thread_id: str, run_id: str, modifications: ModifyRunRequest) -> RunObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.update_run",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.update_run",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
                 "run.id": run_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "run.update",
             }
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "run_id": run_id,
+                        "metadata": modifications.metadata,
+                        "instructions": _clip(modifications.instructions or ""),
+                        "additional_instructions": _clip(modifications.additional_instructions or ""),
+                        "tools": modifications.tools,
+                    }),
+                )
+
                 run = (
                     self.session.query(Run)
                     .filter(Run.thread_id == thread_id, Run.id == run_id)
@@ -747,6 +976,7 @@ class PostgresDataStore(BaseDataStore):
                 if not run:
                     span.add_event("run.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"run_id": None, "updated": False}))
                     return None
 
                 if modifications.metadata is not None:
@@ -757,6 +987,10 @@ class PostgresDataStore(BaseDataStore):
                 self.session.commit()
                 self.session.refresh(run)
                 span.set_status(Status(StatusCode.OK))
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({"run_id": run.id, "status": run.status, "updated": True}),
+                )
                 return RunObject.model_validate(run.to_dict())
 
             except Exception as e:
@@ -767,14 +1001,31 @@ class PostgresDataStore(BaseDataStore):
                 return None
   
     async def submit_tool_outputs_to_run(self, thread_id: str, run_id: str, tool_outputs: List[ToolOutput]) -> RunObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.submit_tool_outputs_to_run",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.submit_tool_outputs_to_run",
             attributes={
                 "store.backend": "postgres", 
-                "thread.id": thread_id, 
-                "run.id": run_id},
+                "session.id": thread_id, 
+                "run.id": run_id,                
+                "tool_outputs.count": len(tool_outputs),
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "run.submit_tool_outputs",
+            },
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "run_id": run_id,
+                        "tool_outputs": [
+                            {"tool_call_id": o.tool_call_id, "output": _clip(o.output)}
+                            for o in tool_outputs
+                        ],
+                    }),
+                )
+
                 run = (
                     self.session.query(Run)
                     .filter(Run.thread_id == thread_id, Run.id == run_id)
@@ -783,6 +1034,7 @@ class PostgresDataStore(BaseDataStore):
                 if not run:
                     span.add_event("run.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"run_id": None, "status": None}))
                     return None
 
                 if run.status != run_status.REQUIRES_ACTION:
@@ -847,15 +1099,28 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
     async def insert_run_step(self, thread_id: str, run_id: str, step: CreateRunStepRequest, status: str = run_step_status.COMPLETED, event_queue: BaseEventQueue = None) -> RunStepObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.insert_run_step",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.insert_run_step",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
                 "run.id": run_id,
+                "step.type": step.step_details.type,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "run_step.create",
             },
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "run_id": run_id,
+                        "step_type": step.step_details.type,
+                        "status": status,
+                    }),
+                )
                 run = (
                     self.session.query(Run)
                     .filter(Run.thread_id == thread_id, Run.id == run_id)
@@ -864,6 +1129,7 @@ class PostgresDataStore(BaseDataStore):
                 if not run:
                     span.add_event("run.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"run_id": None, "status": None}))
                     return None
 
                 step_id = step.metadata.get("step_id", str(uuid.uuid4()))
@@ -896,6 +1162,14 @@ class PostgresDataStore(BaseDataStore):
                         await event_queue.add(step_obj.to_event(event_type.RUN_STEP_IN_PROGRESS))
                         await event_queue.add(step_obj.to_event(event_type.RUN_STEP_COMPLETED))
 
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({
+                        "step_id": step_obj.id,
+                        "status": step_obj.status,
+                        "type": step_obj.type,
+                    }),
+                )
                 span.set_status(Status(StatusCode.OK))
                 return step_obj
             except Exception as e:
@@ -908,20 +1182,34 @@ class PostgresDataStore(BaseDataStore):
     def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         attrs = {
             "store.backend": "postgres",
-            "thread.id": thread_id,
+            "session.id": thread_id,
             "limit": limit,
             "order": order,
+            "gen_ai.conversation.id": thread_id,
+            "gen_ai.operation.name": "run_steps.list",
         }
         if after is not None:
             attrs["after"] = after
         if before is not None:
             attrs["before"] = before
         
-        with store_tracer.start_as_current_span(
-            "data_store.list_run_steps",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_run_steps",
             attributes=attrs
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "run_id": run_id,
+                        "limit": limit,
+                        "order": order,
+                        "after": after,
+                        "before": before,
+                    }),
+                )
                 run = (
                     self.session.query(Run)
                     .filter(Run.thread_id == thread_id, Run.id == run_id)
@@ -930,6 +1218,10 @@ class PostgresDataStore(BaseDataStore):
                 if not run:
                     span.add_event("run.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute(
+                        "output.value",
+                        _json_dump({"count": 0, "first_id": None, "last_id": None, "has_more": False}),
+                    )
                     return None
 
                 query = self.session.query(RunStep).filter(RunStep.thread_id == thread_id, RunStep.run_id == run_id)
@@ -985,8 +1277,13 @@ class PostgresDataStore(BaseDataStore):
                 first_id = steps[0].id if steps else None
                 last_id = steps[-1].id if steps else None
 
-                span.set_attribute("result.count", len(steps))
-                span.set_attribute("result.has_more", has_more)
+                output_payload = {
+                    "count": len(steps),
+                    "first_id": first_id,
+                    "last_id": last_id,
+                    "has_more": has_more,
+                }
+                span.set_attribute("output.value", _json_dump(output_payload))
                 span.set_status(Status(StatusCode.OK))
                 return ListResponse(
                     data=steps,
@@ -1002,16 +1299,23 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
     def get_run_step_by_id(self, thread_id: str, run_id: str, step_id: str) -> RunStepObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.get_run_step_by_id",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.get_run_step_by_id",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
                 "run.id": run_id,
                 "step.id": step_id,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "run_step.get",
             },
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({"thread_id": thread_id, "run_id": run_id, "step_id": step_id}),
+                )
                 step = (
                     self.session.query(RunStep)
                     .filter(
@@ -1024,11 +1328,17 @@ class PostgresDataStore(BaseDataStore):
                 if not step:
                     span.add_event("run_step.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"step_id": None, "status": None}))
                     return None
 
+                step_obj = RunStepObject.model_validate(step.to_dict())
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({"step_id": step_obj.id, "status": step_obj.status, "type": step_obj.type}),
+                )
                 span.set_status(Status(StatusCode.OK))
-                return RunStepObject.model_validate(step.to_dict())
-
+                return step_obj
+            
             except Exception as e:
                 self.session.rollback()
                 span.record_exception(e)
@@ -1037,14 +1347,18 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
     async def get_latest_run_step_by_run_id(self, run_id: str) -> RunStepObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.get_latest_run_step_by_run_id",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.get_latest_run_step_by_run_id",
             attributes={
                 "store.backend": "postgres",
                 "run.id": run_id,
+                "gen_ai.operation.name": "run_step.get_latest",
             },
         ) as span:
             try:
+                span.set_attribute("input.value", _json_dump({"run_id": run_id}))
+
                 step = (
                     self.session.query(RunStep)
                     .filter(RunStep.run_id == run_id)
@@ -1054,10 +1368,16 @@ class PostgresDataStore(BaseDataStore):
                 if not step:
                     span.add_event("run_step.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"step_id": None, "status": None}))
                     return None
                 
+                step_obj = RunStepObject.model_validate(step.to_dict())
                 span.set_status(Status(StatusCode.OK))
-                return RunStepObject.model_validate(step.to_dict())
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({"step_id": step_obj.id, "status": step_obj.status, "type": step_obj.type}),
+                )
+                return step_obj
             
             except Exception as e:
                 self.session.rollback()
@@ -1067,16 +1387,27 @@ class PostgresDataStore(BaseDataStore):
             return None
 
     async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.update_run_status",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.update_run_status",
             attributes={
                 "store.backend": "postgres",
-                "thread.id": thread_id,
+                "session.id": thread_id,
                 "run.id": run_id,
-                "run.status": status,
+                "gen_ai.conversation.id": thread_id,
+                "gen_ai.operation.name": "run.update_status",
             }
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "thread_id": thread_id,
+                        "run_id": run_id,
+                        "status": status,
+                        "error": error,
+                    }),
+                )
                 run = (
                     self.session.query(Run)
                     .filter(Run.thread_id == thread_id, Run.id == run_id)
@@ -1085,18 +1416,25 @@ class PostgresDataStore(BaseDataStore):
                 if not run:
                     span.add_event("run.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"run_id": None, "status": None}))
                     return None
 
                 if isinstance(error, str):
                     error = {"message": error, "code": "server_error"}
                 elif isinstance(error, dict) and "code" not in error:
                     error = {**error, "code": "server_error"}
+                elif error is not None:
+                    error = {"message": str(error), "code": "server_error"}
 
                 run.status = status
                 run.last_error = _to_jsonable(error)
                 self.session.commit()
                 self.session.refresh(run)
                 span.set_status(Status(StatusCode.OK))
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({"run_id": run.id, "status": run.status}),
+                )
                 return RunObject.model_validate(run.to_dict())
             except Exception as e:
                 self.session.rollback()
@@ -1106,14 +1444,26 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
     async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
-        with store_tracer.start_as_current_span(
-            "data_store.update_run_step_status",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.update_run_step_status",
             attributes={
                 "store.backend": "postgres",
                 "run_step.id": run_step_id,
+                "gen_ai.operation.name": "run_step.update_status",
             },
         ) as span:
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "run_step_id": run_step_id,
+                        "status": status,
+                        "output": _clip(str(output)) if output is not None else None,
+                        "error": error,
+                    }),
+                )
+
                 step = (
                     self.session.query(RunStep)
                     .filter(RunStep.id == run_step_id)
@@ -1122,6 +1472,7 @@ class PostgresDataStore(BaseDataStore):
                 if not step:
                     span.add_event("run_step.not_found")
                     span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("output.value", _json_dump({"run_step_id": None, "status": None}))
                     return None
 
                 if isinstance(error, str):
@@ -1149,6 +1500,14 @@ class PostgresDataStore(BaseDataStore):
                 self.session.commit()
                 self.session.refresh(step)
                 span.set_status(Status(StatusCode.OK))
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({
+                        "run_step_id": step.id,
+                        "status": step.status,
+                        "type": step.type,
+                    }),
+                )
                 return RunStepObject.model_validate(step.to_dict())
 
             except Exception as e:
@@ -1159,13 +1518,15 @@ class PostgresDataStore(BaseDataStore):
                 return None
 
     async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
-        with store_tracer.start_as_current_span(
-            "data_store.purge_expired",
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.purge_expired",
             attributes={
                 "store.backend": "postgres",
                 "ttl_days": policy.ttl_days,
                 "batch_size": policy.batch_limit(),
                 "dry_run": policy.dry_run,
+                "gen_ai.operation.name": "retention.purge",
             },
         ) as span:
             cutoff = policy.cutoff()
@@ -1173,16 +1534,29 @@ class PostgresDataStore(BaseDataStore):
             stats = PurgeStats()
 
             try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({
+                        "ttl_days": policy.ttl_days,
+                        "batch_size": batch,
+                        "dry_run": policy.dry_run,
+                    }),
+                )
                 q = self.session.query(Thread.id).filter(Thread.created_at < cutoff)
                 if batch:
                     q = q.order_by(Thread.created_at.asc()).limit(batch)
 
                 thread_ids = [row[0] for row in q.all()]
                 if not thread_ids:
-                    span.set_attribute("result.threads", 0)
-                    span.set_attribute("result.messages", 0)
-                    span.set_attribute("result.runs", 0)
-                    span.set_attribute("result.run_steps", 0)
+                    span.set_attribute(
+                        "output.value",
+                        _json_dump({
+                            "threads": 0,
+                            "messages": 0,
+                            "runs": 0,
+                            "run_steps": 0,
+                        }),
+                    )
                     span.set_status(Status(StatusCode.OK))
                     policy.log(
                         f"retention purge dry_run={policy.dry_run} batch={batch} "
@@ -1207,6 +1581,15 @@ class PostgresDataStore(BaseDataStore):
                 policy.log(
                     f"retention purge dry_run={policy.dry_run} batch={batch} "
                     f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
+                )
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({
+                        "threads": stats.threads,
+                        "messages": stats.messages,
+                        "runs": stats.runs,
+                        "run_steps": stats.run_steps,
+                    }),
                 )
                 span.set_status(Status(StatusCode.OK))
                 return stats
