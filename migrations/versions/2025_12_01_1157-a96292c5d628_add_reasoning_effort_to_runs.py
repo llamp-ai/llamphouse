@@ -1,7 +1,7 @@
 """add reasoning_effort to runs
 
 Revision ID: a96292c5d628
-Revises: 95e461947b69
+Revises: b5a8a7a7bed9
 Create Date: 2025-12-01 11:57:30.791326+07:00
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'a96292c5d628'
-down_revision: Union[str, None] = '95e461947b69'
+down_revision: Union[str, None] = 'b5a8a7a7bed9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
