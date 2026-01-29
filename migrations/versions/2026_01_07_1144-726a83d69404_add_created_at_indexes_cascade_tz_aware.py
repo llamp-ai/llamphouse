@@ -61,6 +61,16 @@ def upgrade() -> None:
                type_=sa.DateTime(timezone=True),
                existing_nullable=True,
                existing_server_default=sa.text('now()'))
+    op.alter_column('run_steps', 'updated_at',
+               existing_type=postgresql.TIMESTAMP(),
+               type_=sa.DateTime(timezone=True),
+               existing_nullable=True,
+               existing_server_default=sa.text('now()'))
+    op.alter_column('run_steps', 'created_at',
+               existing_type=postgresql.TIMESTAMP(),
+               type_=sa.DateTime(timezone=True),
+               existing_nullable=True,
+               existing_server_default=sa.text('now()'))
     op.create_index(op.f('ix_threads_created_at'), 'threads', ['created_at'], unique=False)
     # ### end Alembic commands ###
 
@@ -105,6 +115,16 @@ def downgrade() -> None:
                existing_nullable=True,
                existing_server_default=sa.text('now()'))
     op.alter_column('messages', 'updated_at',
+               existing_type=sa.DateTime(timezone=True),
+               type_=postgresql.TIMESTAMP(),
+               existing_nullable=True,
+               existing_server_default=sa.text('now()'))
+    op.alter_column('run_steps', 'created_at',
+               existing_type=sa.DateTime(timezone=True),
+               type_=postgresql.TIMESTAMP(),
+               existing_nullable=True,
+               existing_server_default=sa.text('now()'))
+    op.alter_column('run_steps', 'updated_at',
                existing_type=sa.DateTime(timezone=True),
                type_=postgresql.TIMESTAMP(),
                existing_nullable=True,
