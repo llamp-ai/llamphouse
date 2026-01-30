@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from opentelemetry import propagate
+from opentelemetry.trace import Status, StatusCode
 from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, ModifyRunRequest, SubmitRunToolOutputRequest
 from ..types.thread import CreateThreadRequest
 from ..types.run_step import CreateRunStepRequest, RunStepObject
@@ -9,15 +11,18 @@ from ..assistant import Assistant
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..streaming.event import Event, DoneEvent, ErrorEvent
 from ..data_stores.base_data_store import BaseDataStore
+from ..tracing import get_tracer, span_context
 from llamphouse.core.queue.base_queue import BaseQueue
 from typing import List, Optional
 import asyncio
 import logging
 import traceback
+import json
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+tracer = get_tracer(__name__)
 
 @router.post("/threads/{thread_id}/runs", response_model=RunObject)
 async def create_run(
@@ -25,111 +30,181 @@ async def create_run(
     request: RunCreateRequest,
     req: Request
 ) -> RunObject:
-    try:
-        # Get the data store from the app state
-        db: BaseDataStore = req.app.state.data_store 
+    carrier = {}
+    if "traceparent" in req.headers:
+        carrier["traceparent"] = req.headers.get("traceparent")
+    if "tracestate" in req.headers:
+        carrier["tracestate"] = req.headers.get("tracestate")
 
-        # Get the assistant
-        assistants = req.app.state.assistants
-        assistant = get_assistant_by_id(assistants, request.assistant_id)
+    ctx = propagate.extract(carrier) if carrier else None
 
-        # check if stream is enabled
-        if request.stream:
-            # Check if the task exists
-            task_key = f"{request.assistant_id}:{thread_id}"
-            if task_key not in req.app.state.event_queues:
-                req.app.state.event_queues[task_key] = req.app.state.queue_class()
-            output_queue: BaseEventQueue = req.app.state.event_queues[task_key]
-        else:
-            output_queue = None
+    with span_context(
+            tracer,
+            "llamphouse.run.create",
+            context=ctx,
+            attributes={
+                "session.id": thread_id,
+                "llamphouse.assistant.id": request.assistant_id,
+                "gen_ai.system": "llamphouse",
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.stream": bool(request.stream),
+            },
+        ) as span:
+        try:
+            input_payload = request.model_dump(mode="json")
+            input_payload["thread_id"] = thread_id
+            span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
 
-        run_queue: BaseQueue = req.app.state.run_queue
-        
-        # store run in db
-        run = await db.insert_run(thread_id, run=request, assistant=assistant, event_queue=output_queue)
-        if not run:
-            raise HTTPException(status_code=404, detail="Thread not found.")
+            # Get the data store from the app state
+            db: BaseDataStore = req.app.state.data_store 
 
-        if run_queue:
-            await run_queue.enqueue({
-                "run_id": run.id,
-                "thread_id": thread_id,
-                "assistant_id": run.assistant_id,
-            })
+            # Get the assistant
+            assistants = req.app.state.assistants
+            assistant = get_assistant_by_id(assistants, request.assistant_id)
 
-        if not output_queue:
-            return run
+            # check if stream is enabled
+            if request.stream:
+                # Check if the task exists
+                task_key = f"{request.assistant_id}:{thread_id}"
+                if task_key not in req.app.state.event_queues:
+                    req.app.state.event_queues[task_key] = req.app.state.queue_class()
+                output_queue: BaseEventQueue = req.app.state.event_queues[task_key]
+            else:
+                output_queue = None
 
-        # check if stream is enabled
-        if output_queue:
+            run_queue: BaseQueue = req.app.state.run_queue            
+            
+            # store run in db
+            run = await db.insert_run(thread_id, run=request, assistant=assistant, event_queue=output_queue)
+            if not run:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.not_found")
+                raise HTTPException(status_code=404, detail="Thread not found.")
 
-            # Streaming generator for SSE
-            async def event_stream():
-                while True:
-                    try:
-                        event: Event = await asyncio.wait_for(output_queue.get(), timeout=30.0)  # Set timeout in seconds
-                        if event is None:  # Stream completion signal
-                            break
-                        yield event.to_sse()
-                        if event.event == event_type.DONE:
-                            logger.debug(f"Received DONE event for run {run.id}, ending stream.")
-                            break
-                    except asyncio.TimeoutError:
-                        logger.debug("TimeoutError: No event received within the timeout period")
-                        yield ErrorEvent({
-                            "error": "TimeoutError",
-                            "message": "No event received within the timeout period"
-                        }).to_sse()
-                        break
-                    except Exception as e:
-                        yield ErrorEvent({
-                            "error": "InternalError",
-                            "message": str(e)
-                        }).to_sse()
-                        break
-                    
-                # Cleanup the queue after the stream ends
+            if run_queue:
+                carrier = {}
                 try:
-                    while not output_queue.empty():
+                    propagate.inject(carrier)
+                except Exception:
+                    carrier = {}
+                    
+                await run_queue.enqueue({
+                    "run_id": run.id,
+                    "thread_id": thread_id,
+                    "assistant_id": run.assistant_id,
+                    "metadata": {"traceparent": carrier},
+                })
+
+            if not output_queue:
+                span.set_attribute(
+                    "output.value",
+                    json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True)
+                )
+                span.set_status(Status(StatusCode.OK))
+                return run
+
+            # check if stream is enabled
+            if output_queue:
+
+                # Streaming generator for SSE
+                async def event_stream():
+                    while True:
                         try:
-                            await output_queue.get_nowait()
-                        except Exception:
+                            event: Event = await asyncio.wait_for(output_queue.get(), timeout=30.0)  # Set timeout in seconds
+                            if event is None:  # Stream completion signal
+                                break
+                            yield event.to_sse()
+                            if event.event == event_type.DONE:
+                                logger.debug(f"Received DONE event for run {run.id}, ending stream.")
+                                break
+                        except asyncio.TimeoutError:
+                            logger.debug("TimeoutError: No event received within the timeout period")
+                            yield ErrorEvent({
+                                "error": "TimeoutError",
+                                "message": "No event received within the timeout period"
+                            }).to_sse()
                             break
-                finally:
-                    await output_queue.close()
+                        except Exception as e:
+                            yield ErrorEvent({
+                                "error": "InternalError",
+                                "message": str(e)
+                            }).to_sse()
+                            break
+                        
+                    # Cleanup the queue after the stream ends
+                    try:
+                        while not output_queue.empty():
+                            try:
+                                await output_queue.get_nowait()
+                            except Exception:
+                                break
+                    finally:
+                        await output_queue.close()
 
-                # Remove the event queue after the stream ends
-                if task_key in req.app.state.event_queues:
-                    del req.app.state.event_queues[task_key]
+                    # Remove the event queue after the stream ends
+                    if task_key in req.app.state.event_queues:
+                        del req.app.state.event_queues[task_key]
 
-            # Return the streaming response
-            return StreamingResponse(event_stream(), media_type="text/event-stream")
+                # Return the streaming response
+                span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
+                span.set_status(Status(StatusCode.OK))
+                return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.post("/threads/runs", response_model=RunObject)
 async def create_thread_and_run(request: CreateThreadAndRunRequest, req: Request):
-    try:
-        # Get the data store from the app state
-        db: BaseDataStore = req.app.state.data_store 
+    carrier = {
+        "traceparent": req.headers.get("traceparent"),
+        "tracestate": req.headers.get("tracestate"),
+    }
+    ctx = propagate.extract(carrier) if carrier.get("traceparent") else None
 
-        # create thread
-        thread = await db.insert_thread(request.thread)
-        if not thread:
-            raise HTTPException(status_code=400, detail="Thread with the same ID already exists.")
+    with span_context(
+        tracer,
+        "llamphouse.run.create_with_thread",
+        context=ctx,
+        attributes={
+            "gen_ai.system": "llamphouse",
+            "gen_ai.operation.name": "thread_and_run.create",
+        },
+    ) as span:
+        try:
+            input_payload = request.model_dump(mode="json")
+            span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
+            # Get the data store from the app state
+            db: BaseDataStore = req.app.state.data_store 
 
-        # Remove the thread from the run request
-        del request.thread
+            # create thread
+            thread = await db.insert_thread(request.thread)
+            if not thread:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("thread.already_exists")
+                raise HTTPException(status_code=400, detail="Thread with the same ID already exists.")
 
-        return await create_run(thread.id, RunCreateRequest(**request.model_dump()), req)
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+            # Remove the thread from the run request
+            payload = request.model_dump()
+            payload.pop("thread", None)
+
+            run = await create_run(thread.id, RunCreateRequest(**payload), req)
+
+            span.set_attribute("session.id", thread.id)
+            span.set_attribute("output.value", json.dumps({"thread_id": thread.id}, ensure_ascii=True))
+            span.set_status(Status(StatusCode.OK))
+
+            return run
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR))
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
   
 def get_assistant_by_id(assistants: List[Assistant], assistant_id: str) -> Assistant:
     assistant = next((assistant for assistant in assistants if assistant.id == assistant_id), None)
@@ -139,27 +214,60 @@ def get_assistant_by_id(assistants: List[Assistant], assistant_id: str) -> Assis
 
 @router.get("/threads/{thread_id}/runs", response_model=ListResponse)
 async def list_runs(thread_id: str, req: Request, limit: int = 20, order: str = "desc", after: Optional[str] = None, before: Optional[str] = None) -> RunObject:
-    try:
-        # Get the data store from the app state
-        db: BaseDataStore = req.app.state.data_store
-        
-        # Fetch runs from the database
-        runs: ListResponse = await db.list_runs(
-            thread_id=thread_id,
-            limit=limit,
-            order=order,
-            after=after,
-            before=before
-        )
+    carrier = {
+        "traceparent": req.headers.get("traceparent"),
+        "tracestate": req.headers.get("tracestate"),
+    }
+    ctx = propagate.extract(carrier) if carrier.get("traceparent") else None
 
-        if not runs:
-            raise HTTPException(status_code=404, detail="Thread not found.")
-        
-        return runs
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    with span_context(
+        tracer,
+        "llamphouse.runs.list",
+        context=ctx,
+        attributes={
+            "session.id": thread_id,
+            "gen_ai.system": "llamphouse",
+            "gen_ai.operation.name": "run.list",
+        },
+    ) as span:
+        try:
+            span.set_attribute(
+                "input.value",
+                json.dumps(
+                    {"thread_id": thread_id, "limit": limit, "order": order, "after": after, "before": before},
+                    ensure_ascii=True,
+                    default=str,
+                ),
+            )
+            # Get the data store from the app state
+            db: BaseDataStore = req.app.state.data_store
+            
+            # Fetch runs from the database
+            runs: ListResponse = await db.list_runs(
+                thread_id=thread_id,
+                limit=limit,
+                order=order,
+                after=after,
+                before=before
+            )
+
+            if not runs:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("thread.not_found")
+                raise HTTPException(status_code=404, detail="Thread not found.")
+            
+            span.set_attribute(
+                "output.value",
+                json.dumps({"count": len(runs.data) if runs else 0}, ensure_ascii=True),
+            )
+            span.set_status(Status(StatusCode.OK))
+            return runs
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.get("/threads/{thread_id}/runs/{run_id}", response_model=RunObject)
 async def retrieve_run(
@@ -167,175 +275,276 @@ async def retrieve_run(
     run_id: str,
     req: Request
 ) -> RunObject:
-    try:
-        # Get the data store from the app state
-        db: BaseDataStore = req.app.state.data_store
+    carrier = {
+        "traceparent": req.headers.get("traceparent"), "tracestate": req.headers.get("tracestate")}
+    ctx = propagate.extract(carrier) if carrier.get("traceparent") else None
 
-        # Retrieve the run
-        run = await db.get_run_by_id(thread_id, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found in thread.")
-        
-        return run
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    with span_context(
+        tracer,
+        "llamphouse.run.retrieve",
+        context=ctx,
+        attributes={
+            "session.id": thread_id,
+            "gen_ai.system": "llamphouse",
+            "gen_ai.operation.name": "run.get",
+        },
+    ) as span:
+        try:
+            span.set_attribute("input.value", json.dumps({"thread_id": thread_id, "run_id": run_id}, ensure_ascii=True))
+
+            # Get the data store from the app state
+            db: BaseDataStore = req.app.state.data_store
+
+            # Retrieve the run
+            run = await db.get_run_by_id(thread_id, run_id)
+            if not run:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.not_found")
+                raise HTTPException(status_code=404, detail="Run not found in thread.")
+            
+            span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
+            span.set_status(Status(StatusCode.OK))
+            return run
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
     
 @router.post("/threads/{thread_id}/runs/{run_id}", response_model=RunObject)
 async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest, req: Request):
-    try:
-        # Get the data store from the app state
-        db: BaseDataStore = req.app.state.data_store
-        
-        # Verify the run exists and update metadata
-        run = await db.update_run(thread_id, run_id, request)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found in thread.")
-        
-        return run
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    carrier = {"traceparent": req.headers.get("traceparent"), "tracestate": req.headers.get("tracestate")}
+    ctx = propagate.extract(carrier) if carrier.get("traceparent") else None
+
+    with span_context(
+        tracer,
+        "llamphouse.run.modify",
+        context=ctx,
+        attributes={
+            "session.id": thread_id,
+            "gen_ai.system": "llamphouse",
+            "gen_ai.operation.name": "run.modify",
+        },
+    ) as span:
+        try:
+            input_payload = request.model_dump(mode="json")
+            input_payload.update({"thread_id": thread_id, "run_id": run_id})
+            span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
+            # Get the data store from the app state
+            db: BaseDataStore = req.app.state.data_store
+            
+            # Verify the run exists and update metadata
+            run = await db.update_run(thread_id, run_id, request)
+            if not run:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.not_found")
+                raise HTTPException(status_code=404, detail="Run not found in thread.")
+            
+            span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
+            span.set_status(Status(StatusCode.OK))
+            return run
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.post("/threads/{thread_id}/runs/{run_id}/submit_tool_outputs", response_model=RunObject)
 async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: SubmitRunToolOutputRequest, req: Request):
-    try:
-        # Get the data store from the app state
-        db: BaseDataStore = req.app.state.data_store
+    carrier = {"traceparent": req.headers.get("traceparent"), "tracestate": req.headers.get("tracestate")}
+    ctx = propagate.extract(carrier) if carrier.get("traceparent") else None
 
-        thread = await db.get_thread_by_id(thread_id)
-        if not thread:
-            raise HTTPException(status_code=404, detail="Thread not found.")
-        
-        run = await db.get_run_by_id(thread_id, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found.")
-        if run.status != run_status.REQUIRES_ACTION:
-            raise HTTPException(status_code=400, detail="Run is not in 'requires_action' status.")
+    with span_context(
+        tracer,
+        "llamphouse.run.submit_tool_outputs",
+        context=ctx,
+        attributes={
+            "session.id": thread_id,
+            "gen_ai.system": "llamphouse",
+            "gen_ai.operation.name": "run.submit_tool_outputs",
+        },
+    ) as span:
+        try:
+            span.set_attribute(
+                "input.value",
+                json.dumps(
+                    {"thread_id": thread_id, "run_id": run_id, "tool_outputs": request.model_dump(mode="json")},
+                    ensure_ascii=True,
+                    default=str,
+                ),
+            )
+            # Get the data store from the app state
+            db: BaseDataStore = req.app.state.data_store
 
-        latest_run_step = await db.get_latest_run_step_by_run_id(run_id)
-        if not latest_run_step:
-            raise HTTPException(status_code=404, detail="No run step found for this run.")
+            thread = await db.get_thread_by_id(thread_id)
+            if not thread:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("thread.not_found")
+                raise HTTPException(status_code=404, detail="Thread not found.")
+            
+            run = await db.get_run_by_id(thread_id, run_id)
+            if not run:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.not_found")
+                raise HTTPException(status_code=404, detail="Run not found.")
+            if run.status != run_status.REQUIRES_ACTION:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.invalid_state")
+                raise HTTPException(status_code=400, detail="Run is not in 'requires_action' status.")
 
-        step_details = latest_run_step.step_details
-        tool_calls = getattr(step_details, "tool_calls", None)
-        if tool_calls is None and isinstance(step_details, dict):
-            tool_calls = step_details.get("tool_calls")
-        if not tool_calls:
-            raise HTTPException(status_code=400, detail="No tool calls found in the latest run step.")
+            latest_run_step = await db.get_latest_run_step_by_run_id(run_id)
+            if not latest_run_step:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run_step.not_found")
+                raise HTTPException(status_code=404, detail="No run step found for this run.")
 
-        for tool_output in request.tool_outputs:
-            for tool_call in tool_calls:
-                # resolve tool_call_id from object or dict
-                if isinstance(tool_call, dict):
-                    tool_call_id = tool_call.get("id")
-                elif hasattr(tool_call, "model_dump"):
-                    tool_call_id = tool_call.model_dump().get("id")
-                else:
-                    tool_call_id = getattr(tool_call, "id", None)
+            step_details = latest_run_step.step_details
+            tool_calls = getattr(step_details, "tool_calls", None)
+            if tool_calls is None and isinstance(step_details, dict):
+                tool_calls = step_details.get("tool_calls")
+            if not tool_calls:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("tool_calls.not_found")
+                raise HTTPException(status_code=400, detail="No tool calls found in the latest run step.")
 
-                if tool_call_id != tool_output.tool_call_id:
-                    continue
+            for tool_output in request.tool_outputs:
+                for tool_call in tool_calls:
+                    # resolve tool_call_id from object or dict
+                    if isinstance(tool_call, dict):
+                        tool_call_id = tool_call.get("id")
+                    elif hasattr(tool_call, "model_dump"):
+                        tool_call_id = tool_call.model_dump().get("id")
+                    else:
+                        tool_call_id = getattr(tool_call, "id", None)
 
-                # set output back on the tool call
-                if isinstance(tool_call, dict):
-                    tool_call.setdefault("function", {})["output"] = tool_output.output
-                elif hasattr(tool_call, "function"):
-                    tool_call.function.output = tool_output.output
-                elif hasattr(tool_call, "model_dump"):
-                    data = tool_call.model_dump()
-                    data.setdefault("function", {})["output"] = tool_output.output
-                    tool_call = data
+                    if tool_call_id != tool_output.tool_call_id:
+                        continue
 
-        if hasattr(step_details, "tool_calls"):
-            step_details.tool_calls = tool_calls
-        else:
-            latest_run_step.step_details = {"tool_calls": tool_calls}
+                    # set output back on the tool call
+                    if isinstance(tool_call, dict):
+                        tool_call.setdefault("function", {})["output"] = tool_output.output
+                    elif hasattr(tool_call, "function"):
+                        tool_call.function.output = tool_output.output
+                    elif hasattr(tool_call, "model_dump"):
+                        data = tool_call.model_dump()
+                        data.setdefault("function", {})["output"] = tool_output.output
+                        tool_call = data
 
-        latest_run_step = await db.update_run_step_status(latest_run_step.id, run_step_status.COMPLETED)
-        await db.update_run_status(thread_id, run_id, run_status.IN_PROGRESS)
-        run = await db.get_run_by_id(thread_id, run_id)
+            if hasattr(step_details, "tool_calls"):
+                step_details.tool_calls = tool_calls
+            else:
+                latest_run_step.step_details = {"tool_calls": tool_calls}
 
-        return RunObject(
-            id=run.id,
-            created_at=int(run.created_at.timestamp()),
-            thread_id=thread_id,
-            assistant_id=run.assistant_id,
-            status=run.status,
-            required_action=run.required_action,
-            last_error=run.last_error,
-            expires_at=run.expires_at,
-            started_at=run.started_at,
-            cancelled_at=run.cancelled_at,
-            failed_at=run.failed_at,
-            completed_at=run.completed_at,
-            incomplete_details=run.incomplete_details,
-            model=run.model,
-            instructions=run.instructions,
-            tools=run.tools,
-            metadata=run.metadata,
-            usage=run.usage,
-            temperature=run.temperature,
-            top_p=run.top_p,
-            max_prompt_tokens=run.max_prompt_tokens,
-            max_completion_tokens=run.max_completion_tokens,
-            truncation_strategy=run.truncation_strategy,
-            tool_choice=run.tool_choice,
-            parallel_tool_calls=run.parallel_tool_calls,
-            response_format=run.response_format,
-        )
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+            latest_run_step = await db.update_run_step_status(latest_run_step.id, run_step_status.COMPLETED)
+            await db.update_run_status(thread_id, run_id, run_status.IN_PROGRESS)
+            run = await db.get_run_by_id(thread_id, run_id)
+
+            span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
+            span.set_status(Status(StatusCode.OK))
+            return RunObject(
+                id=run.id,
+                created_at=int(run.created_at.timestamp()),
+                thread_id=thread_id,
+                assistant_id=run.assistant_id,
+                status=run.status,
+                required_action=run.required_action,
+                last_error=run.last_error,
+                expires_at=run.expires_at,
+                started_at=run.started_at,
+                cancelled_at=run.cancelled_at,
+                failed_at=run.failed_at,
+                completed_at=run.completed_at,
+                incomplete_details=run.incomplete_details,
+                model=run.model,
+                instructions=run.instructions,
+                tools=run.tools,
+                metadata=run.metadata,
+                usage=run.usage,
+                temperature=run.temperature,
+                top_p=run.top_p,
+                max_prompt_tokens=run.max_prompt_tokens,
+                max_completion_tokens=run.max_completion_tokens,
+                truncation_strategy=run.truncation_strategy,
+                tool_choice=run.tool_choice,
+                parallel_tool_calls=run.parallel_tool_calls,
+                response_format=run.response_format,
+            )
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.post("/threads/{thread_id}/runs/{run_id}/cancel", response_model=RunObject)
 async def cancel_run(thread_id: str, run_id: str, req: Request):
-    try:
-        db: BaseDataStore = req.app.state.data_store
+    carrier = {"traceparent": req.headers.get("traceparent"), "tracestate": req.headers.get("tracestate")}
+    ctx = propagate.extract(carrier) if carrier.get("traceparent") else None
 
-        run = await db.get_run_by_id(thread_id, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found.")
-        if run.status != run_status.QUEUED:
-            raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
-        
-        run = await db.update_run_status(thread_id, run_id, run_status.CANCELLED)
+    with span_context(
+        tracer,
+        "llamphouse.run.cancel",
+        context=ctx,
+        attributes={
+            "session.id": thread_id,
+            "gen_ai.system": "llamphouse",
+            "gen_ai.operation.name": "run.cancel",
+        },
+    ) as span:
+        try:
+            span.set_attribute("input.value", json.dumps({"thread_id": thread_id, "run_id": run_id}, ensure_ascii=True))
+            db: BaseDataStore = req.app.state.data_store
 
-        return RunObject(
-            id=run.id,
-            created_at=int(run.created_at.timestamp()),
-            thread_id=thread_id,
-            assistant_id=run.assistant_id,
-            status=run.status,
-            required_action=run.required_action,
-            last_error=run.last_error,
-            expires_at=run.expires_at,
-            started_at=run.started_at,
-            cancelled_at=run.cancelled_at,
-            failed_at=run.failed_at,
-            completed_at=run.completed_at,
-            incomplete_details=run.incomplete_details,
-            model=run.model,
-            instructions=run.instructions,
-            tools=run.tools,
-            metadata=run.metadata,
-            usage=run.usage,
-            temperature=run.temperature,
-            top_p=run.top_p,
-            max_prompt_tokens=run.max_prompt_tokens,
-            max_completion_tokens=run.max_completion_tokens,
-            truncation_strategy=run.truncation_strategy,
-            tool_choice=run.tool_choice,
-            parallel_tool_calls=run.parallel_tool_calls,
-            response_format=run.response_format,
-        )
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+            run = await db.get_run_by_id(thread_id, run_id)
+            if not run:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.not_found")
+                raise HTTPException(status_code=404, detail="Run not found.")
+            if run.status != run_status.QUEUED:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.invalid_state")
+                raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
+            
+            run = await db.update_run_status(thread_id, run_id, run_status.CANCELLED)
+
+            span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
+            span.set_status(Status(StatusCode.OK))
+            return RunObject(
+                id=run.id,
+                created_at=int(run.created_at.timestamp()),
+                thread_id=thread_id,
+                assistant_id=run.assistant_id,
+                status=run.status,
+                required_action=run.required_action,
+                last_error=run.last_error,
+                expires_at=run.expires_at,
+                started_at=run.started_at,
+                cancelled_at=run.cancelled_at,
+                failed_at=run.failed_at,
+                completed_at=run.completed_at,
+                incomplete_details=run.incomplete_details,
+                model=run.model,
+                instructions=run.instructions,
+                tools=run.tools,
+                metadata=run.metadata,
+                usage=run.usage,
+                temperature=run.temperature,
+                top_p=run.top_p,
+                max_prompt_tokens=run.max_prompt_tokens,
+                max_completion_tokens=run.max_completion_tokens,
+                truncation_strategy=run.truncation_strategy,
+                tool_choice=run.tool_choice,
+                parallel_tool_calls=run.parallel_tool_calls,
+                response_format=run.response_format,
+            )
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 async def handle_stream_event(event: dict, db: BaseDataStore, thread_id: str, request: RunCreateRequest, assistant: Assistant):
     evt = event.get("event")
@@ -344,7 +553,7 @@ async def handle_stream_event(event: dict, db: BaseDataStore, thread_id: str, re
     if evt == event_type.THREAD_CREATED:
         thread_req = CreateThreadRequest(
             tool_resources=data.get("tool_resource", {}),
-            metadat={**data.get("metadata", {}), "thread_id": data.get("id", thread_id)},
+            metadata={**data.get("metadata", {}), "thread_id": data.get("id", thread_id)},
             messages=[]
         )
         await db.insert_thread(thread_req)

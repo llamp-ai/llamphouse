@@ -16,6 +16,9 @@ from .data_stores.base_data_store import BaseDataStore
 from .data_stores.in_memory_store import InMemoryDataStore
 from .queue.base_queue import BaseQueue
 from .queue.in_memory_queue import InMemoryQueue
+from .tracing import setup_tracing, set_span_excludes
+
+import os
 import asyncio
 import logging
 
@@ -58,6 +61,7 @@ class LLAMPHouse:
                  data_store: Optional[BaseDataStore] = None,
                  run_queue: Optional[BaseQueue] = None,
                  retention_policy: Optional[RetentionPolicy] = None,
+                 exclude_spans: Optional[list[str]] = None,
                  ):
         self.assistants = assistants
         self.worker = worker
@@ -70,6 +74,10 @@ class LLAMPHouse:
         self.fastapi.state.run_queue = run_queue or InMemoryQueue()
         self.retention_policy = retention_policy or DEFAULT_RETENTION_POLICY
         self._retention_task: Optional[asyncio.Task] = None
+        self.exclude_spans = exclude_spans or []
+
+        setup_tracing()
+        set_span_excludes(self.exclude_spans)
 
         if self.fastapi.state.data_store:
             self.fastapi.state.data_store.init(assistants)

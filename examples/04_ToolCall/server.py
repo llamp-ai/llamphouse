@@ -79,7 +79,7 @@ def main():
     my_assistant = CustomAssistant("my-assistant")
 
     # data store choice
-    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore() for in-memory testing
+    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore()
 
     # Create a new LLAMPHouse instance
     llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=data_store)

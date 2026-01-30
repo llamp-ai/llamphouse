@@ -53,10 +53,10 @@ def main():
     my_assistant = CustomAssistant("my-assistant")
 
     # data store choice
-    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore() for in-memory testing
+    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore()
 
     # event queue choice
-    event_queue_class = InMemoryEventQueue # InMemoryEventQueue or JanusEventQueue for async support
+    event_queue_class = InMemoryEventQueue # InMemoryEventQueue or JanusEventQueue
 
     # Create a new LLAMPHouse instance
     llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=data_store, event_queue_class=event_queue_class)

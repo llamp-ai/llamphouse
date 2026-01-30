@@ -17,7 +17,7 @@ jobs:
           - deps: latest
             constraints: ""
           - deps: min
-            constraints: "constraints-min.txt"
+            constraints: ".github/workflows/constraints-min.in"
 
     steps:
       - name: Checkout code
