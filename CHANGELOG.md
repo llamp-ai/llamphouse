@@ -10,13 +10,18 @@
 - Fix completed_at, failed_at, expired_at, ... times on the run
 - Easier setting and getting metadata values
 
-## [1.1.0] - 26/1/2026
+## [1.1.0] - 02/02/2026
 
 - Added end-to-end tracing across the LLAMPHouse system.
 - Consistent span naming and GenAI attributes for observability.
 - Input/output payload attributes to surface request/response data in traces.
 - Environment-based tracing configuration (enable/disable + exporter setup).
 - Example configuration for tracing with OTEL/Langfuse.
+
+## [1.0.1] - 29/1/2026
+
+* Fixed the initial migration version chain (base revision alignment).
+* Standardized timezone handling: run_steps now migrate to tz‑aware timestamps consistently.
 
 ## [1.0.0] - 9/1/2026
 
