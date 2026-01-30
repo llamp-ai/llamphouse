@@ -1,2 +1,2 @@
 openai
-llamphouse==1.0.0
+llamphouse==1.0.1
