@@ -1,8 +1,8 @@
-"""init
+"""init database
 
-Revision ID: 95e461947b69
+Revision ID: b5a8a7a7bed9
 Revises: 
-Create Date: 2025-11-28 17:16:01.671506+07:00
+Create Date: 2024-12-30 14:02:49.320080+07:00
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '95e461947b69'
+revision: str = 'b5a8a7a7bed9'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -97,8 +97,8 @@ def upgrade() -> None:
     sa.Column('cancelled_at', sa.Integer(), nullable=True),
     sa.Column('failed_at', sa.Integer(), nullable=True),
     sa.Column('completed_at', sa.Integer(), nullable=True),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=True),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=True),
     sa.ForeignKeyConstraint(['run_id'], ['runs.id'], ),
     sa.ForeignKeyConstraint(['thread_id'], ['threads.id'], ),
     sa.PrimaryKeyConstraint('id')

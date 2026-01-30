@@ -10,6 +10,11 @@
 - Fix completed_at, failed_at, expired_at, ... times on the run
 - Easier setting and getting metadata values
 
+## [1.0.1] - 29/1/2026
+
+* Fixed the initial migration version chain (base revision alignment).
+* Standardized timezone handling: run_steps now migrate to tz‑aware timestamps consistently.
+
 ## [1.0.0] - 9/1/2026
 
 ### Added
