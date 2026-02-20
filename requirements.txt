@@ -1,5 +1,5 @@
 fastapi>=0.100.0,<0.130
-uvicorn>=0.15.0,<0.41
+uvicorn>=0.15.0,<0.42
 SQLAlchemy>=1.4.23,<2.1.0
 psycopg2-binary>=2.9.9,<3
 alembic>=1.17.2,<2
