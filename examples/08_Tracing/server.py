@@ -1,0 +1,96 @@
+import asyncio
+import json
+import logging
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from llamphouse.core import LLAMPHouse, Assistant
+from llamphouse.core.context import Context
+from llamphouse.core.data_stores.postgres_store import PostgresDataStore
+from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
+from llamphouse.core.streaming.event_queue.in_memory_event_queue import InMemoryEventQueue
+from llamphouse.core.streaming.event_queue.janus_event_queue import JanusEventQueue
+from llamphouse.core.streaming.adapters.registry import get_adapter
+from llamphouse.core.streaming.stream_events import TextDelta, ToolCallDelta, StreamFinished, StreamError
+from llamphouse.core.tracing import get_tracer
+from opentelemetry.trace import Status, StatusCode
+
+logging.basicConfig(level=logging.INFO)
+load_dotenv(override=True)
+tracer = get_tracer("llamphouse.server")
+
+open_client = OpenAI()
+
+class CustomAssistant(Assistant):
+    async def run(self, context: Context):
+        messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
+        
+        with tracer.start_as_current_span(
+            "llamphouse.server.run",
+            attributes={
+                "model": "gpt-4o-mini", 
+                "messages": json.dumps(messages, ensure_ascii=True),
+                "assistant_id": self.id, 
+                "thread_id": context.thread_id, 
+                "run_id": context.run_id
+            },
+        ) as span:
+
+            try:
+                with tracer.start_as_current_span("llamphouse.server.openai_request"):
+                    stream = open_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=messages,
+                        stream=True,
+                    )
+
+                # Tap hook: called for every canonical streaming event before it is emitted to SSE.
+                def on_event(evt):
+                    if isinstance(evt, TextDelta):
+                        print(evt.text, end="", flush=True)
+                    elif isinstance(evt, ToolCallDelta):
+                        print(f"\n[tool_delta] name={evt.name} args+= {evt.arguments_delta!r}", flush=True)
+                    elif isinstance(evt, StreamError):
+                        print(f"\n[stream_error] {evt.code}: {evt.message}", flush=True)
+                    elif isinstance(evt, StreamFinished):
+                        print(f"\n[finished] reason={evt.reason}", flush=True)
+
+                adapter = get_adapter("openai")
+
+                full_text = await asyncio.to_thread(context.handle_completion_stream, stream, adapter, on_event)
+                
+                if full_text and full_text.strip():
+                    span.set_attribute("output.value",full_text)
+                    await context.insert_message(full_text)
+
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+                raise
+
+def main():
+    # Create an instance of the custom assistant
+    my_assistant = CustomAssistant("my-assistant")
+
+    # data store choice
+    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore()
+
+    # event queue choice
+    event_queue_class = InMemoryEventQueue # InMemoryEventQueue or JanusEventQueue
+
+    # Exclude span name
+    exclude_spans = ["llamphouse.queue.dequeue"]
+
+    # Create a new LLAMPHouse instance
+    llamphouse = LLAMPHouse(
+        assistants=[my_assistant], 
+        data_store=data_store, 
+        event_queue_class=event_queue_class, 
+        exclude_spans=exclude_spans
+    )
+
+    # Start the LLAMPHouse server
+    llamphouse.ignite(host="127.0.0.1", port=8000)
+
+if __name__ == "__main__":
+    main()

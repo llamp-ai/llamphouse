@@ -2,13 +2,21 @@
 
 ## [Unreleased]
 
-- Add tracing and monitoring
+- Add monitoring
 - LangChain utilities
 - LangGraph utilities
 - Cleanup error messages
 - Cleanup db object to OpenAI object (see types/message.py from_db_message)
 - Fix completed_at, failed_at, expired_at, ... times on the run
 - Easier setting and getting metadata values
+
+## [1.1.0] - 02/02/2026
+
+- Added end-to-end tracing across the LLAMPHouse system.
+- Consistent span naming and GenAI attributes for observability.
+- Input/output payload attributes to surface request/response data in traces.
+- Environment-based tracing configuration (enable/disable + exporter setup).
+- Example configuration for tracing with OTEL/Langfuse.
 
 ## [1.0.1] - 29/1/2026
 
