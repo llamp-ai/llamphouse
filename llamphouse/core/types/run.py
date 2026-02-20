@@ -124,6 +124,9 @@ class CreateThreadAndRunRequest(BaseModel):
 
 class ModifyRunRequest(BaseModel):
     metadata: Optional[object] = {}
+    instructions: Optional[str] = None
+    additional_instructions: Optional[str] = None
+    tools: Optional[List[Dict]] = None
 
 class ToolOutput(BaseModel):
     output: str
