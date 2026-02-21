@@ -3,12 +3,13 @@ import uuid
 import traceback
 import json
 from inspect import isawaitable
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 from opentelemetry.trace import Status, StatusCode
 from .tracing import get_tracer, span_context
 from .types.message import Attachment, CreateMessageRequest, MessageObject, ModifyMessageRequest
 from .types.run_step import ToolCallsStepDetails, CreateRunStepRequest
 from .types.run import ToolOutput, RunObject, ModifyRunRequest
+from .types.tool_call import FunctionToolCall, Function
 from .types.thread import ModifyThreadRequest
 from .types.enum import run_step_status, run_status, event_type, message_status
 from .streaming.emitter import StreamingEmitter
@@ -83,6 +84,7 @@ class Context:
         self.__queue = queue
         self.__loop = loop
         self.traceparent = traceparent or {}
+        self.pending_tool_calls: List[Dict[str, str]] = []
 
     @classmethod
     async def create(cls, **kwargs) -> "Context":
@@ -138,7 +140,19 @@ class Context:
             await self.data_store.update_run_status(self.thread_id, self.run_id, run_status.REQUIRES_ACTION)
 
         return run_step
-    
+
+    async def submit_tool_outputs(self, outputs: List[ToolOutput]):
+        """Submit tool outputs for the current run's pending tool call step.
+
+        Call this after executing the tools listed in ``pending_tool_calls``.
+        It marks the in-progress run step as completed and resets the run
+        status back to ``in_progress`` so the next LLM round can proceed.
+        """
+        await self.data_store.submit_tool_outputs_to_run(
+            self.thread_id, self.run_id, outputs,
+        )
+        self.pending_tool_calls = []
+
     async def update_thread_details(self, modifications: Dict[str, any]):
         if not self.thread:
             raise ValueError("Thread object is not initialized.")
@@ -411,6 +425,48 @@ class Context:
                                 span.set_attribute("gen_ai.usage.output_tokens", int(completion))
                             if total is not None:
                                 span.set_attribute("gen_ai.usage.total_tokens", int(total))
+
+                # ── Auto-persist tool call steps ──────────────────────────
+                # The emitter already pushed RUN_STEP_CREATED/COMPLETED
+                # events into the queue during streaming, so we persist
+                # without event_queue to avoid duplicate SSE events.
+                if emitter.tools_by_id:
+                    tc_list = []
+                    for tool in emitter.tools_by_id.values():
+                        tc_list.append({
+                            "id": tool.tool_call_id,
+                            "name": tool.name,
+                            "arguments": tool.arguments,
+                        })
+
+                    step_details = ToolCallsStepDetails(
+                        type="tool_calls",
+                        tool_calls=[
+                            FunctionToolCall(
+                                id=tc["id"],
+                                type="function",
+                                function=Function(
+                                    name=tc["name"],
+                                    arguments=tc["arguments"],
+                                ),
+                            )
+                            for tc in tc_list
+                        ],
+                    )
+                    await self.data_store.insert_run_step(
+                        run_id=self.run_id,
+                        thread_id=self.thread_id,
+                        step=CreateRunStepRequest(
+                            assistant_id=self.assistant_id,
+                            step_details=step_details,
+                            metadata={},
+                        ),
+                        status=run_step_status.IN_PROGRESS,
+                    )
+                    await self.data_store.update_run_status(
+                        self.thread_id, self.run_id, run_status.REQUIRES_ACTION,
+                    )
+                    self.pending_tool_calls = tc_list
 
                 span.set_attribute("output.value", json.dumps({"text": _clip(emitter.content)}, ensure_ascii=True))
                 span.set_attribute("gen_ai.response.status", "completed")

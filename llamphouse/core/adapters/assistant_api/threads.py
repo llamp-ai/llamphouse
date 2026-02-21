@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, Request
-from ..types.thread import ThreadObject, CreateThreadRequest, ModifyThreadRequest, DeleteThreadResponse
-from ..data_stores.base_data_store import BaseDataStore
+from ...types.thread import ThreadObject, CreateThreadRequest, ModifyThreadRequest, DeleteThreadResponse
+from ...data_stores.base_data_store import BaseDataStore
 import json
 import logging
 from opentelemetry import propagate
 from opentelemetry.trace import Status, StatusCode
-from ..tracing import get_tracer, span_context
+from ...tracing import get_tracer, span_context
 
 tracer = get_tracer("llamphouse.routes.threads")
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ async def create_thread(request: CreateThreadRequest, req: Request):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("thread.already_exists")
                 raise HTTPException(status_code=400, detail="Thread with the same ID already exists.")
-            
+
             span.set_attribute("session.id", thread.id)
             span.set_attribute(
                 "output.value",
@@ -89,7 +89,7 @@ async def retrieve_thread(thread_id: str, req: Request):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("thread.not_found")
                 raise HTTPException(status_code=404, detail="Thread not found.")
-            
+
             span.set_attribute(
                 "output.value",
                 json.dumps({"thread_id": thread.id}, ensure_ascii=True),
@@ -181,7 +181,7 @@ async def delete_thread(thread_id: str, req: Request):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("thread.not_found")
                 raise HTTPException(status_code=404, detail="Thread not found.")
-            
+
             span.set_attribute(
                 "output.value",
                 json.dumps({"thread_id": deleted_id, "deleted": True}, ensure_ascii=True),

@@ -2,16 +2,16 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from opentelemetry import propagate
 from opentelemetry.trace import Status, StatusCode
-from ..types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, ModifyRunRequest, SubmitRunToolOutputRequest
-from ..types.thread import CreateThreadRequest
-from ..types.run_step import CreateRunStepRequest, RunStepObject
-from ..types.enum import run_status, run_step_status, message_status, event_type
-from ..types.list import ListResponse
-from ..assistant import Assistant
-from ..streaming.event_queue.base_event_queue import BaseEventQueue
-from ..streaming.event import Event, DoneEvent, ErrorEvent
-from ..data_stores.base_data_store import BaseDataStore
-from ..tracing import get_tracer, span_context
+from ...types.run import RunObject, RunCreateRequest, CreateThreadAndRunRequest, ModifyRunRequest, SubmitRunToolOutputRequest
+from ...types.thread import CreateThreadRequest
+from ...types.run_step import CreateRunStepRequest, RunStepObject
+from ...types.enum import run_status, run_step_status, message_status, event_type
+from ...types.list import ListResponse
+from ...assistant import Assistant
+from ...streaming.event_queue.base_event_queue import BaseEventQueue
+from ...streaming.event import Event, DoneEvent, ErrorEvent
+from ...data_stores.base_data_store import BaseDataStore
+from ...tracing import get_tracer, span_context
 from llamphouse.core.queue.base_queue import BaseQueue
 from typing import List, Optional
 import asyncio
@@ -56,7 +56,7 @@ async def create_run(
             span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
 
             # Get the data store from the app state
-            db: BaseDataStore = req.app.state.data_store 
+            db: BaseDataStore = req.app.state.data_store
 
             # Get the assistant
             assistants = req.app.state.assistants
@@ -72,8 +72,8 @@ async def create_run(
             else:
                 output_queue = None
 
-            run_queue: BaseQueue = req.app.state.run_queue            
-            
+            run_queue: BaseQueue = req.app.state.run_queue
+
             # store run in db
             run = await db.insert_run(thread_id, run=request, assistant=assistant, event_queue=output_queue)
             if not run:
@@ -87,7 +87,7 @@ async def create_run(
                     propagate.inject(carrier)
                 except Exception:
                     carrier = {}
-                    
+
                 await run_queue.enqueue({
                     "run_id": run.id,
                     "thread_id": thread_id,
@@ -130,7 +130,7 @@ async def create_run(
                                 "message": str(e)
                             }).to_sse()
                             break
-                        
+
                     # Cleanup the queue after the stream ends
                     try:
                         while not output_queue.empty():
@@ -178,7 +178,7 @@ async def create_thread_and_run(request: CreateThreadAndRunRequest, req: Request
             input_payload = request.model_dump(mode="json")
             span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
             # Get the data store from the app state
-            db: BaseDataStore = req.app.state.data_store 
+            db: BaseDataStore = req.app.state.data_store
 
             # create thread
             thread = await db.insert_thread(request.thread)
@@ -205,7 +205,7 @@ async def create_thread_and_run(request: CreateThreadAndRunRequest, req: Request
             span.set_status(Status(StatusCode.ERROR))
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-  
+
 def get_assistant_by_id(assistants: List[Assistant], assistant_id: str) -> Assistant:
     assistant = next((assistant for assistant in assistants if assistant.id == assistant_id), None)
     if not assistant:
@@ -241,7 +241,7 @@ async def list_runs(thread_id: str, req: Request, limit: int = 20, order: str = 
             )
             # Get the data store from the app state
             db: BaseDataStore = req.app.state.data_store
-            
+
             # Fetch runs from the database
             runs: ListResponse = await db.list_runs(
                 thread_id=thread_id,
@@ -255,7 +255,7 @@ async def list_runs(thread_id: str, req: Request, limit: int = 20, order: str = 
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("thread.not_found")
                 raise HTTPException(status_code=404, detail="Thread not found.")
-            
+
             span.set_attribute(
                 "output.value",
                 json.dumps({"count": len(runs.data) if runs else 0}, ensure_ascii=True),
@@ -301,7 +301,7 @@ async def retrieve_run(
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.not_found")
                 raise HTTPException(status_code=404, detail="Run not found in thread.")
-            
+
             span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
             span.set_status(Status(StatusCode.OK))
             return run
@@ -311,7 +311,7 @@ async def retrieve_run(
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR))
             raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    
+
 @router.post("/threads/{thread_id}/runs/{run_id}", response_model=RunObject)
 async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest, req: Request):
     carrier = {"traceparent": req.headers.get("traceparent"), "tracestate": req.headers.get("tracestate")}
@@ -333,14 +333,14 @@ async def modify_run(thread_id: str, run_id: str, request: ModifyRunRequest, req
             span.set_attribute("input.value", json.dumps(input_payload, ensure_ascii=True, default=str))
             # Get the data store from the app state
             db: BaseDataStore = req.app.state.data_store
-            
+
             # Verify the run exists and update metadata
             run = await db.update_run(thread_id, run_id, request)
             if not run:
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.not_found")
                 raise HTTPException(status_code=404, detail="Run not found in thread.")
-            
+
             span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
             span.set_status(Status(StatusCode.OK))
             return run
@@ -383,7 +383,7 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("thread.not_found")
                 raise HTTPException(status_code=404, detail="Thread not found.")
-            
+
             run = await db.get_run_by_id(thread_id, run_id)
             if not run:
                 span.set_status(Status(StatusCode.ERROR))
@@ -506,7 +506,7 @@ async def cancel_run(thread_id: str, run_id: str, req: Request):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.invalid_state")
                 raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
-            
+
             run = await db.update_run_status(thread_id, run_id, run_status.CANCELLED)
 
             span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))

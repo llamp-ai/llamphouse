@@ -29,6 +29,7 @@ class AsyncWorker(BaseWorker):
 
     async def process_run_queue(self, data_store: BaseDataStore, run_queue: BaseQueue, assistants: Sequence[Assistant], fastapi_state):
         assistant_ids = [assistant.id for assistant in assistants] or None
+        logger.info("Worker ready, listening for runs...")
 
         while self._running:
             try:
@@ -244,7 +245,6 @@ class AsyncWorker(BaseWorker):
                     otel_context.detach(token)              
 
     def start(self, data_store: BaseDataStore, run_queue: BaseQueue, **kwargs):
-        logger.info("Starting async worker...")
         self.assistants = kwargs.get("assistants", [])
         self.fastapi_state = kwargs.get("fastapi_state", {})
         self.loop = kwargs.get("loop")

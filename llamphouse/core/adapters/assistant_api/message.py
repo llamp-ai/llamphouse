@@ -1,12 +1,12 @@
 from fastapi import APIRouter, HTTPException, Request
 
-from ..types.list import ListResponse
-from ..data_stores.base_data_store import BaseDataStore
-from ..types.message import DeleteMessageResponse, CreateMessageRequest, Attachment, MessageObject, TextContent, ImageFileContent, ModifyMessageRequest
+from ...types.list import ListResponse
+from ...data_stores.base_data_store import BaseDataStore
+from ...types.message import DeleteMessageResponse, CreateMessageRequest, Attachment, MessageObject, TextContent, ImageFileContent, ModifyMessageRequest
 from typing import List, Optional
 from opentelemetry import propagate
 from opentelemetry.trace import Status, StatusCode
-from ..tracing import get_tracer, span_context
+from ...tracing import get_tracer, span_context
 import json
 
 tracer = get_tracer("llamphouse.routes.message")
@@ -41,7 +41,7 @@ async def create_message(thread_id: str, request: CreateMessageRequest, req: Req
 
             # Get the data store from the app state
             db: BaseDataStore = req.app.state.data_store
-            
+
             message = await db.insert_message(thread_id, request)
             if not message:
                 span.set_status(Status(StatusCode.ERROR))
@@ -55,7 +55,7 @@ async def create_message(thread_id: str, request: CreateMessageRequest, req: Req
             )
             span.set_status(Status(StatusCode.OK))
             return message
-        
+
         except HTTPException as http_exc:
             raise http_exc
         except Exception as e:
@@ -92,7 +92,7 @@ async def list_messages(thread_id: str, req: Request, limit: int = 20, order: st
             )
             # Get the data store from the app state
             db: BaseDataStore = req.app.state.data_store
-            
+
             messages: ListResponse = await db.list_messages(
                 thread_id=thread_id,
                 limit=limit,
@@ -155,7 +155,7 @@ async def retrieve_message(thread_id: str, message_id: str, req: Request):
             )
             span.set_status(Status(StatusCode.OK))
             return message
-        
+
         except HTTPException as http_exc:
             raise http_exc
         except Exception as e:
@@ -242,7 +242,7 @@ async def delete_message(thread_id: str, message_id: str, req: Request):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("message.not_found")
                 raise HTTPException(status_code=404, detail="Message not found in thread.")
-            
+
             span.set_attribute(
                 "output.value",
                 json.dumps({"message_id": message_id, "deleted": True}, ensure_ascii=True),
