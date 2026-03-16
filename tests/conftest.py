@@ -10,7 +10,7 @@ import pytest_asyncio
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from llamphouse.core import LLAMPHouse, Assistant, Context
+from llamphouse.core import LLAMPHouse, Agent, Context
 from llamphouse.core.auth import KeyAuth
 from llamphouse.core.data_stores.base_data_store import BaseDataStore
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
@@ -95,13 +95,13 @@ def no_auth_header() -> dict[str, str]:
     return {}
 
 
-class DeterministicAssistant(Assistant):
-    """Deterministic assistant for integration tests (no external API calls)."""
+class DeterministicAgent(Agent):
+    """Deterministic agent for integration tests (no external API calls)."""
     async def run(self, context: Context):
         last_user_text = ""
         for msg in reversed(context.messages):
-            if msg.role == "user" and msg.content and getattr(msg.content[0], "text", None):
-                last_user_text = msg.content[0].text
+            if msg.role == "user" and msg.text:
+                last_user_text = msg.text
                 break
         await context.insert_message(f"echo: {last_user_text}".strip())
 
@@ -118,15 +118,15 @@ def assistant_id() -> str:
 
 
 @pytest.fixture
-def assistant(assistant_id: str) -> Assistant:
-    return DeterministicAssistant(assistant_id)
+def assistant(assistant_id: str) -> Agent:
+    return DeterministicAgent(assistant_id)
 
 
 @pytest.fixture(scope="session")
 def integration_app(assistant_ids) -> LLAMPHouse:
-    assistants = [DeterministicAssistant(aid) for aid in assistant_ids]
+    assistants = [DeterministicAgent(aid) for aid in assistant_ids]
     app = LLAMPHouse(
-        assistants=assistants,
+        agents=assistants,
         authenticator=None,
         worker=AsyncWorker(time_out=5.0),
         event_queue_class=InMemoryEventQueue,
@@ -186,10 +186,10 @@ async def _stop_worker(llamphouse: LLAMPHouse) -> None:
 
 
 @pytest_asyncio.fixture
-async def llamphouse_app(assistant: Assistant) -> LLAMPHouse:
+async def llamphouse_app(assistant: Agent) -> LLAMPHouse:
     """App fixture: in-memory LLAMPHouse without auth."""
     app = LLAMPHouse(
-        assistants=[assistant],
+        agents=[assistant],
         authenticator=None,
         worker=AsyncWorker(time_out=5.0),
         event_queue_class=InMemoryEventQueue,
@@ -204,10 +204,10 @@ async def llamphouse_app(assistant: Assistant) -> LLAMPHouse:
 
 
 @pytest_asyncio.fixture
-async def llamphouse_app_auth(assistant: Assistant, auth_token: str) -> LLAMPHouse:
+async def llamphouse_app_auth(assistant: Agent, auth_token: str) -> LLAMPHouse:
     """App fixture (auth): in-memory LLAMPHouse with KeyAuth enabled."""
     app = LLAMPHouse(
-        assistants=[assistant],
+        agents=[assistant],
         authenticator=KeyAuth(auth_token),
         worker=AsyncWorker(time_out=5.0),
         event_queue_class=InMemoryEventQueue,

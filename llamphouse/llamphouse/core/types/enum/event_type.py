@@ -1,0 +1,28 @@
+THREAD_CREATED = "thread.created"
+
+RUN_CREATED = "run.created"
+RUN_QUEUED = "run.queued"
+RUN_IN_PROGRESS = "run.in_progress"
+RUN_REQUIRES_ACTION = "run.awaiting_tools"
+RUN_COMPLETED = "run.completed"
+RUN_FAILED = "run.failed"
+RUN_CANCELLING = "run.cancelling"
+RUN_CANCELLED = "run.cancelled"
+RUN_EXPIRED = "run.expired"
+
+RUN_STEP_CREATED = "run.step.created"
+RUN_STEP_IN_PROGRESS = "run.step.in_progress"
+RUN_STEP_DELTA = "run.step.delta"
+RUN_STEP_COMPLETED = "run.step.completed"
+RUN_STEP_FAILED = "run.step.failed"
+RUN_STEP_CANCELLED = "run.step.cancelled"
+RUN_STEP_EXPIRED = "run.step.expired"
+
+MESSAGE_CREATED = "message.created"
+MESSAGE_IN_PROGRESS = "message.in_progress"
+MESSAGE_DELTA = "message.delta"
+MESSAGE_COMPLETED = "message.completed"
+MESSAGE_INCOMPLETE = "message.incomplete"
+
+ERROR = "error"
+DONE = "done"

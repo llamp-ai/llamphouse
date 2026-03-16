@@ -215,11 +215,11 @@ async def test_run_crud(data_store):
         status_updated = await data_store.update_run_status(
             thread_id,
             run1.id,
-            run_status.REQUIRES_ACTION,
+            run_status.AWAITING_TOOLS,
             error={"message": "Need more info"},
         )
         assert status_updated is not None
-        assert status_updated.status == run_status.REQUIRES_ACTION
+        assert status_updated.status == run_status.AWAITING_TOOLS
         assert status_updated.last_error.message == "Need more info"
     finally:
         await _cleanup_thread(data_store, thread_id)
@@ -266,7 +266,7 @@ async def test_run_steps_and_tool_outputs(data_store):
         assert updated.status == run_step_status.FAILED
         assert updated.last_error.message == "Step failed"
 
-        await data_store.update_run_status(thread_id, run.id, run_status.REQUIRES_ACTION)
+        await data_store.update_run_status(thread_id, run.id, run_status.AWAITING_TOOLS)
         out = ToolOutput(output="ok", tool_call_id=call_id)
         run_after = await data_store.submit_tool_outputs_to_run(thread_id, run.id, [out])
         assert run_after is not None

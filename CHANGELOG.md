@@ -1,14 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 16/03/2026
 
-- Add monitoring
-- LangChain utilities
-- LangGraph utilities
-- Cleanup error messages
-- Cleanup db object to OpenAI object (see types/message.py from_db_message)
-- Fix completed_at, failed_at, expired_at, ... times on the run
-- Easier setting and getting metadata values
+
 
 ## [1.1.0] - 02/02/2026
 

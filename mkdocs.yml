@@ -1,0 +1,58 @@
+site_name: LLAMPHouse
+site_description: Serving Your LLM Apps, Scalable and Reliable.
+site_url: https://llamp-ai.github.io/llamphouse
+repo_url: https://github.com/llamp-ai/llamphouse
+repo_name: llamp-ai/llamphouse
+
+docs_dir: docs
+
+theme:
+  name: shadcn
+  custom_dir: docs/overrides
+  show_title: true
+  show_stargazers: true
+  topbar_sections: true
+  show_datetime: true
+  icon: mdi:lamp-outline
+  pygments_style:
+    light: github-light
+    dark: github-dark
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quickstart: getting-started/quickstart.md
+    - Adding an LLM: getting-started/adding-llm.md
+  - Core Concepts:
+    - Agents: concepts/agents.md
+    - Context: concepts/context.md
+    - Adapters: concepts/adapters.md
+    - Multi-Agent: concepts/multi-agent.md
+  - Guides:
+    - Streaming: guides/streaming.md
+    - Tool Calls: guides/tool-calls.md
+    - Tracing: guides/tracing.md
+    - Config Store: guides/config-store.md
+    - Compass Dashboard: guides/compass.md
+  - Configuration: configuration.md
+  - Deployment: deployment.md
+  - Examples: examples.md
+  - API Compatibility: api-compatibility.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - fenced_code
+  - footnotes
+  - tables
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.blocks.details
+  - pymdownx.blocks.tab
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - toc

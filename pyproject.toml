@@ -4,15 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llamphouse"
-description = "LLAMPHouse OpenAI Assistant Server"
+description = "LLAMPHouse — Serving Your LLM Apps, Scalable and Reliable"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "llamp.ai", email = "pieter@llamp.ai" }]
+authors = [{ name = "stack-wise.co.uk", email = "pieter@stack-wise.co.uk" }]
 dynamic = ["version", "dependencies"]
 
 [tool.setuptools.packages.find]
-include = ["llamphouse.core", "llamphouse.core.*"]
+where = ["llamphouse"]
+include = ["llamphouse", "llamphouse.core", "llamphouse.core.*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+"llamphouse.core.adapters.dashboard" = ["static/**/*"]
+"llamphouse.core.adapters.compass" = ["static/**/*"]
+
+[project.scripts]
+llamphouse = "llamphouse.core.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "llamphouse.__version__" }

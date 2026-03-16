@@ -1,0 +1,5 @@
+llamphouse
+a2a-sdk
+httpx
+python-dotenv
+redis[hiredis]>=5.0,<6
