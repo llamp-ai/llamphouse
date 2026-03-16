@@ -1,11 +1,12 @@
 fastapi==0.100.0
-uvicorn==0.35.0
+uvicorn==0.15.0
 SQLAlchemy==1.4.23
 psycopg2-binary==2.9.9
 alembic==1.17.2
 python-dotenv==1.2.1
 janus==2.0.0
-opentelemetry-api==1.28
-opentelemetry-sdk==1.28
-opentelemetry-exporter-otlp==1.28
-opentelemetry-instrumentation-fastapi==0.49b0
+opentelemetry-api==1.39.0
+opentelemetry-sdk==1.39.0
+opentelemetry-exporter-otlp==1.39.0
+opentelemetry-instrumentation-fastapi==0.60b0
+redis==5.0.0
