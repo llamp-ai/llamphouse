@@ -186,12 +186,14 @@ class LLAMPHouse:
         resolved = agents or assistants or []
         self.agents = resolved
         self.assistants = resolved  # backward-compat alias
-        # None → default to AssistantAPIAdapter for backward compat; [] → no adapters
-        self.adapters = [AssistantAPIAdapter()] if adapters is None else adapters
-
-        # Auto-mount Compass dev dashboard unless explicitly disabled
-        if compass and not any(isinstance(a, CompassAdapter) for a in self.adapters):
-            self.adapters.append(CompassAdapter())
+        # None → default to AssistantAPIAdapter + Compass for backward compat;
+        # explicit list (even []) → use exactly what was provided.
+        if adapters is None:
+            self.adapters = [AssistantAPIAdapter()]
+            if compass:
+                self.adapters.append(CompassAdapter())
+        else:
+            self.adapters = list(adapters)
         self.worker = worker
         self.authenticator = authenticator
         self.fastapi = FastAPI(title="LLAMPHouse API Server", lifespan=self._lifespan)
