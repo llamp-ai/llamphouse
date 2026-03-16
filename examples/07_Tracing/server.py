@@ -42,7 +42,7 @@ def main():
         description="A helpful assistant that can solve equations.",
     )
 
-    # Tracing is enabled automatically when TRACING_ENABLED=True is set (default)
+    # Tracing is enabled automatically when LLAMPHOUSE_TRACING_ENABLED=True is set (default)
     # in the environment. You can optionally suppress noisy spans:
     exclude_spans = ["llamphouse.data_store.*"]  # Exclude all data store spans, for example
 

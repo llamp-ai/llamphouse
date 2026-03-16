@@ -17,11 +17,11 @@ def _env_bool(name:str, default: bool = False) -> bool:
 
 def setup_tracing() -> None:
     """Initialize OpenTelemetry tracing once. No-op when disabled."""
-    global _TRACING_INITIALIZED
+    global _TRACING_INITIALIZED, _TRACING_DISABLED
     if _TRACING_INITIALIZED:
         return
     
-    if not _env_bool("TRACING_ENABLED", True):
+    if not _env_bool("LLAMPHOUSE_TRACING_ENABLED", True):
         _TRACING_DISABLED = True
         _TRACING_INITIALIZED = True
         return
@@ -75,7 +75,7 @@ def _null_span_ctx():
 def _tracing_disabled() -> bool:
     if _TRACING_INITIALIZED:
         return _TRACING_DISABLED
-    return not _env_bool("TRACING_ENABLED", False)
+    return not _env_bool("LLAMPHOUSE_TRACING_ENABLED", False)
 
 def get_tracer(name: str):
     return trace.get_tracer(name)

@@ -7,7 +7,7 @@ LLAMPHouse includes **automatic OpenTelemetry (OTel) tracing** for all operation
 Tracing is enabled by default. To send traces to a collector, set the environment variables:
 
 ```bash
-TRACING_ENABLED=true
+LLAMPHOUSE_TRACING_ENABLED=true
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_SERVICE_NAME=llamphouse
 ```

@@ -31,7 +31,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/llamphouse
       REDIS_URL: redis://redis:6379
-      TRACING_ENABLED: "true"
+      LLAMPHOUSE_TRACING_ENABLED: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_SERVICE_NAME: llamphouse
       CLICKHOUSE_URL: http://clickhouse:8123

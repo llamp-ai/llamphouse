@@ -296,7 +296,7 @@ LLAMPHouse(
 |---|---|---|
 | `DATABASE_URL` | Postgres connection string | _(in-memory if unset)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
-| `TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
+| `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
 | `OTEL_SERVICE_NAME` | Service name for traces | `llamphouse` |
 | `CLICKHOUSE_URL` | ClickHouse URL for Compass traces view | _(none)_ |

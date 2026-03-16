@@ -16,12 +16,13 @@ class RetryPolicy:
     Policy for retrying failed jobs/messages.
 
     Attributes:
-        max_attempts: maximum number of retry attempts (including the first attempt).
+        max_attempts: maximum number of delivery attempts (including the first).
+                      Set to 1 (default) for no retries; increase for automatic retry.
         backoff_seconds: initial backoff (in seconds) before first retry.
         backoff_multiplier: factor by which backoff is multiplied on each retry (exponential backoff).
         max_backoff_seconds: maximum backoff delay allowed.
     """
-    max_attempts: int = 3
+    max_attempts: int = 1
     backoff_seconds: float = 1.0
     backoff_multiplier: float = 2.0
     max_backoff_seconds: float = 60.0
