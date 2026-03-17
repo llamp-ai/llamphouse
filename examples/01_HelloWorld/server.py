@@ -1,48 +1,37 @@
-from llamphouse.core import LLAMPHouse, Assistant
-from dotenv import load_dotenv
+from llamphouse.core import LLAMPHouse, Agent
 from llamphouse.core.context import Context
-from openai import OpenAI
-from llamphouse.core.data_stores.postgres_store import PostgresDataStore
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse.core.data_stores.retention import RetentionPolicy
+from llamphouse.core.adapters.a2a import A2AAdapter
 
-load_dotenv(override=True)
 
-open_client = OpenAI()
-
-# Create a custom assistant
-class CustomAssistant(Assistant):
-
+class HelloAgent(Agent):
     async def run(self, context: Context):
-        # transform the assistant messages to chat messages
-        messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
-        
-        # send the messages to the OpenAI API
-        result = open_client.chat.completions.create(
-            messages=messages,
-            model="gpt-4o-mini"
-        )
+        await context.insert_message("Hello! I'm a simple agent running on LLAMPHouse.")
 
-        # add the assistant messages to the thread
-        await context.insert_message(role="assistant", content=result.choices[0].message.content)
+        # No need to return anything — the message we inserted will be sent back to the user as the assistant's response.  
+        # In a more complex agent, you might perform some logic or API calls here and insert different messages based on the results.
 
-        # no need to return anything, the run will stop here
 
 def main():
-    # Create an instance of the custom assistant
-    my_assistant = CustomAssistant("my-assistant")
+    # Create an instance of our custom agent
+    agent = HelloAgent(
+        id="hello-agent",
+        name="Hello Agent",
+        description="A friendly assistant that answers questions.",
+        version="0.1.0",
+    )
 
-    # data store choice
-    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore()
+    # Initialize LLAMPHouse with our agent, an in-memory data store, and the A2A adapter to enable communication via the A2A protocol.
+    llamphouse = LLAMPHouse(
+        agents=[agent], # We can have multiple agents in the same LLAMPHouse instance if we want!
+        data_store=InMemoryDataStore(), # Using an in-memory data store for simplicity; in production, you'd likely use a persistent store.
+        adapters=[A2AAdapter()], # We will be using the A2A adapter to create an agent that can be communicated with via the A2A protocol.
+    )
 
-    # retention policy
-    retention_policy = RetentionPolicy(ttl_days=30, interval_seconds=24*60*60, batch_size=100, dry_run=False, enabled=True)
-
-    # Create a new LLAMPHouse instance
-    llamphouse = LLAMPHouse(assistants=[my_assistant], data_store=data_store, retention_policy=retention_policy)
-    
-    # Start the LLAMPHouse server
+    # Start the LLAMPHouse server, which will listen for incoming A2A requests from clients. 
+    # The agent will automatically handle any messages sent to it and respond accordingly.
     llamphouse.ignite(host="127.0.0.1", port=8000)
+
 
 if __name__ == "__main__":
     main()

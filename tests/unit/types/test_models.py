@@ -63,8 +63,8 @@ def test_assistant_object_defaults():
     """Validates AssistantObject default fields and required values."""
     obj = AssistantObject(id="asst_1", model="gpt-4", created_at=_now())
     assert obj.object == "assistant"
-    assert obj.temperature == 0.7
-    assert obj.top_p == 1.0
+    assert obj.temperature is None
+    assert obj.top_p is None
     assert obj.name is None
     assert obj.tools is None
 

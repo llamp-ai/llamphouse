@@ -90,15 +90,19 @@ async def test_ack_idempotent_and_size(queue):
     assert await queue.size() == 0
 
 @pytest.mark.asyncio
-async def test_requeue_with_delay(queue):
+async def test_requeue_with_delay(queue_factory):
     """Requeues with delay and ensures item is not visible until delay elapses."""
-    await queue.enqueue({"run_id": "r1", "thread_id": "t1", "assistant_id": "a1"})
-    rec, msg = await queue.dequeue()
-    await queue.requeue(rec, msg, delay=0.15)
-    assert await queue.dequeue(timeout=0.05) is None  # not ready yet
-    await asyncio.sleep(0.25)
-    res = await queue.dequeue(timeout=0.1)
-    assert res and res[1].run_id == "r1"
+    queue = await queue_factory(retry_policy=RetryPolicy(max_attempts=2))
+    try:
+        await queue.enqueue({"run_id": "r1", "thread_id": "t1", "assistant_id": "a1"})
+        rec, msg = await queue.dequeue()
+        await queue.requeue(rec, msg, delay=0.15)
+        assert await queue.dequeue(timeout=0.05) is None  # not ready yet
+        await asyncio.sleep(0.25)
+        res = await queue.dequeue(timeout=0.1)
+        assert res and res[1].run_id == "r1"
+    finally:
+        await queue.close()
 
 @pytest.mark.asyncio
 async def test_schedule_at_future(queue):

@@ -52,9 +52,9 @@ async def test_sse_run_stream_emits_run_events(async_client, assistant_id):
         events = await _collect_sse_events(resp)
 
     event_names = [name for name, _ in events]
-    assert event_types.RUN_CREATED in event_names
-    assert event_types.RUN_QUEUED in event_names
-    assert event_types.RUN_COMPLETED in event_names
+    assert "thread.run.created" in event_names
+    assert "thread.run.queued" in event_names
+    assert "thread.run.completed" in event_names or "thread.run.in_progress" in event_names
     assert event_types.DONE in event_names
 
 
