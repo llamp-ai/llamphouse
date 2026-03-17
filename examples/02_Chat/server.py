@@ -1,45 +1,56 @@
-from llamphouse.core import LLAMPHouse, Assistant
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
+from llamphouse.core import LLAMPHouse, Agent
 from llamphouse.core.context import Context
-from openai import OpenAI
-from llamphouse.core.data_stores.postgres_store import PostgresDataStore
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse.core.auth import KeyAuth
+from llamphouse.core.adapters.a2a import A2AAdapter
 
 load_dotenv(override=True)
 
-open_client = OpenAI()
+# Create an async OpenAI client (reads OPENAI_API_KEY from the environment)
+openai_client = AsyncOpenAI()
 
-# Create a custom assistant
-class CustomAssistant(Assistant):
 
+class ChatAgent(Agent):
     async def run(self, context: Context):
-        # transform the assistant messages to chat messages
-        messages = [{"role": message.role, "content": message.content[0].text} for message in context.messages]
-        
-        # send the messages to the OpenAI API
-        result = open_client.chat.completions.create(
+        # Convert the conversation history into the format OpenAI expects
+        messages = [
+            {"role": message.role, "content": message.text}
+            for message in context.messages
+        ]
+
+        # Call the OpenAI Chat Completions API
+        result = await openai_client.chat.completions.create(
             messages=messages,
-            model="gpt-4o-mini"
+            model="gpt-5-mini",
         )
 
-        # add the assistant messages to the thread
-        await context.insert_message(role="assistant", content=result.choices[0].message.content)
+        # Insert the assistant's reply into the conversation
+        await context.insert_message(result.choices[0].message.content)
 
-        # no need to return anything, the run will stop here
+        # No need to return anything — the inserted message will be sent
+        # back to the client as the agent's response.
+
 
 def main():
-    # Create an instance of the custom assistant
-    my_assistant = CustomAssistant("my-assistant")
+    # Create an instance of our chat agent
+    agent = ChatAgent(
+        id="chat-agent",
+        name="Chat Agent",
+        description="A conversational assistant powered by OpenAI.",
+        version="0.1.0",
+    )
 
-    # data store choice
-    data_store = InMemoryDataStore() # PostgresDataStore() or InMemoryDataStore()
+    # Initialize LLAMPHouse with the A2A adapter
+    llamphouse = LLAMPHouse(
+        agents=[agent],
+        data_store=InMemoryDataStore(),
+        adapters=[A2AAdapter()],
+    )
 
-    # Create a new LLAMPHouse instance
-    llamphouse = LLAMPHouse(assistants=[my_assistant], authenticator=KeyAuth("secret_key"), data_store=data_store)
-    
-    # Start the LLAMPHouse server
+    # Start the server
     llamphouse.ignite(host="127.0.0.1", port=8000)
+
 
 if __name__ == "__main__":
     main()

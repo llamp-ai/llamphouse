@@ -1,94 +1,72 @@
-# HelloWorld Example
+# 👋 Hello World
 
-This example demonstrates a minimalistic setup for the LLAMPHouse server.
+The simplest possible LLAMPHouse agent — no API keys, no LLM, just a
+server that replies "Hello!" over the **A2A** (Agent-to-Agent) protocol.
+
+Use this example to verify your setup and understand the basics before
+moving on to more complex agents.
+
+## What you'll learn
+
+- How to define a custom `Agent` subclass
+- How to start a LLAMPHouse server with the `A2AAdapter`
+- How to discover an agent and send it a message from a client
 
 ## Prerequisites
 
-- Python 3.10+
-- `OPENAI_API_KEY`
-- (Optional) PostgreSQL database (only if you want persistence)
+| Requirement | Notes |
+|---|---|
+| Python 3.10+ | Check with `python --version` |
 
-## Setup
+> **No API keys needed!** This agent returns a static greeting, so there's
+> nothing to configure.
 
-1. Clone the repository and go to this example:
+## Quick start
 
-   ```sh
-   git clone https://github.com/llamp-ai/llamphouse.git
-   cd llamphouse/examples/01_HelloWorld
-   ```
-2. Install dependencies:
+### 1. Install dependencies
 
-   ```sh
-   pip install -r requirements.txt
-   ```
-3. Create your `.env` from `.env.sample`:
-
-   - `DATABASE_URL=...` (optional; only for Postgres)
-   - `OPENAI_API_KEY=...` (required)
-
-   ```bash
-   cp .env.sample .env
-   ```
-
-## Choose `data_store`
-
-### Option A: In-memory (default, no DB required)
-
-`server.py` already uses:
-
-```py
-data_store = InMemoryDataStore()
+```sh
+pip install -r requirements.txt
 ```
 
-Notes:
+### 2. Start the server
 
-- No migrations needed
-- Data resets when the server restarts
+```sh
+python server.py
+```
 
-### Option B: Postgres (optional)
+You should see output like:
 
-1. Ensure Postgres is running and set `DATABASE_URL` in `.env` (see `.env.sample`)
+```
+LLAMPHOUSE We have light!
+LLAMPHOUSE Server: http://127.0.0.1:8000
+```
 
-   ```bash
-   docker run --rm -d --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -p 5432:5432 postgres
-   docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
-   ```
-2. Switch in [server.py](server.py#L35) :
+### 3. In a second terminal, run the client
 
-   ```python
-   data_store = PostgresDataStore()
-   ```
+```sh
+python client.py
+```
 
-   * Run migrations (from the `llamphouse/` folder that contains `migrations/`)
+## How it works
 
-     ```bash
-     cd ../..
-     alembic upgrade head
-     cd examples/01_HelloWorld
-     ```
+### Server (`server.py`)
 
-## Running the Server
+1. **Define an agent** — subclass `Agent` and implement `run()`. This agent
+   simply inserts a greeting message into the conversation context.
+2. **Wire it up** — create a `LLAMPHouse` instance with your agent, a data
+   store, and the `A2AAdapter`.
+3. **Start** — call `llamphouse.ignite()` to launch the server.
 
-1. Navigate to the example directory:
+### Client (`client.py`)
 
-   ```sh
-   cd llamphouse/examples/01_HelloWorld
-   ```
-2. Start the server `http://127.0.0.1:8000`:
+1. **Discover** — use `A2ACardResolver` to fetch the agent card from
+   `/.well-known/agent-card.json`.
+2. **Connect** — create a `Client` via `ClientFactory`.
+3. **Send a message** — call `client.send_message()` and read the response.
 
-   ```sh
-   python server.py
-   ```
+## Next steps
 
-## Running the Client
-
-1. Open a new terminal and navigate to the example directory:
-
-   ```sh
-   cd llamphouse/examples/01_HelloWorld
-   ```
-2. Run the client:
-
-   ```sh
-   python client.py
-   ```
+| Example | What it adds |
+|---|---|
+| [02_Chat](../02_Chat) | Connect to an LLM for real conversations |

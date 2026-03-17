@@ -1,14 +1,36 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 16/03/2026
 
-- Add monitoring
-- LangChain utilities
-- LangGraph utilities
-- Cleanup error messages
-- Cleanup db object to OpenAI object (see types/message.py from_db_message)
-- Fix completed_at, failed_at, expired_at, ... times on the run
-- Easier setting and getting metadata values
+### Added
+
+- **Pluggable adapter architecture** — the API layer is now built on `BaseAPIAdapter`. The OpenAI-compatible routes are wrapped in `AssistantAPIAdapter`, making it easy to mount additional protocols alongside each other.
+- **A2A (Agent-to-Agent) adapter** — new `A2AAdapter` exposes agents over the Google A2A protocol, supporting task lifecycle, streaming via SSE, and push-notification callbacks.
+- **Compass developer dashboard** — built-in Vue SPA served at `/compass` for inspecting agents, threads, runs, traces, and config in real time. Mountable as an adapter or run standalone via `llamphouse compass`.
+- **Dashboard adapter** — lightweight `DashboardAdapter` at `/_dashboard` for minimal operational endpoints.
+- **CLI (`llamphouse`)** — new command-line interface with `serve`, `worker`, and `compass` sub-commands. Supports `--host`, `--port`, `--no-workers`, and `--ws` flags.
+- **Config store** — `BaseConfigStore` / `InMemoryConfigStore` for runtime-tunable agent parameters (`NumberParam`, `StringParam`, `PromptParam`, `BooleanParam`, `SelectParam`).
+- **Distributed worker mode** — `DistributedWorker` consumes runs from a Redis-backed queue and publishes SSE events via Redis Pub/Sub, enabling horizontal scaling across multiple processes.
+- **Redis queue** — `RedisQueue` implementation using Redis Streams with consumer groups for reliable, distributed run dispatch.
+- **Redis event queue** — `RedisEventQueue` for cross-process SSE event delivery between workers and API pods.
+- **Rich message parts** — `TextPart`, `ImagePart`, `FilePart`, and `DataPart` types for structured multi-modal message content.
+- **WebSocket protocol flag** — `ignite()` and the CLI now accept a `--ws` parameter (forwarded to uvicorn) to select the WebSocket implementation (e.g. `websockets-sansio`).
+- **Docker support** — added `Dockerfile`, `docker-compose.yml`, and `docker-compose.prod.yml` for containerised deployments with OpenTelemetry Collector sidecar.
+- **MkDocs documentation site** — full docs covering installation, quickstart, concepts (agents, adapters, context, multi-agent), guides (streaming, tool calls, tracing, config store, compass), deployment, and API compatibility.
+- **New examples** — reorganised and expanded to 10 examples: HelloWorld, Chat, Streaming, ToolCall, OrchestratorAgent, AgentHandover, Tracing, ConfigStore, CustomAuth, and DistributedWorker.
+
+### Changed
+
+- **Refactored package layout** — moved from flat `llamphouse/core/` to `llamphouse/llamphouse/core/` with proper namespacing.
+- **Adapter initialisation** — passing an explicit `adapters` list to `LLAMPHouse()` now means "use exactly these"; Compass is only auto-mounted when `adapters` is omitted.
+- **Bumped dependency bounds** — `uvicorn >=0.35.0,<1.0` (was `<0.41`), `fastapi >=0.100.0,<1.0` (was `<0.130`), `opentelemetry-instrumentation-fastapi >=0.60b0,<1.0` (was `<0.61`).
+- **Stable Compass build output** — Vite now produces hash-free filenames for clean git diffs.
+- **Auth system expanded** — `BaseAuth` now returns an `AuthResult` with richer context; added `KeyAuth` convenience implementation.
+- **Context API extended** — additional helpers for tool-call steps, message insertion, and run/thread metadata updates.
+
+### Fixed
+
+- Compass adapter no longer silently injects itself when a custom `adapters` list is provided.
 
 ## [1.1.0] - 02/02/2026
 

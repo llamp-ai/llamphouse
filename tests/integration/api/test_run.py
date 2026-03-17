@@ -115,7 +115,7 @@ async def test_submit_tool_outputs_to_run(client, data_store, assistant_id):
     thread = _create_thread(client)
     run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant_id)
 
-    await data_store.update_run_status(thread.id, run.id, run_status.REQUIRES_ACTION)
+    await data_store.update_run_status(thread.id, run.id, run_status.AWAITING_TOOLS)
 
     tool_call_id = "call_123"
     step_details = ToolCallsStepDetails(
@@ -168,7 +168,7 @@ def test_cancel_run_wrong_status(client, data_store, assistant_id):
     thread = _create_thread(client)
     run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant_id)
     data_store._runs[thread.id] = [
-        r if r.id != run.id else r.model_copy(update={"status": run_status.REQUIRES_ACTION})
+        r if r.id != run.id else r.model_copy(update={"status": run_status.AWAITING_TOOLS})
         for r in data_store._runs[thread.id]
     ]
     with pytest.raises(BadRequestError) as exc:
@@ -192,7 +192,7 @@ async def test_submit_tool_outputs_on_run_step(client, data_store, assistant_id)
     """Returns 404 when submitting tool outputs without any run step."""
     thread = _create_thread(client)
     run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant_id)
-    await data_store.update_run_status(thread.id, run.id, run_status.REQUIRES_ACTION)
+    await data_store.update_run_status(thread.id, run.id, run_status.AWAITING_TOOLS)
     with pytest.raises(NotFoundError) as exc:
         client.beta.threads.runs.submit_tool_outputs(
             thread_id=thread.id,

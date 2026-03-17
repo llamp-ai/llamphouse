@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLAMPHouse Dashboard</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  :root {
+    --bg:       #0f1117;
+    --surface:  #181b23;
+    --border:   #2a2d38;
+    --text:     #e2e4e9;
+    --dim:      #7a7f8d;
+    --cyan:     #56d4dd;
+    --green:    #4ade80;
+    --yellow:   #facc15;
+    --red:      #f87171;
+    --blue:     #60a5fa;
+    --purple:   #a78bfa;
+    --radius:   8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  /* ── Layout ─────────────────────────────────────────────────────── */
+  .shell { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 220px; min-width: 220px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    display: flex; flex-direction: column;
+  }
+  .sidebar .logo {
+    padding: 0 20px 20px;
+    font-size: 15px; font-weight: 700;
+    color: var(--cyan);
+    letter-spacing: 1px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+  }
+  .sidebar .logo span { color: var(--dim); font-weight: 400; font-size: 11px; display: block; margin-top: 2px; }
+  .nav-item {
+    padding: 10px 20px;
+    cursor: pointer;
+    color: var(--dim);
+    font-size: 13px;
+    font-weight: 500;
+    transition: all .15s;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(255,255,255,.04); }
+  .nav-item.active { color: var(--cyan); background: rgba(86,212,221,.08); border-right: 2px solid var(--cyan); }
+  .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+  .main { flex: 1; padding: 28px 32px; overflow-y: auto; }
+  .page-title { font-size: 20px; font-weight: 700; margin-bottom: 20px; }
+
+  /* ── Cards ──────────────────────────────────────────────────────── */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 28px; }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+  }
+  .stat-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); margin-bottom: 4px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; }
+
+  /* ── Tables ─────────────────────────────────────────────────────── */
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; padding: 10px 16px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--dim); border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,.02);
+  }
+  td { padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,.02); }
+
+  .clickable { cursor: pointer; }
+  .clickable:hover td { background: rgba(86,212,221,.06); }
+
+  /* ── Badges ─────────────────────────────────────────────────────── */
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; letter-spacing: .3px;
+  }
+  .badge-completed { background: rgba(74,222,128,.12); color: var(--green); }
+  .badge-in_progress, .badge-working { background: rgba(96,165,250,.12); color: var(--blue); }
+  .badge-queued { background: rgba(167,139,250,.12); color: var(--purple); }
+  .badge-failed { background: rgba(248,113,113,.12); color: var(--red); }
+  .badge-cancelled, .badge-expired { background: rgba(122,127,141,.12); color: var(--dim); }
+  .badge-requires_action { background: rgba(250,204,21,.12); color: var(--yellow); }
+  .badge-user { background: rgba(96,165,250,.12); color: var(--blue); }
+  .badge-assistant { background: rgba(86,212,221,.12); color: var(--cyan); }
+  .badge-tool { background: rgba(250,204,21,.12); color: var(--yellow); }
+  .badge-system { background: rgba(167,139,250,.12); color: var(--purple); }
+
+  /* ── Detail panel ───────────────────────────────────────────────── */
+  .detail-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    margin-bottom: 20px;
+  }
+  .detail-panel h3 { font-size: 14px; color: var(--cyan); margin-bottom: 12px; }
+  .detail-row { display: flex; gap: 12px; margin-bottom: 6px; font-size: 13px; }
+  .detail-label { color: var(--dim); min-width: 120px; }
+  .detail-value { color: var(--text); word-break: break-all; }
+
+  .breadcrumb { font-size: 12px; color: var(--dim); margin-bottom: 16px; }
+  .breadcrumb a, .breadcrumb span.link { color: var(--cyan); cursor: pointer; text-decoration: none; }
+  .breadcrumb a:hover, .breadcrumb span.link:hover { text-decoration: underline; }
+
+  /* ── Chat bubbles ───────────────────────────────────────────────── */
+  .chat-list { display: flex; flex-direction: column; gap: 12px; }
+  .chat-bubble {
+    max-width: 80%; padding: 12px 16px;
+    border-radius: 12px; font-size: 13px;
+    line-height: 1.6; white-space: pre-wrap;
+  }
+  .chat-bubble.user {
+    align-self: flex-end;
+    background: rgba(96,165,250,.15);
+    border: 1px solid rgba(96,165,250,.25);
+  }
+  .chat-bubble.assistant {
+    align-self: flex-start;
+    background: rgba(86,212,221,.1);
+    border: 1px solid rgba(86,212,221,.2);
+  }
+  .chat-bubble .role { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); margin-bottom: 4px; }
+
+  /* ── Misc ────────────────────────────────────────────────────────── */
+  .mono { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; }
+  .text-dim { color: var(--dim); }
+  .text-sm { font-size: 12px; }
+  .mb-16 { margin-bottom: 16px; }
+  .empty-state { padding: 40px; text-align: center; color: var(--dim); font-size: 14px; }
+
+  .tool-details {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-top: 8px;
+    font-size: 12px;
+  }
+  .tool-details pre {
+    white-space: pre-wrap;
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    color: var(--text);
+    margin-top: 4px;
+  }
+
+  /* ── Config form controls ───────────────────────────────────────── */
+  .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; }
+  @media (max-width: 720px) { .config-grid { grid-template-columns: 1fr; } }
+  .config-field { display: flex; flex-direction: column; gap: 4px; }
+  .config-field.full-width { grid-column: 1 / -1; }
+  .config-field label { font-size: 12px; font-weight: 600; color: var(--text); }
+  .config-field .field-desc { font-size: 11px; color: var(--dim); margin-bottom: 2px; }
+  .config-field input[type="text"],
+  .config-field input[type="number"],
+  .config-field select,
+  .config-field textarea {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .config-field input:focus,
+  .config-field select:focus,
+  .config-field textarea:focus {
+    border-color: var(--cyan);
+  }
+  .config-field textarea {
+    min-height: 100px;
+    resize: vertical;
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .config-field .toggle {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+  }
+  .config-field .toggle input[type="checkbox"] {
+    width: 16px; height: 16px; accent-color: var(--cyan); cursor: pointer;
+  }
+  .config-actions {
+    display: flex; gap: 10px; margin-top: 16px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .btn {
+    padding: 8px 18px;
+    border-radius: 6px;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    transition: all .15s;
+  }
+  .btn-primary {
+    background: var(--cyan); color: var(--bg); border-color: var(--cyan);
+  }
+  .btn-primary:hover { opacity: .85; }
+  .btn-secondary {
+    background: transparent; color: var(--text); border-color: var(--border);
+  }
+  .btn-secondary:hover { background: rgba(255,255,255,.05); }
+  .save-msg {
+    font-size: 12px; color: var(--green); align-self: center; margin-left: 8px;
+    opacity: 0; transition: opacity .3s;
+  }
+  .save-msg.show { opacity: 1; }
+
+  /* ── Config snapshot (read-only on run detail) ───────────────────── */
+  .config-snapshot { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; }
+  .config-snapshot .config-kv { display: flex; gap: 8px; font-size: 13px; }
+  .config-snapshot .config-kv .ck { color: var(--dim); min-width: 140px; }
+  .config-snapshot .config-kv .cv { color: var(--text); word-break: break-word; }
+</style>
+</head>
+
+<body x-data="dashboard()" x-init="init()">
+<div class="shell">
+
+  <!-- ── Sidebar ──────────────────────────────────────────────────── -->
+  <div class="sidebar">
+    <div class="logo">
+      🪔 LLAMPHOUSE
+      <span>Dashboard</span>
+    </div>
+    <div class="nav-item" :class="{ active: page === 'overview' }"   @click="go('overview')">
+      <span class="nav-icon">📊</span> Overview
+    </div>
+    <div class="nav-item" :class="{ active: page === 'assistants' }" @click="go('assistants')">
+      <span class="nav-icon">🤖</span> Assistants
+    </div>
+    <div class="nav-item" :class="{ active: page === 'threads' }"    @click="go('threads')">
+      <span class="nav-icon">💬</span> Threads
+    </div>
+  </div>
+
+  <!-- ── Main content ─────────────────────────────────────────────── -->
+  <div class="main">
+
+    <!-- Overview -->
+    <template x-if="page === 'overview'">
+      <div>
+        <div class="page-title">Overview</div>
+        <div class="stats">
+          <div class="stat-card">
+            <div class="label">Assistants</div>
+            <div class="value" x-text="overview.assistants ?? '—'"></div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Threads</div>
+            <div class="value" x-text="overview.threads ?? '—'"></div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Runs</div>
+            <div class="value" x-text="overview.runs ?? '—'"></div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Messages</div>
+            <div class="value" x-text="overview.messages ?? '—'"></div>
+          </div>
+        </div>
+
+        <!-- Recent threads -->
+        <div class="page-title" style="font-size:16px">Recent Threads</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Thread ID</th><th>Created</th><th>Messages</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="t in recentThreads" :key="t.id">
+                <tr class="clickable" @click="openThread(t.id)">
+                  <td class="mono" x-text="t.id"></td>
+                  <td class="text-dim text-sm" x-text="fmtTime(t.created_at)"></td>
+                  <td x-text="t._msg_count ?? '—'"></td>
+                  <td class="text-dim">→</td>
+                </tr>
+              </template>
+              <template x-if="recentThreads.length === 0">
+                <tr><td colspan="4" class="empty-state">No threads yet</td></tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+    <!-- Assistants -->
+    <template x-if="page === 'assistants'">
+      <div>
+        <div class="page-title">Assistants</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Model</th><th>Tools</th><th>Temperature</th></tr></thead>
+            <tbody>
+              <template x-for="a in assistants" :key="a.id">
+                <tr>
+                  <td class="mono" x-text="a.id"></td>
+                  <td x-text="a.name || '—'"></td>
+                  <td class="text-dim" x-text="a.model || '—'"></td>
+                  <td x-text="(a.tools||[]).length"></td>
+                  <td x-text="a.temperature ?? '—'"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Tool schemas -->
+        <template x-for="a in assistants.filter(a => a.tools && a.tools.length)" :key="a.id + '-tools'">
+          <div class="detail-panel" style="margin-top:16px">
+            <h3 x-text="(a.name || a.id) + ' — Tools'"></h3>
+            <template x-for="tool in a.tools" :key="JSON.stringify(tool)">
+              <div class="tool-details">
+                <strong x-text="tool.function?.name || tool.name || 'unknown'"></strong>
+                <span class="text-dim" x-text="' — ' + (tool.function?.description || '')"></span>
+                <template x-if="tool.function?.parameters">
+                  <pre x-text="JSON.stringify(tool.function.parameters, null, 2)"></pre>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Config panels -->
+        <template x-for="a in assistants.filter(a => a.has_config)" :key="a.id + '-config'">
+          <div class="detail-panel" style="margin-top:16px"
+               x-data="configPanel(a.id)" x-init="loadConfig()">
+            <h3 x-text="(a.name || a.id) + ' — Config'"></h3>
+            <template x-if="loading">
+              <div class="text-dim text-sm">Loading config…</div>
+            </template>
+            <template x-if="!loading && params.length > 0">
+              <div>
+                <div class="config-grid">
+                  <template x-for="p in params" :key="p.key">
+                    <div class="config-field" :class="{ 'full-width': p.type === 'prompt' }">
+                      <label x-text="p.label"></label>
+                      <template x-if="p.description">
+                        <div class="field-desc" x-text="p.description"></div>
+                      </template>
+
+                      <!-- Number -->
+                      <template x-if="p.type === 'number'">
+                        <input type="number"
+                               :min="p.min" :max="p.max" :step="p.step || 'any'"
+                               :value="values[p.key]" @input="values[p.key] = parseFloat($event.target.value)">
+                      </template>
+
+                      <!-- String -->
+                      <template x-if="p.type === 'string'">
+                        <input type="text"
+                               :maxlength="p.max_length || undefined"
+                               :value="values[p.key]" @input="values[p.key] = $event.target.value">
+                      </template>
+
+                      <!-- Prompt -->
+                      <template x-if="p.type === 'prompt'">
+                        <div>
+                          <textarea :value="values[p.key]" @input="values[p.key] = $event.target.value"></textarea>
+                          <template x-if="p.variables && p.variables.length">
+                            <div class="field-desc" style="margin-top:4px">
+                              Variables: <template x-for="v in p.variables" :key="v"><code style="color:var(--cyan);margin-right:6px" x-text="'{{' + v + '}}'"></code></template>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+
+                      <!-- Boolean -->
+                      <template x-if="p.type === 'boolean'">
+                        <label class="toggle">
+                          <input type="checkbox" :checked="values[p.key]" @change="values[p.key] = $event.target.checked">
+                          <span x-text="values[p.key] ? 'On' : 'Off'" class="text-sm"></span>
+                        </label>
+                      </template>
+
+                      <!-- Select -->
+                      <template x-if="p.type === 'select'">
+                        <select :value="values[p.key]" @change="values[p.key] = $event.target.value">
+                          <template x-for="opt in p.options" :key="opt">
+                            <option :value="opt" :selected="values[p.key] === opt" x-text="opt"></option>
+                          </template>
+                        </select>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+                <div class="config-actions">
+                  <button class="btn btn-primary" @click="saveConfig()">Save defaults</button>
+                  <button class="btn btn-secondary" @click="resetConfig()">Reset</button>
+                  <span class="save-msg" :class="{ show: saved }" x-text="saveMsg"></span>
+                </div>
+              </div>
+            </template>
+            <template x-if="!loading && params.length === 0">
+              <div class="text-dim text-sm">No config params defined.</div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </template>
+
+    <!-- Threads list -->
+    <template x-if="page === 'threads'">
+      <div>
+        <div class="page-title">Threads</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Thread ID</th><th>Created</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="t in threads" :key="t.id">
+                <tr class="clickable" @click="openThread(t.id)">
+                  <td class="mono" x-text="t.id"></td>
+                  <td class="text-dim text-sm" x-text="fmtTime(t.created_at)"></td>
+                  <td class="text-dim">→</td>
+                </tr>
+              </template>
+              <template x-if="threads.length === 0">
+                <tr><td colspan="3" class="empty-state">No threads yet</td></tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+    <!-- Thread detail -->
+    <template x-if="page === 'thread-detail'">
+      <div>
+        <div class="breadcrumb">
+          <span class="link" @click="go('threads')">Threads</span> / <span x-text="selectedThread"></span>
+        </div>
+        <div class="page-title">Thread</div>
+
+        <!-- Messages -->
+        <div class="detail-panel">
+          <h3>Messages</h3>
+          <div class="chat-list">
+            <template x-for="m in messages" :key="m.id">
+              <div class="chat-bubble" :class="m.role">
+                <div class="role" x-text="m.role"></div>
+                <div x-text="msgText(m)"></div>
+                <div class="text-dim text-sm" style="margin-top:4px" x-text="fmtTime(m.created_at)"></div>
+              </div>
+            </template>
+            <template x-if="messages.length === 0">
+              <div class="empty-state">No messages</div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Runs -->
+        <div class="detail-panel">
+          <h3>Runs</h3>
+          <div class="table-wrap" style="border:none">
+            <table>
+              <thead><tr><th>Run ID</th><th>Assistant</th><th>Status</th><th>Created</th><th></th></tr></thead>
+              <tbody>
+                <template x-for="r in runs" :key="r.id">
+                  <tr class="clickable" @click="openRun(selectedThread, r.id)">
+                    <td class="mono" x-text="r.id"></td>
+                    <td x-text="r.assistant_id"></td>
+                    <td><span class="badge" :class="'badge-' + r.status" x-text="r.status"></span></td>
+                    <td class="text-dim text-sm" x-text="fmtTime(r.created_at)"></td>
+                    <td class="text-dim">→</td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Run detail -->
+    <template x-if="page === 'run-detail'">
+      <div>
+        <div class="breadcrumb">
+          <span class="link" @click="go('threads')">Threads</span> /
+          <span class="link" @click="openThread(selectedThread)" x-text="selectedThread"></span> /
+          <span x-text="selectedRun"></span>
+        </div>
+        <div class="page-title">Run</div>
+
+        <template x-if="runDetail">
+          <div class="detail-panel">
+            <h3>Details</h3>
+            <div class="detail-row"><span class="detail-label">Run ID</span>    <span class="detail-value mono" x-text="runDetail.id"></span></div>
+            <div class="detail-row"><span class="detail-label">Assistant</span> <span class="detail-value" x-text="runDetail.assistant_id"></span></div>
+            <div class="detail-row"><span class="detail-label">Status</span>    <span class="detail-value"><span class="badge" :class="'badge-' + runDetail.status" x-text="runDetail.status"></span></span></div>
+            <div class="detail-row"><span class="detail-label">Model</span>     <span class="detail-value" x-text="runDetail.model || '—'"></span></div>
+            <div class="detail-row"><span class="detail-label">Created</span>   <span class="detail-value" x-text="fmtTime(runDetail.created_at)"></span></div>
+            <div class="detail-row"><span class="detail-label">Completed</span> <span class="detail-value" x-text="fmtTime(runDetail.completed_at)"></span></div>
+            <template x-if="runDetail.last_error">
+              <div class="detail-row"><span class="detail-label">Error</span> <span class="detail-value" style="color:var(--red)" x-text="JSON.stringify(runDetail.last_error)"></span></div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Config values snapshot -->
+        <template x-if="runDetail && runDetail.config_values && Object.keys(runDetail.config_values).length">
+          <div class="detail-panel">
+            <h3>Config Values</h3>
+            <div class="config-snapshot">
+              <template x-for="key in Object.keys(runDetail.config_values)" :key="key">
+                <div class="config-kv">
+                  <span class="ck" x-text="key"></span>
+                  <span class="cv" x-text="typeof runDetail.config_values[key] === 'boolean' ? (runDetail.config_values[key] ? 'On' : 'Off') : runDetail.config_values[key]"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <!-- Run Steps -->
+        <div class="detail-panel">
+          <h3>Steps</h3>
+          <div class="table-wrap" style="border:none">
+            <table>
+              <thead><tr><th>Step ID</th><th>Type</th><th>Status</th><th>Details</th><th>Created</th></tr></thead>
+              <tbody>
+                <template x-for="s in runSteps" :key="s.id">
+                  <tr>
+                    <td class="mono" x-text="s.id"></td>
+                    <td><span class="badge" :class="'badge-' + (s.step_details?.type === 'tool_calls' ? 'tool' : 'assistant')" x-text="s.step_details?.type || '—'"></span></td>
+                    <td><span class="badge" :class="'badge-' + s.status" x-text="s.status"></span></td>
+                    <td class="text-sm" x-text="stepSummary(s)"></td>
+                    <td class="text-dim text-sm" x-text="fmtTime(s.created_at)"></td>
+                  </tr>
+                </template>
+                <template x-if="runSteps.length === 0">
+                  <tr><td colspan="5" class="empty-state">No steps</td></tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </template>
+
+  </div>
+</div>
+
+<script>
+function dashboard() {
+  const BASE = window.location.pathname.replace(/\/+$/, '');
+  const api = (path) => fetch(BASE + path).then(r => r.json());
+
+  return {
+    page: 'overview',
+    overview: {},
+    assistants: [],
+    threads: [],
+    recentThreads: [],
+    messages: [],
+    runs: [],
+    runDetail: null,
+    runSteps: [],
+    selectedThread: null,
+    selectedRun: null,
+
+    async init() {
+      await this.loadOverview();
+    },
+
+    async go(page) {
+      this.page = page;
+      if (page === 'overview')   await this.loadOverview();
+      if (page === 'assistants') await this.loadAssistants();
+      if (page === 'threads')    await this.loadThreads();
+    },
+
+    async loadOverview() {
+      this.overview = await api('/api/overview');
+      const res = await api('/api/threads');
+      const threads = (res.data || []).slice(0, 8);
+      // Enrich with message count
+      for (const t of threads) {
+        try {
+          const msgs = await api(`/api/threads/${t.id}/messages`);
+          t._msg_count = msgs.total ?? (msgs.data||[]).length;
+        } catch { t._msg_count = '—'; }
+      }
+      this.recentThreads = threads;
+    },
+
+    async loadAssistants() {
+      const res = await api('/api/assistants');
+      this.assistants = res.data || [];
+    },
+
+    async loadThreads() {
+      const res = await api('/api/threads');
+      this.threads = res.data || [];
+    },
+
+    async openThread(threadId) {
+      this.selectedThread = threadId;
+      this.page = 'thread-detail';
+      const [msgs, runs] = await Promise.all([
+        api(`/api/threads/${threadId}/messages`),
+        api(`/api/threads/${threadId}/runs`),
+      ]);
+      this.messages = msgs.data || [];
+      this.runs = runs.data || [];
+    },
+
+    async openRun(threadId, runId) {
+      this.selectedThread = threadId;
+      this.selectedRun = runId;
+      this.page = 'run-detail';
+      const [run, steps] = await Promise.all([
+        api(`/api/threads/${threadId}/runs/${runId}`),
+        api(`/api/threads/${threadId}/runs/${runId}/steps`),
+      ]);
+      this.runDetail = run;
+      this.runSteps = steps.data || [];
+    },
+
+    fmtTime(v) {
+      if (!v) return '—';
+      try {
+        const d = new Date(v);
+        return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' });
+      } catch { return v; }
+    },
+
+    msgText(m) {
+      const c = m.content;
+      if (!c) return '—';
+      if (typeof c === 'string') return c;
+      if (Array.isArray(c)) {
+        return c.map(p => p.text?.value || p.text || p.value || '').join('\n') || '—';
+      }
+      return JSON.stringify(c);
+    },
+
+    stepSummary(s) {
+      const d = s.step_details;
+      if (!d) return '—';
+      if (d.type === 'message_creation') {
+        return 'message: ' + (d.message_creation?.message_id || '—');
+      }
+      if (d.type === 'tool_calls') {
+        return (d.tool_calls || []).map(tc => {
+          const fn = tc.function || tc.root?.function || {};
+          return fn.name || '?';
+        }).join(', ');
+      }
+      return JSON.stringify(d).slice(0, 80);
+    },
+  };
+}
+
+function configPanel(assistantId) {
+  const BASE = window.location.pathname.replace(/\/+$/, '');
+  const api = (path, opts) => fetch(BASE + path, opts).then(r => r.json());
+
+  return {
+    assistantId,
+    params: [],
+    values: {},
+    origValues: {},
+    loading: true,
+    saved: false,
+    saveMsg: '',
+
+    async loadConfig() {
+      this.loading = true;
+      try {
+        const res = await api(`/api/assistants/${this.assistantId}/config`);
+        this.params = res.params || [];
+        this.values = { ...(res.defaults || {}) };
+        this.origValues = { ...(res.defaults || {}) };
+      } catch (e) {
+        console.error('Failed to load config', e);
+      }
+      this.loading = false;
+    },
+
+    async saveConfig() {
+      try {
+        const res = await api(`/api/assistants/${this.assistantId}/config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values: this.values }),
+        });
+        this.origValues = { ...(res.defaults || this.values) };
+        this.saveMsg = '✓ Saved';
+        this.saved = true;
+        setTimeout(() => { this.saved = false; }, 2000);
+      } catch (e) {
+        this.saveMsg = '✗ Save failed';
+        this.saved = true;
+        setTimeout(() => { this.saved = false; }, 3000);
+      }
+    },
+
+    resetConfig() {
+      this.values = { ...this.origValues };
+    },
+  };
+}
+</script>
+</body>
+</html>

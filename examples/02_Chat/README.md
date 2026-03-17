@@ -1,94 +1,84 @@
-# Chat Example
+# 💬 Chat
 
-This example demonstrates a simple interactive chat client talking to a LLAMPHouse server.
+A LLAMPHouse agent that holds a real conversation using OpenAI's Chat
+Completions API, served over the **A2A** (Agent-to-Agent) protocol.
+
+This builds on [01_HelloWorld](../01_HelloWorld) by replacing the static
+greeting with an actual LLM — everything else stays the same.
+
+## What you'll learn
+
+- How to call OpenAI from inside an agent's `run()` method
+- How to forward the conversation history to the LLM
+- How to build an interactive chat loop in the A2A client
 
 ## Prerequisites
 
-- Python 3.10+
-- `OPENAI_API_KEY`
-- (Optional) PostgreSQL database (only if you want persistence)
+| Requirement | Notes |
+|---|---|
+| Python 3.10+ | Check with `python --version` |
+| OpenAI API key | Get one at [platform.openai.com](https://platform.openai.com/api-keys) |
 
-## Setup
+## Quick start
 
-1. Clone the repository and go to this example.
+### 1. Install dependencies
 
-   ```sh
-   git clone https://github.com/llamp-ai/llamphouse.git
-   cd llamphouse/examples/02_Chat
-   ```
-2. Install dependencies from `requirements.txt`.
-
-   ```sh
-   pip install -r requirements.txt
-   ```
-3. Create your `.env` from `.env.sample`:
-
-   - `DATABASE_URL=...` (optional; only for Postgres)
-   - `OPENAI_API_KEY=...` (required)
-
-   ```bash
-   cp .env.sample .env
-   ```
-
-## Choose `data_store`
-
-### Option A: In-memory (default, no DB required)
-
-`server.py` already uses:
-
-```py
-data_store = InMemoryDataStore()
+```sh
+pip install -r requirements.txt
 ```
 
-Notes:
+### 2. Set your API key
 
-- No migrations needed
-- Data resets when the server restarts
+Create a `.env` file in this directory:
 
-### Option B: Postgres (optional)
+```sh
+echo "OPENAI_API_KEY=sk-..." > .env
+```
 
-1. Ensure Postgres is running and set `DATABASE_URL` in `.env` (see `.env.sample`)
+### 3. Start the server
 
-   ```bash
-   docker run --rm -d --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -p 5432:5432 postgres
-   docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
-   ```
-2. Switch in [server.py](server.py#L36) :
+```sh
+python server.py
+```
 
-   ```python
-   data_store = PostgresDataStore()
-   ```
+You should see output like:
 
-   * Run migrations (from the `llamphouse/` folder that contains `migrations/`)
+```
+LLAMPHOUSE We have light!
+LLAMPHOUSE Server: http://127.0.0.1:8000
+```
 
-     ```bash
-     cd ../..
-     alembic upgrade head
-     cd examples/02_Chat
-     ```
+### 4. In a second terminal, run the client
 
-## Running the Server
+```sh
+python client.py
+```
 
-1. Navigate to the example directory:
+You'll enter an interactive chat loop. Type a message and press Enter.
 
-   ```sh
-   cd llamphouse/examples/02_Chat
-   ```
-2. Start the server `http://127.0.0.1:8000`:
+## How it works
 
-   ```sh
-   python server.py
-   ```
+### Server (`server.py`)
 
-## Running the Client
+1. **Define an agent** — subclass `Agent` and implement `run()`. This agent
+   converts the conversation history to OpenAI's message format and calls
+   `chat.completions.create()`.
+2. **Wire it up** — create a `LLAMPHouse` instance with your agent, a data
+   store, and the `A2AAdapter`.
+3. **Start** — call `llamphouse.ignite()` to launch the server.
 
-1. Open a new terminal and navigate to the example directory:
+### Client (`client.py`)
 
-   ```sh
-   cd llamphouse/examples/02_Chat
-   ```
-2. Run the client:
+1. **Discover** — use `A2ACardResolver` to fetch the agent card from
+   `/.well-known/agent-card.json`.
+2. **Connect** — create a `Client` via `ClientFactory`.
+3. **Chat loop** — read user input, send it as an A2A message, and print the
+   agent's reply. Repeat until the user types `quit`.
 
-   ```sh
-   python client.py
-   ```
+## Next steps
+
+| Example | What it adds |
+|---|---|
+| [04_ToolCall](../04_ToolCall) | Give your agent tools to call |
+| [05_Streaming](../05_Streaming) | Stream responses token-by-token |
+| [08_Tracing](../08_Tracing) | Add OpenTelemetry tracing |

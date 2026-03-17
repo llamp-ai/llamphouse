@@ -1,0 +1,140 @@
+# LLAMPHouse — Production split deployment
+#
+# API and workers run as separate containers from the same image.
+# Workers can be scaled independently.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml up -d --scale worker=4
+
+services:
+  # ── API Server (no local workers) ─────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: docker/runtime/Dockerfile
+    command: ["serve", "app:app", "--host", "0.0.0.0", "--port", "80", "--no-workers"]
+    ports:
+      - "8080:80"
+    environment:
+      - DATABASE_URL=postgresql://llamphouse:llamphouse@postgres:5432/llamphouse
+      - REDIS_URL=redis://redis:6379/0
+      - LLAMPHOUSE_TRACING_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=llamphouse-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Workers (no HTTP server, scale independently) ─────────────────────────
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/runtime/Dockerfile
+    command: ["worker", "app:app", "--concurrency", "10"]
+    environment:
+      - DATABASE_URL=postgresql://llamphouse:llamphouse@postgres:5432/llamphouse
+      - REDIS_URL=redis://redis:6379/0
+      - LLAMPHOUSE_TRACING_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=llamphouse-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+
+  # ── Compass (dev dashboard, standalone) ───────────────────────────────────
+  compass:
+    build:
+      context: ..
+      dockerfile: docker/runtime/Dockerfile
+    command: ["compass", "app:app", "--host", "0.0.0.0", "--port", "80"]
+    ports:
+      - "8081:80"
+    environment:
+      - DATABASE_URL=postgresql://llamphouse:llamphouse@postgres:5432/llamphouse
+      - REDIS_URL=redis://redis:6379/0
+      - CLICKHOUSE_URL=http://clickhouse:8123
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: llamphouse
+      POSTGRES_PASSWORD: llamphouse
+      POSTGRES_DB: llamphouse
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llamphouse"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── OpenTelemetry Collector ───────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4318:4318"   # OTLP HTTP
+      - "4317:4317"   # OTLP gRPC
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── ClickHouse (traces + analytics) ──────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhousedata:/var/lib/clickhouse
+    ports:
+      - "8123:8123"   # HTTP interface (for queries)
+      - "9000:9000"   # Native TCP (collector writes here)
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
+  clickhousedata:

@@ -1,12 +1,11 @@
 # Tool Call Example
 
-This example demonstrates a minimal tool-calling loop inside a custom `Assistant` running on a LLAMPHouse server.
+This example demonstrates a minimal tool-calling loop inside a custom `Agent` running on a LLAMPHouse server, exposed via the **A2A protocol**.
 
 ## Prerequisites
 
 - Python 3.10+
 - `OPENAI_API_KEY`
-- (Optional) PostgreSQL database (only if you want persistence)
 
 ## Setup
 
@@ -39,63 +38,16 @@ This example demonstrates a minimal tool-calling loop inside a custom `Assistant
 - If the model returns `tool_calls`, the server executes the tool and appends a `"tool"` message with the result
 - Loop is limited to 3 iterations
 
-Client sends the [question](client.py#L3) defined in `client.py`.
+Client sends the [question](client.py#L14) defined in `client.py`.
 
-## Choose `data_store`
+## Running
 
-### Option A: In-memory (default, no DB required)
-
-`server.py` already uses:
-
-```py
-data_store = InMemoryDataStore()
-```
-
-Notes:
-
-- No migrations needed
-- Data resets when the server restarts
-
-### Option B: Postgres (optional)
-
-1. Ensure Postgres is running and set `DATABASE_URL` in `.env` (see `.env.sample`)
-
-   ```bash
-   docker run --rm -d --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -p 5432:5432 postgres
-   docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
-   ```
-2. Switch in [server.py](server.py#L82) :
-
-   ```python
-   data_store = PostgresDataStore()
-   ```
-
-   * Run migrations (from the `llamphouse/` folder that contains `migrations/`)
-
-     ```bash
-     cd ../..
-     alembic upgrade head
-     cd examples/04_ToolCall
-     ```
-
-## Running the Server
-
-1. Navigate to the example directory:
-   ```sh
-   cd llamphouse/examples/04_ToolCall
-   ```
-2. Start the server `http://127.0.0.1:8000`:
+1. Start the server:
    ```sh
    python server.py
    ```
 
-## Running the Client
-
-1. Open a new terminal and navigate to the example directory:
-   ```sh
-   cd llamphouse/examples/04_ToolCall
-   ```
-2. Run the client:
+2. In a second terminal, run the client:
    ```sh
    python client.py
    ```
