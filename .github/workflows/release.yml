@@ -33,7 +33,7 @@ jobs:
     - name: Extract Version
       id: get_version
       run: |
-        echo "VERSION=$(python -c 'from llamphouse import __version__; print(__version__)')" >> $GITHUB_ENV
+        echo "VERSION=$(python -c "import re, pathlib; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', pathlib.Path('llamphouse/llamphouse/__init__.py').read_text()).group(1))")" >> $GITHUB_ENV
 
     - name: Get Latest Git Tag
       id: get_latest_tag
