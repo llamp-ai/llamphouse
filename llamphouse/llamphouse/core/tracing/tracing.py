@@ -77,6 +77,20 @@ def _tracing_disabled() -> bool:
         return _TRACING_DISABLED
     return not _env_bool("LLAMPHOUSE_TRACING_ENABLED", False)
 
+def shutdown_tracing() -> None:
+    """Flush pending spans and shut down the TracerProvider.
+
+    This closes the OTLP exporter's underlying HTTP session so the
+    process can exit without 'Unclosed client session' warnings.
+    """
+    global _TRACING_INITIALIZED
+    if not _TRACING_INITIALIZED or _TRACING_DISABLED:
+        return
+    provider = trace.get_tracer_provider()
+    if hasattr(provider, "shutdown"):
+        provider.shutdown()
+    _TRACING_INITIALIZED = False
+
 def get_tracer(name: str):
     return trace.get_tracer(name)
 

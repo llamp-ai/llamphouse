@@ -20,7 +20,7 @@ from .queue.base_queue import BaseQueue
 from .queue.in_memory_queue import InMemoryQueue
 from .config_store.base import BaseConfigStore
 from .config_store.in_memory_store import InMemoryConfigStore
-from .tracing import setup_tracing, set_span_excludes
+from .tracing import setup_tracing, shutdown_tracing, set_span_excludes
 
 import os
 import sys
@@ -245,6 +245,13 @@ class LLAMPHouse:
                 run_queue=self.fastapi.state.run_queue,
             )
             llamphouse_logger.info("Worker started.")
+        for agent in self.agents:
+            try:
+                llamphouse_logger.info(f"Starting agent '{agent.id}'...")
+                await agent.on_startup()
+            except Exception:
+                llamphouse_logger.exception(f"on_startup failed for agent '{agent.id}'")
+
         if self.retention_policy and self.retention_policy.enabled:
             async def _retention_loop():
                 await asyncio.sleep(self.retention_policy.sleep_seconds())
@@ -281,6 +288,28 @@ class LLAMPHouse:
                 llamphouse_logger.info("Stopping worker...")     
                 self.worker.stop()
 
+            # Shut down agents
+            for agent in self.agents:
+                try:
+                    llamphouse_logger.info(f"Shutting down agent '{agent.id}'...")
+                    await agent.on_shutdown()
+                except Exception:
+                    llamphouse_logger.exception(f"on_shutdown failed for agent '{agent.id}'")
+
+            # Close data store and run queue
+            try:
+                self.fastapi.state.data_store.close()
+            except Exception:
+                llamphouse_logger.exception("Error closing data store")
+            try:
+                await self.fastapi.state.run_queue.close()
+            except Exception:
+                llamphouse_logger.exception("Error closing run queue")
+
+            # Flush pending spans and close the OTLP exporter session
+            shutdown_tracing()
+            llamphouse_logger.info("Shutdown complete.")
+
     def __print_ignite(self, host, port):
         ascii_art = f"""{_CY}
                   __,--'
@@ -299,9 +328,17 @@ ______[===]______{_R}"""
             prefix = adapter.prefix or "/"
             llamphouse_logger.info(f"  {_DIM}▸{_R} {type(adapter).__name__:<28} {_CY}{prefix}{_R}")
 
-    def ignite(self, host="0.0.0.0", port=80, reload=False, ws="auto"):
+    def ignite(self, host="0.0.0.0", port=80, reload=False, ws="auto", timeout_graceful_shutdown=10):
         self.__print_ignite(host, port)
-        uvicorn.run(self.fastapi, host=host, port=port, reload=reload, ws=ws, log_config=None)
+        uvicorn.run(
+            self.fastapi,
+            host=host,
+            port=port,
+            reload=reload,
+            ws=ws,
+            log_config=None,
+            timeout_graceful_shutdown=timeout_graceful_shutdown,
+        )
 
     def _register_routes(self):
         for adapter in self.adapters:

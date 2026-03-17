@@ -52,6 +52,20 @@ class Agent(ABC):
         if not name:
             self.name = id
 
+    async def on_startup(self) -> None:
+        """Called once when the server starts.
+
+        Override this to initialise expensive resources such as HTTP
+        clients, database connections, or model handles.
+        """
+
+    async def on_shutdown(self) -> None:
+        """Called once when the server shuts down.
+
+        Override this to close HTTP clients, database connections, or
+        any other resources that were opened in ``on_startup``.
+        """
+
     @abstractmethod
     async def run(self, context: Context):
         """
