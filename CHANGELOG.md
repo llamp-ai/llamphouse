@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.1] - 18/03/2026
+
+### Changed
+
+- **Async Postgres data store** — rewrote `PostgresDataStore` to use SQLAlchemy's async engine (`create_async_engine`, `AsyncSession`, `async_sessionmaker`). All database I/O is now non-blocking, eliminating event-loop stalls in async environments.
+- **Explicit configuration** — `PostgresDataStore` now takes `database_url` and `pool_size` as constructor arguments instead of reading `DATABASE_URL` / `POOL_SIZE` from environment variables at module level. No more hidden `load_dotenv()` side-effect on import.
+- **Removed pool-size validation** — dropped the startup `SHOW max_connections` check and the `get_max_db_connections` utility. Pool sizing is now the caller's responsibility.
+- **Bumped SQLAlchemy minimum** to `>=2.0.0` (required for `async_sessionmaker`).
+- **Added `asyncpg`** driver dependency (`>=0.29.0,<1`).
+- `list_run_steps` and `get_run_step_by_id` are now properly `async`.
+- Removed duplicate `purge_expired` method.
+- `close()` is now an async method (`await store.close()`) that disposes the engine cleanly.
+- Add missing database migrations version.
+- Updated logging in llamphouse to allow propagation to root logger for unified output, and set uvicorn access logger to not propagate to avoid duplicate logs.
+
 ## [1.2.0] - 16/03/2026
 
 ### Added

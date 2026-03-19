@@ -1,4 +1,4 @@
-from typing import Any, AsyncIterator, Optional, List
+from typing import Optional, List
 import uuid
 from datetime import datetime, timezone, timedelta
 from opentelemetry.trace import Status, StatusCode
@@ -6,14 +6,13 @@ from .base_data_store import BaseDataStore
 from .retention import RetentionPolicy, PurgeStats
 from ..tracing import get_tracer, span_context
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
-from ..types.assistant import AgentObject, AssistantObject
+from ..types.assistant import AgentObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
 from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRequest
 from ..types.enum import message_status, event_type, run_status, run_step_status
 from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, StepDetails, RunStepObject
-import asyncio
 import logging
 import json
 
@@ -42,7 +41,6 @@ class InMemoryDataStore(BaseDataStore):
         self._runs: dict[str, list[RunObject]] = {}
         self._messages: dict[str, list[MessageObject]] = {}
         self._run_steps: dict[str, list[RunStepObject]] = {}
-        self._queue: asyncio.Queue[Any] = asyncio.Queue()
         self._last_created_at: Optional[datetime] = None
 
     def _next_created_at(self) -> datetime:
@@ -52,20 +50,6 @@ class InMemoryDataStore(BaseDataStore):
             now = last + timedelta(microseconds=1)
         self._last_created_at = now
         return now
-
-    async def listen(self) -> AsyncIterator[Any]:
-        while True:
-            queued_runs = [run for runs in self._runs.values() for run in runs if getattr(run, "status", None) == run_status.QUEUED]
-            for run in queued_runs:
-                yield run
-            await asyncio.sleep(0.1)
-
-    async def ack(self, item: Any) -> None:
-        # In an in-memory store, ack might not be necessary.
-        pass
-
-    async def push(self, item: Any) -> None:
-        await self._queue.put(item)
 
     async def insert_message(self, thread_id: str, message: CreateMessageRequest, status: str = message_status.COMPLETED, event_queue: BaseEventQueue = None) -> MessageObject | None:
         with span_context(
@@ -1373,5 +1357,5 @@ class InMemoryDataStore(BaseDataStore):
         )
         return stats
     
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
