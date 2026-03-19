@@ -233,6 +233,66 @@ async def test_run_crud(data_store):
         await _cleanup_thread(data_store, thread_id)
 
 
+async def test_message_metadata_preserved_on_insert(data_store):
+    """Metadata passed to insert_message must be retrievable via list_messages and get_message_by_id."""
+    thread_id = _uid("thread")
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+
+        metadata = {
+            "message_id": _uid("msg"),
+            "references": [
+                {"url": "https://example.com/1", "title": "Doc 1", "intro": "First document"},
+                {"url": "https://example.com/2", "title": "Doc 2", "intro": "Second document"},
+            ],
+            "followup": True,
+            "next_user_messages": ["How do I apply?", "What are the requirements?"],
+        }
+        msg = await data_store.insert_message(
+            thread_id,
+            CreateMessageRequest(role="user", content="test", metadata=metadata),
+        )
+        assert msg is not None
+
+        # Verify via get_message_by_id
+        fetched = await data_store.get_message_by_id(thread_id, msg.id)
+        assert fetched is not None
+        assert fetched.metadata is not None
+        assert fetched.metadata.get("references") == metadata["references"]
+        assert fetched.metadata.get("followup") is True
+        assert fetched.metadata.get("next_user_messages") == metadata["next_user_messages"]
+
+        # Verify via list_messages
+        listed = await data_store.list_messages(thread_id, limit=10, order="desc", after=None, before=None)
+        assert listed is not None
+        assert len(listed.data) >= 1
+        listed_msg = next(m for m in listed.data if m.id == msg.id)
+        assert listed_msg.metadata.get("references") == metadata["references"]
+        assert listed_msg.metadata.get("followup") is True
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
+async def test_message_metadata_empty_when_not_provided(data_store):
+    """When no metadata is provided, the message should have empty metadata (not None)."""
+    thread_id = _uid("thread")
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+
+        msg = await data_store.insert_message(
+            thread_id,
+            CreateMessageRequest(role="user", content="test"),
+        )
+        assert msg is not None
+
+        fetched = await data_store.get_message_by_id(thread_id, msg.id)
+        assert fetched is not None
+        assert fetched.metadata is not None
+        assert isinstance(fetched.metadata, dict)
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
 async def test_run_steps_and_tool_outputs(data_store):
     """Covers run step creation, list/retrieve, update status with error, and tool output propagation."""
     thread_id = _uid("thread")

@@ -75,7 +75,7 @@ llamphouse_logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(_LLAMPFormatter())
 llamphouse_logger.addHandler(handler)
-llamphouse_logger.propagate = True
+llamphouse_logger.propagate = False
 
 # ── Uvicorn + FastAPI loggers ──────────────────────────────────────────────────
 # We pass log_config=None to uvicorn.run() so it skips dictConfig and our
@@ -100,7 +100,7 @@ for _name in ("uvicorn", "uvicorn.error", "fastapi"):
     _lg = logging.getLogger(_name)
     _lg.handlers = [handler]
     _lg.setLevel(logging.INFO)
-    _lg.propagate = True
+    _lg.propagate = False
 
 logging.getLogger("uvicorn.error").addFilter(_SuppressUvicornBanner())
 
