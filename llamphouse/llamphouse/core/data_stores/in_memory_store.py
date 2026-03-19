@@ -75,12 +75,14 @@ class InMemoryDataStore(BaseDataStore):
                     span.add_event("thread.not_found")
                     span.set_attribute("output.value", _json_dump({"message_id": None, "status": None}))
                     return None
-                message_id = (message.metadata or {}).get("message_id", str(uuid.uuid4()))
+                request_metadata = message.metadata or {}
+                message_id = request_metadata.get("message_id", str(uuid.uuid4()))
                 message = MessageObject(
                     id=message_id,
                     role=message.role,
                     parts=message.get_parts(),
                     attachments=message.attachments,
+                    metadata=request_metadata,
                     created_at = self._next_created_at(),
                     thread_id=thread_id,
                     status=status,

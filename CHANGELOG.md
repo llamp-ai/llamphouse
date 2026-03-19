@@ -1,6 +1,11 @@
 # Changelog
 
-## [1.2.1] - 18/03/2026
+## [1.2.2] - 19/03/2026
+
+- Fix double logging LLAMPHouse events.
+- Fix missing metadata property in messages within the in_memory_store.
+
+## [1.2.1] - 19/03/2026
 
 ### Changed
 
