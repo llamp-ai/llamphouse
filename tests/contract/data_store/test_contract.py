@@ -38,9 +38,17 @@ def data_store(request):
     try:
         yield store
     finally:
-        session = getattr(store, "session", None)
-        if session is not None:
-            session.close()
+        close = getattr(store, "close", None)
+        if close is not None:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(close())
+                else:
+                    loop.run_until_complete(close())
+            except RuntimeError:
+                asyncio.run(close())
 
 
 def _assistant(assistant_id):

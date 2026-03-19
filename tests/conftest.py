@@ -272,10 +272,11 @@ def data_store_params():
         except Exception:
             PostgresDataStore = None
         if PostgresDataStore is not None:
+            async_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
             backends.append(
                 DataStoreBackend(
                     name="postgres",
-                    factory=PostgresDataStore,
+                    factory=lambda _url=async_url: PostgresDataStore(database_url=_url),
                     marks=(pytest.mark.postgres,),
                 )
             )
