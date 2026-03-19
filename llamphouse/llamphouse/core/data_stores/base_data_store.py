@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Optional, List, TYPE_CHECKING
+from typing import Optional, List, TYPE_CHECKING
 from .retention import RetentionPolicy, PurgeStats
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
@@ -25,21 +25,6 @@ class BaseDataStore(ABC):
         """Set the list of agents."""
         self.agents = agents
         self.assistants = agents  # backward-compat alias
-
-    @abstractmethod
-    async def listen(self) -> AsyncIterator[Any]:
-        """Yield new items as they arrive."""
-        pass
-
-    @abstractmethod
-    async def ack(self, item: Any) -> None:
-        """Mark item as processed (if applicable)."""
-        pass
-
-    @abstractmethod
-    async def push(self, item: Any) -> None:
-        """Add a new item to the storage."""
-        pass
 
     @abstractmethod
     async def insert_message(self, thread_id: str, message: CreateMessageRequest, status: str = MESSAGE_COMPLETED, event_queue: BaseEventQueue = None) -> MessageObject | None:
@@ -146,6 +131,6 @@ class BaseDataStore(ABC):
         """Purge records older than policy cutoff (respects dry_run/batch_size)."""
         pass
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close any underlying resources (default: no-op)."""
         return None
