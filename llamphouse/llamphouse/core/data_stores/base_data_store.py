@@ -117,7 +117,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None, usage: dict | None = None) -> RunObject | None:
         """Update status of a run."""
         pass
 

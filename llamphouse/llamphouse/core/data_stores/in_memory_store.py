@@ -1064,7 +1064,7 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
 
-    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None, usage: dict | None = None) -> RunObject | None:
         with span_context(
             store_tracer,
             "llamphouse.data_store.update_run_status",
@@ -1105,6 +1105,29 @@ class InMemoryDataStore(BaseDataStore):
                     error = {"message": str(error), "code": "server_error"}
                 run.status = status
                 run.last_error = RunObject.model_validate({**run.model_dump(), "last_error": error}).last_error
+
+                # ── Lifecycle timestamps ───────────────────────────────
+                now = datetime.now(timezone.utc)
+                if status == run_status.IN_PROGRESS and run.started_at is None:
+                    run.started_at = now
+                elif status == run_status.COMPLETED:
+                    run.completed_at = now
+                elif status == run_status.FAILED:
+                    run.failed_at = now
+                elif status == run_status.CANCELLED:
+                    run.cancelled_at = now
+                elif status == run_status.EXPIRED:
+                    run.expires_at = now
+
+                # ── Usage ─────────────────────────────────────────────
+                if usage:
+                    from ..types.run import UsageStatistics
+                    run.usage = UsageStatistics(
+                        prompt_tokens=usage.get("prompt_tokens") or 0,
+                        completion_tokens=usage.get("completion_tokens") or 0,
+                        total_tokens=usage.get("total_tokens") or 0,
+                    )
+
                 self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
                 span.set_status(Status(StatusCode.OK))
                 span.set_attribute("output.value", _json_dump({"run_id": run.id, "status": run.status}))

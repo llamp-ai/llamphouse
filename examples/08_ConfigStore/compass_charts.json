@@ -1,0 +1,92 @@
+[
+  {
+    "id": "357255ab-43ec-4cb7-95aa-9e6c3daa09a0",
+    "title": "Threads",
+    "sql": "SELECT COUNT(*) FROM threads",
+    "chart_type": "bignum",
+    "x_column": "COUNT(*)",
+    "y_columns": [
+      "COUNT(*)"
+    ],
+    "created_at": 1774507031.458,
+    "updated_at": 1774507031.458
+  },
+  {
+    "id": "0513fcf6-f042-4fb6-a273-e21e420dbe7b",
+    "title": "New Chart",
+    "sql": "SELECT assistant_id, COUNT(*) AS cnt\nFROM runs\nGROUP BY assistant_id\nORDER BY cnt DESC",
+    "chart_type": "pie",
+    "x_column": "assistant_id",
+    "y_columns": [
+      "cnt"
+    ],
+    "created_at": 1774507031.459,
+    "updated_at": 1775540924.738
+  },
+  {
+    "id": "b6c72151-0bea-4d49-9e2d-7c057fc68f3d",
+    "title": "New Chart",
+    "sql": "",
+    "chart_type": "table",
+    "x_column": null,
+    "y_columns": [],
+    "created_at": 1774507031.459,
+    "updated_at": 1774507031.459
+  },
+  {
+    "id": "22e595e3-c4f8-45ce-918d-0f3261be5783",
+    "title": "New Chart",
+    "sql": "SELECT COUNT(*) FROM runs",
+    "chart_type": "bignum",
+    "x_column": "COUNT(*)",
+    "y_columns": [
+      "COUNT(*)"
+    ],
+    "created_at": 1774508944.172,
+    "updated_at": 1774509043.263
+  },
+  {
+    "id": "dfc6a21c-4a3f-4ba5-85c7-a42421c74969",
+    "title": "New Chart",
+    "sql": "",
+    "chart_type": "table",
+    "x_column": null,
+    "y_columns": [],
+    "created_at": 1774510693.296,
+    "updated_at": 1774510693.296
+  },
+  {
+    "id": "b461c149-539e-4560-aae5-a5a85e7d6d30",
+    "title": "Failures",
+    "sql": "SELECT status, count(status) from runs",
+    "chart_type": "bar",
+    "x_column": "status",
+    "y_columns": [
+      "count(status)"
+    ],
+    "created_at": 1774510889.005,
+    "updated_at": 1774511174.292
+  },
+  {
+    "id": "a31a6d19-e388-45d3-aec5-1975a32cdd5d",
+    "title": "New Chart",
+    "sql": "SELECT\n  u.thread_id,\n  datetime(u.created_at, 'unixepoch') AS asked_at,\n  u.text                              AS user_message,\n  a.text                              AS assistant_answer,\n  round(a.created_at - u.created_at, 1) AS response_time_s\nFROM messages u\nJOIN messages a\n  ON  a.thread_id = u.thread_id\n  AND a.role      = 'assistant'\n  AND a.created_at = (\n        SELECT MIN(created_at)\n        FROM   messages\n        WHERE  thread_id = u.thread_id\n          AND  role      = 'assistant'\n          AND  created_at > u.created_at\n      )\nWHERE u.role = 'user'\nORDER BY u.created_at DESC\nLIMIT 100",
+    "chart_type": "table",
+    "x_column": "thread_id",
+    "y_columns": [
+      "asked_at"
+    ],
+    "created_at": 1774511012.006,
+    "updated_at": 1774511252.475
+  },
+  {
+    "id": "2ea8bf06-652a-4972-babd-38d7d2a34464",
+    "title": "New Chart",
+    "sql": "",
+    "chart_type": "table",
+    "x_column": null,
+    "y_columns": [],
+    "created_at": 1775533881.552,
+    "updated_at": 1775533881.552
+  }
+]

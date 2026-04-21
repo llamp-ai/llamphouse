@@ -21,6 +21,8 @@ from .queue.in_memory_queue import InMemoryQueue
 from .config_store.base import BaseConfigStore
 from .config_store.in_memory_store import InMemoryConfigStore
 from .tracing import setup_tracing, shutdown_tracing, set_span_excludes
+from .tracing.stores import BaseTracingStore, get_tracing_store_from_env
+from .signals.webhook_signal import WebhookSignal
 
 import os
 import sys
@@ -180,6 +182,7 @@ class LLAMPHouse:
                  config_store: Optional[BaseConfigStore] = None,
                  retention_policy: Optional[RetentionPolicy] = None,
                  exclude_spans: Optional[list[str]] = None,
+                 tracing_store: Optional[BaseTracingStore] = None,
                  compass: bool = True,
                  ):
         # Accept either 'agents' (new) or 'assistants' (legacy) parameter
@@ -210,6 +213,22 @@ class LLAMPHouse:
 
         setup_tracing()
         set_span_excludes(self.exclude_spans)
+
+        # ── Tracing store ─────────────────────────────────────────────────
+        # Resolve the tracing store: explicit arg > env-based auto-detection.
+        resolved_tracing_store = tracing_store or get_tracing_store_from_env()
+        self.fastapi.state.tracing_store = resolved_tracing_store
+
+        # If the store provides its own exporter (in-memory, Postgres), register
+        # it as a second BatchSpanProcessor on the active TracerProvider so that
+        # spans are captured in addition to any OTLP pipeline.
+        _extra_exporter = resolved_tracing_store.get_span_exporter()
+        if _extra_exporter is not None:
+            from opentelemetry import trace as _otel_trace
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor as _BSP
+            _provider = _otel_trace.get_tracer_provider()
+            if hasattr(_provider, "add_span_processor"):
+                _provider.add_span_processor(_BSP(_extra_exporter))
 
         if self.fastapi.state.data_store:
             self.fastapi.state.data_store.init(resolved)
@@ -251,6 +270,16 @@ class LLAMPHouse:
                 await agent.on_startup()
             except Exception:
                 llamphouse_logger.exception(f"on_startup failed for agent '{agent.id}'")
+
+        # Start signals declared on each agent
+        for agent in self.agents:
+            for signal in getattr(agent, "signals", []):
+                try:
+                    await signal.start(agent.id, self.fastapi.state)
+                except Exception:
+                    llamphouse_logger.exception(
+                        f"signal.start failed for agent '{agent.id}': {signal!r}"
+                    )
 
         if self.retention_policy and self.retention_policy.enabled:
             async def _retention_loop():
@@ -295,6 +324,16 @@ class LLAMPHouse:
                     await agent.on_shutdown()
                 except Exception:
                     llamphouse_logger.exception(f"on_shutdown failed for agent '{agent.id}'")
+
+            # Stop signals
+            for agent in self.agents:
+                for signal in getattr(agent, "signals", []):
+                    try:
+                        await signal.stop()
+                    except Exception:
+                        llamphouse_logger.exception(
+                            f"signal.stop failed for agent '{agent.id}': {signal!r}"
+                        )
 
             # Close data store and run queue
             try:
@@ -344,3 +383,10 @@ ______[===]______{_R}"""
         for adapter in self.adapters:
             for router in adapter.get_routers():
                 self.fastapi.include_router(router, prefix=adapter.prefix)
+
+        # Register WebhookSignal routes declared on agents (no prefix — the
+        # signal's own path is the canonical URL, e.g. /signals/my-agent).
+        for agent in self.agents:
+            for signal in getattr(agent, "signals", []):
+                if isinstance(signal, WebhookSignal):
+                    self.fastapi.include_router(signal.get_router(agent.id))

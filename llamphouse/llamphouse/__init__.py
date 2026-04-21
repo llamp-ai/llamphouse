@@ -1,4 +1,4 @@
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 
 # Initialize tracing before anything else so the real TracerProvider
 # is always in place — any instrumentor called later (e.g.
@@ -23,6 +23,13 @@ from .core.config_store import BaseConfigStore, InMemoryConfigStore
 from .core.queue import BaseQueue, InMemoryQueue, RedisQueue
 from .core.workers import AsyncWorker, DistributedWorker
 from .core.types.message import TextPart, ImagePart, FilePart, DataPart
+from .core.signals import BaseSignal, SignalInfo, WebhookSignal
+from .core.tracing import (
+    BaseTracingStore,
+    InMemoryTracingStore,
+    PostgresTracingStore,
+    ClickHouseTracingStore,
+)
 
 __all__ = [
     "LLAMPHouse",
@@ -52,4 +59,11 @@ __all__ = [
     "ImagePart",
     "FilePart",
     "DataPart",
+    "BaseTracingStore",
+    "InMemoryTracingStore",
+    "PostgresTracingStore",
+    "ClickHouseTracingStore",
+    "BaseSignal",
+    "SignalInfo",
+    "WebhookSignal",
 ]
