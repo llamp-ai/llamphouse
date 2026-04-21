@@ -20,6 +20,7 @@ from .streaming.adapters.base_stream_adapter import BaseStreamAdapter
 from .streaming.adapters.openai_chat_completions import OpenAIChatCompletionAdapter
 from .streaming.event_queue.base_event_queue import BaseEventQueue
 from .data_stores.base_data_store import BaseDataStore
+from .signals.base import SignalInfo
 from .streaming.stream_events import (
     CanonicalStreamEvent,
     StreamError,
@@ -104,6 +105,20 @@ class Context:
         # worker can deterministically await them via flush() before
         # emitting terminal events such as RUN_COMPLETED.
         self._pending_emits: set[asyncio.Task] = set()
+        # Accumulated token usage across all streaming calls in this run
+        self._run_usage: Dict[str, int] = {}
+        # Populated when this run was triggered by a signal; None for human runs.
+        self.signal: Optional[SignalInfo] = self._resolve_signal()
+
+    def _resolve_signal(self) -> Optional[SignalInfo]:
+        """Extract SignalInfo from run metadata, if present."""
+        try:
+            raw = (self.run.metadata or {}).get("__signal__")
+            if raw and isinstance(raw, dict):
+                return SignalInfo.from_dict(raw)
+        except Exception:
+            pass
+        return None
 
     def get_config(self) -> Dict[str, Any]:
         """Return the config values snapshot for this run.
@@ -841,6 +856,9 @@ class Context:
                                 span.set_attribute("gen_ai.usage.output_tokens", int(completion))
                             if total is not None:
                                 span.set_attribute("gen_ai.usage.total_tokens", int(total))
+                            self._run_usage["prompt_tokens"] = self._run_usage.get("prompt_tokens", 0) + (prompt or 0)
+                            self._run_usage["completion_tokens"] = self._run_usage.get("completion_tokens", 0) + (completion or 0)
+                            self._run_usage["total_tokens"] = self._run_usage.get("total_tokens", 0) + (total or 0)
 
                 span.set_attribute("output.value", json.dumps({"text": _clip(emitter.content)}, ensure_ascii=True))
                 span.set_attribute("gen_ai.response.status", "completed")
@@ -939,8 +957,10 @@ class Context:
                                 span.set_attribute("gen_ai.usage.output_tokens", int(completion))
                             if total is not None:
                                 span.set_attribute("gen_ai.usage.total_tokens", int(total))
-
-                # ── Auto-persist tool call steps ──────────────────────────
+                            # Accumulate across all streaming calls in this run
+                            self._run_usage["prompt_tokens"] = self._run_usage.get("prompt_tokens", 0) + (prompt or 0)
+                            self._run_usage["completion_tokens"] = self._run_usage.get("completion_tokens", 0) + (completion or 0)
+                            self._run_usage["total_tokens"] = self._run_usage.get("total_tokens", 0) + (total or 0)
                 # The emitter already pushed RUN_STEP_CREATED/COMPLETED
                 # events into the queue during streaming, so we persist
                 # without event_queue to avoid duplicate SSE events.

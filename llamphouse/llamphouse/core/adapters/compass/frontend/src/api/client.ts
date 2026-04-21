@@ -83,6 +83,7 @@ export interface Run {
   id: string
   thread_id: string
   assistant_id: string
+  agent_name: string | null
   status: string
   model: string
   instructions: string | null
@@ -188,6 +189,46 @@ export interface FlowData {
   has_flow: boolean
 }
 
+/* ── Dashboard types ─────────────────────────────────────── */
+
+/** Global, reusable chart definition stored in the chart library. */
+export interface ChartDef {
+  id: string
+  title: string
+  sql: string
+  chart_type: 'table' | 'bar' | 'line' | 'bignum' | 'pie'
+  x_column: string | null
+  y_columns: string[]
+  created_at?: number
+  updated_at?: number
+}
+
+/** Per-dashboard layout slot — references a ChartDef by id + holds sizing. */
+export interface DashboardChart {
+  chart_id: string
+  col_span?: 1 | 2 | 3 | 4
+  height_px?: number
+}
+
+/** @deprecated use ChartDef + DashboardChart. Kept for migration compatibility. */
+export type Chart = ChartDef
+
+export interface Dashboard {
+  id: string
+  title: string
+  description: string
+  charts: DashboardChart[]
+  created_at: number
+  updated_at: number
+}
+
+export interface QueryResult {
+  columns: string[]
+  rows: any[][]
+  duration_ms: number
+  error?: string
+}
+
 /* ─── API Functions ──────────────────────────────────────── */
 
 export const compass = {
@@ -227,6 +268,11 @@ export const compass = {
     return res.data ?? []
   },
 
+  listAllRuns: async (limit = 200) => {
+    const res = await api<ListResponse<Run>>(`/runs?limit=${limit}`)
+    return res.data ?? []
+  },
+
   getRunConfig: (threadId: string, runId: string) =>
     api(`/threads/${threadId}/runs/${runId}/config`),
 
@@ -254,6 +300,61 @@ export const compass = {
   /* Flow */
   getRunFlow: (runId: string) =>
     api<FlowData>(`/runs/${runId}/flow`),
+
+  /* Dashboards */
+  listDashboards: async () => {
+    const res = await api<{ data: Dashboard[] }>('/dashboards')
+    return res.data ?? []
+  },
+
+  getDashboard: (id: string) =>
+    api<Dashboard>(`/dashboards/${id}`),
+
+  createDashboard: (title: string, description = '') =>
+    api<Dashboard>('/dashboards', {
+      method: 'POST',
+      body: JSON.stringify({ title, description }),
+    }),
+
+  updateDashboard: (id: string, data: Partial<Pick<Dashboard, 'title' | 'description' | 'charts'>>) =>
+    api<Dashboard>(`/dashboards/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteDashboard: (id: string) =>
+    api(`/dashboards/${id}`, { method: 'DELETE' }),
+
+  /* Chart library */
+  listCharts: async () => {
+    const res = await api<{ data: ChartDef[] }>('/charts')
+    return res.data ?? []
+  },
+
+  getChart: (id: string) =>
+    api<ChartDef>(`/charts/${id}`),
+
+  createChart: (data: Partial<ChartDef>) =>
+    api<ChartDef>('/charts', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateChart: (id: string, data: Partial<ChartDef>) =>
+    api<ChartDef>(`/charts/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteChart: (id: string) =>
+    api(`/charts/${id}`, { method: 'DELETE' }),
+
+  /* Query */
+  runQuery: (sql: string) =>
+    api<QueryResult>('/dashboards/query', {
+      method: 'POST',
+      body: JSON.stringify({ sql }),
+    }),
 }
 
 /* ─── Helpers ────────────────────────────────────────────── */
@@ -273,7 +374,13 @@ export function statusBadge(status: string): string {
 
 export function formatTs(epoch: number): string {
   if (!epoch) return '—'
-  return new Date(epoch * 1000).toLocaleString()
+  const d = new Date(epoch * 1000)
+  const pad2 = (n: number) => String(n).padStart(2, '0')
+  const pad3 = (n: number) => String(n).padStart(3, '0')
+  return (
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${pad3(d.getMilliseconds())}`
+  )
 }
 
 export function shortId(id: string): string {
@@ -286,5 +393,5 @@ export function durationMs(start: number | null, end: number | null): string {
   if (!start || !end) return '—'
   const ms = (end - start) * 1000
   if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+  return `${(ms / 1000).toFixed(2)}s`
 }

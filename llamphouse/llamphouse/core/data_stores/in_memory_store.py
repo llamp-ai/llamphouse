@@ -1113,24 +1113,31 @@ class InMemoryDataStore(BaseDataStore):
                     error = {"message": error, "code": "server_error"}
                 elif error is not None:
                     error = {"message": str(error), "code": "server_error"}
+                run.status = status
+                run.last_error = RunObject.model_validate({**run.model_dump(), "last_error": error}).last_error
 
+                # ── Lifecycle timestamps ───────────────────────────────
                 now = datetime.now(timezone.utc)
-                payload = run.model_dump()
-                payload["status"] = status
-                payload["last_error"] = error
-                if usage is not None:
-                    payload["usage"] = usage
                 if status == run_status.IN_PROGRESS and run.started_at is None:
-                    payload["started_at"] = now
+                    run.started_at = now
                 elif status == run_status.COMPLETED:
-                    payload["completed_at"] = now
+                    run.completed_at = now
                 elif status == run_status.FAILED:
-                    payload["failed_at"] = now
+                    run.failed_at = now
                 elif status == run_status.CANCELLED:
-                    payload["cancelled_at"] = now
+                    run.cancelled_at = now
                 elif status == run_status.EXPIRED:
-                    payload["expires_at"] = now
-                run = RunObject.model_validate(payload)
+                    run.expires_at = now
+
+                # ── Usage ─────────────────────────────────────────────
+                if usage:
+                    from ..types.run import UsageStatistics
+                    run.usage = UsageStatistics(
+                        prompt_tokens=usage.get("prompt_tokens") or 0,
+                        completion_tokens=usage.get("completion_tokens") or 0,
+                        total_tokens=usage.get("total_tokens") or 0,
+                    )
+
                 self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
                 span.set_status(Status(StatusCode.OK))
                 span.set_attribute("output.value", _json_dump({"run_id": run.id, "status": run.status}))

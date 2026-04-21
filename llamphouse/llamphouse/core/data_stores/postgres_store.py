@@ -1281,7 +1281,7 @@ class PostgresDataStore(BaseDataStore):
                         status=step_status,
                         step_details=_to_jsonable(step.step_details if not hasattr(step.step_details, "model_dump") else step.step_details.model_dump()),
                         meta=_to_jsonable(step.metadata),
-                        completed_at=int(datetime.now(timezone.utc).timestamp()) if step_status == run_step_status.COMPLETED else None,
+                        completed_at=round(datetime.now(timezone.utc).timestamp(), 3) if step_status == run_step_status.COMPLETED else None,
                     )
 
                     session.add(new_step)
@@ -1588,10 +1588,10 @@ class PostgresDataStore(BaseDataStore):
                     elif status == run_status.CANCELLED:
                         run.cancelled_at = now_ts
                     elif status == run_status.EXPIRED:
-                        run.expires_at = now_ts
+                        run.expired_at = now_ts
 
                     # ── Usage ──────────────────────────────────────────
-                    if usage is not None:
+                    if usage:
                         run.usage = _to_jsonable(usage)
 
                     await session.commit()
