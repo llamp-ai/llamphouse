@@ -913,6 +913,88 @@ class PostgresDataStore(BaseDataStore):
                     logger.exception("list_runs() failed")
                     return None
 
+    async def list_threads(self, limit: int = 50, order: Literal["desc", "asc"] = "desc") -> ListResponse | None:
+        """List all threads across all sessions (used by Compass dashboard)."""
+        async with self._session_factory() as session:
+            try:
+                stmt = select(Thread)
+                if order == "asc":
+                    stmt = stmt.order_by(Thread.created_at.asc(), Thread.id.asc())
+                else:
+                    stmt = stmt.order_by(Thread.created_at.desc(), Thread.id.desc())
+                result = await session.execute(stmt.limit(limit))
+                rows = result.scalars().all()
+                threads = [
+                    ThreadObject(
+                        id=row.id,
+                        created_at=row.created_at,
+                        tool_resources=row.tool_resources,
+                        metadata=row.meta or {},
+                    )
+                    for row in rows
+                ]
+                return ListResponse(
+                    data=threads,
+                    first_id=threads[0].id if threads else None,
+                    last_id=threads[-1].id if threads else None,
+                    has_more=False,
+                )
+            except Exception:
+                logger.exception("list_threads() failed")
+                return None
+
+    async def list_runs_all(self, limit: int = 200, order: Literal["desc", "asc"] = "desc") -> ListResponse | None:
+        """List runs across all threads (used by Compass dashboard)."""
+        async with self._session_factory() as session:
+            try:
+                stmt = select(Run)
+                if order == "asc":
+                    stmt = stmt.order_by(Run.created_at.asc(), Run.id.asc())
+                else:
+                    stmt = stmt.order_by(Run.created_at.desc(), Run.id.desc())
+                result = await session.execute(stmt.limit(limit))
+                rows = result.scalars().all()
+                runs = [RunObject.model_validate(row.to_dict()) for row in rows]
+                return ListResponse(
+                    data=runs,
+                    first_id=runs[0].id if runs else None,
+                    last_id=runs[-1].id if runs else None,
+                    has_more=False,
+                )
+            except Exception:
+                logger.exception("list_runs_all() failed")
+                return None
+
+    async def count_threads(self) -> int:
+        """Return total thread count (used by Compass overview)."""
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(select(func.count()).select_from(Thread))
+                return result.scalar_one()
+            except Exception:
+                logger.exception("count_threads() failed")
+                return 0
+
+    async def count_runs(self) -> int:
+        """Return total run count across all threads (used by Compass overview)."""
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(select(func.count()).select_from(Run))
+                return result.scalar_one()
+            except Exception:
+                logger.exception("count_runs() failed")
+                return 0
+
+    async def count_messages(self) -> int:
+        """Return total message count across all threads (used by Compass overview)."""
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(select(func.count()).select_from(Message))
+                return result.scalar_one()
+            except Exception:
+                logger.exception("count_messages() failed")
+                return 0
+
     async def update_run(self, thread_id: str, run_id: str, modifications: ModifyRunRequest) -> RunObject | None:
         with span_context(
             store_tracer,

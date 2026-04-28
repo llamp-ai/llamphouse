@@ -450,8 +450,8 @@ async def get_run_flow(req: Request, run_id: str):
     if hasattr(db, "_runs"):
         for runs_list in db._runs.values():
             all_runs.extend(runs_list)
-    elif hasattr(db, "list_all_runs"):
-        result = await db.list_all_runs()
+    elif hasattr(db, "list_runs_all"):
+        result = await db.list_runs_all()
         all_runs = result.data if result else []
 
     # Index runs by id
