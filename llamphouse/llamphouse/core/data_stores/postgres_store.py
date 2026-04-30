@@ -756,6 +756,7 @@ class PostgresDataStore(BaseDataStore):
                         truncation_strategy=_to_jsonable(run.truncation_strategy),
                         tool_choice=_to_jsonable(run.tool_choice),
                         parallel_tool_calls=run.parallel_tool_calls,
+                        stream=bool(run.stream),
                         response_format=_to_jsonable(run.response_format),
                         reasoning_effort=run.reasoning_effort or getattr(assistant, 'reasoning_effort', None),
                         config_values=_to_jsonable(run.config_values),
