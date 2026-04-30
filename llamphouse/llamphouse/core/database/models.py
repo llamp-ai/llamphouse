@@ -150,6 +150,7 @@ class Run(Base):
     truncation_strategy = Column(JSONType)
     tool_choice = Column(JSONType)
     parallel_tool_calls = Column(Boolean, nullable=False, server_default="false")
+    stream = Column(Boolean, nullable=False, server_default="false")
     response_format = Column(JSONType, nullable=False, server_default='"auto"')
     thread_id = Column(String, ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
     assistant_id = Column(String, nullable=False)
@@ -187,6 +188,7 @@ class Run(Base):
             "truncation_strategy": self.truncation_strategy,
             "tool_choice": self.tool_choice,
             "parallel_tool_calls": self.parallel_tool_calls,
+            "stream": self.stream,
             "response_format": self.response_format,
             "reasoning_effort": self.reasoning_effort,
             "config_values": self.config_values,
