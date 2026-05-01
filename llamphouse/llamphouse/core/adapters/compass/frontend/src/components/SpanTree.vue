@@ -122,9 +122,10 @@ function getAttr(span: Span, key: string): string {
   return span.SpanAttributes?.[key] ?? ''
 }
 
-function truncate(text: string, max = 200): string {
-  if (!text || text.length <= max) return text
-  return text.slice(0, max) + '…'
+function truncate(text: unknown, max = 200): string {
+  const s = typeof text === 'string' ? text : String(text ?? '')
+  if (!s || s.length <= max) return s
+  return s.slice(0, max) + '…'
 }
 
 function selectedSpan(): Span | null {
