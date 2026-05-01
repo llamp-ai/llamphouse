@@ -24,6 +24,7 @@ load_dotenv(override=True)
 from llamphouse.core import LLAMPHouse
 from llamphouse.core.adapters.a2a import A2AAdapter
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
+from llamphouse.core.tracing.stores import InMemoryTracingStore
 
 from agents.planner.agent import PlannerAgent
 from agents.tools import tool, collect_tools
@@ -135,6 +136,7 @@ def main():
         agents=[planner],
         data_store=InMemoryDataStore(),
         adapters=[A2AAdapter()],
+        tracing_store=InMemoryTracingStore(),
     )
     llamphouse.ignite(host="127.0.0.1", port=8000)
 
