@@ -258,7 +258,14 @@ async def _setup_task(rpc: JSONRPCRequest, req: Request, params: MessageSendPara
         output_queue = req.app.state.event_queues[task_key]
         await output_queue.subscribe()
 
-    run_request = RunCreateRequest(assistant_id=assistant.id, stream=stream)
+    config_store = getattr(req.app.state, "config_store", None)
+    config_values = config_store.resolve_config(assistant.id) if config_store else None
+
+    run_request = RunCreateRequest(
+        assistant_id=assistant.id,
+        stream=stream,
+        config_values=config_values or None,
+    )
     run = await db.insert_run(context_id, run_request, assistant, event_queue=output_queue)
 
     # Propagate trace context: extract from incoming HTTP headers,

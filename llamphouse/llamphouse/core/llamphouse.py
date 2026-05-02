@@ -216,24 +216,14 @@ class LLAMPHouse:
         self.exclude_spans = exclude_spans or []
         self._skip_worker = False   # Set by CLI --no-workers
 
-        setup_tracing()
-        set_span_excludes(self.exclude_spans)
-
         # ── Tracing store ─────────────────────────────────────────────────
-        # Resolve the tracing store: explicit arg > env-based auto-detection.
+        # Resolve before setup_tracing() so the store's exporter is wired
+        # in as the primary internal pipeline.
         resolved_tracing_store = tracing_store or get_tracing_store_from_env()
         self.fastapi.state.tracing_store = resolved_tracing_store
 
-        # If the store provides its own exporter (in-memory, Postgres), register
-        # it as a second BatchSpanProcessor on the active TracerProvider so that
-        # spans are captured in addition to any OTLP pipeline.
-        _extra_exporter = resolved_tracing_store.get_span_exporter()
-        if _extra_exporter is not None:
-            from opentelemetry import trace as _otel_trace
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor as _BSP
-            _provider = _otel_trace.get_tracer_provider()
-            if hasattr(_provider, "add_span_processor"):
-                _provider.add_span_processor(_BSP(_extra_exporter))
+        setup_tracing(tracing_store=resolved_tracing_store)
+        set_span_excludes(self.exclude_spans)
 
         if self.fastapi.state.data_store:
             self.fastapi.state.data_store.init(resolved)
@@ -385,9 +375,52 @@ ______[===]______{_R}"""
         llamphouse_logger.info(ascii_art)
         llamphouse_logger.info(f"{_B}{_GR}We have light!{_R}")
         llamphouse_logger.info(f"Server: {_B}http://{host}:{port}{_R}")
+
+        # ── Adapters ───────────────────────────────────────────────────────
+        llamphouse_logger.info(f"  {_DIM}Adapters{_R}")
         for adapter in self.adapters:
             prefix = adapter.prefix or "/"
-            llamphouse_logger.info(f"  {_DIM}▸{_R} {type(adapter).__name__:<28} {_CY}{prefix}{_R}")
+            llamphouse_logger.info(f"    {_DIM}▸{_R} {type(adapter).__name__:<28} {_CY}{prefix}{_R}")
+
+        # ── Agents ─────────────────────────────────────────────────────────
+        llamphouse_logger.info(f"  {_DIM}Agents ({len(self.agents)}){_R}")
+        for agent in self.agents:
+            llamphouse_logger.info(f"    {_DIM}▸{_R} {agent.id}")
+
+        # ── Infrastructure ─────────────────────────────────────────────────
+        llamphouse_logger.info(f"  {_DIM}Infrastructure{_R}")
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Data store':<28} {type(self.fastapi.state.data_store).__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Run queue':<28} {type(self.fastapi.state.run_queue).__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Event queue':<28} {self.fastapi.state.queue_class.__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Config store':<28} {type(self.fastapi.state.config_store).__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Tracing store':<28} {type(self.fastapi.state.tracing_store).__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Worker':<28} {type(self.worker).__name__}"
+        )
+
+        # ── Optional features ──────────────────────────────────────────────
+        if self.authenticator:
+            llamphouse_logger.info(
+                f"    {_DIM}▸{_R} {'Auth':<28} {type(self.authenticator).__name__}"
+            )
+        if self.retention_policy and self.retention_policy.enabled:
+            llamphouse_logger.info(
+                f"    {_DIM}▸{_R} {'Retention':<28} ttl={self.retention_policy.ttl_days}d"
+            )
+        if self.exclude_spans:
+            llamphouse_logger.info(
+                f"    {_DIM}▸{_R} {'Excluded spans':<28} {', '.join(self.exclude_spans)}"
+            )
 
     def ignite(self, host="0.0.0.0", port=80, reload=False, ws="auto", timeout_graceful_shutdown=10):
         self.__print_ignite(host, port)
