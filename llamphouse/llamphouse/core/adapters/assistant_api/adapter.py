@@ -1,12 +1,26 @@
+import logging
+import warnings
 from typing import List
 
 from fastapi import APIRouter
 
 from ..base import BaseAPIAdapter
 
+logger = logging.getLogger("llamphouse")
+
 
 class AssistantAPIAdapter(BaseAPIAdapter):
     def __init__(self, prefix: str = ""):
+        warnings.warn(
+            "AssistantAPIAdapter is deprecated and will be removed in a future release. "
+            "Use A2AAdapter instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        logger.warning(
+            "AssistantAPIAdapter is deprecated and will be removed in a future release. "
+            "Use A2AAdapter instead."
+        )
         super().__init__(prefix)
 
     def get_routers(self) -> List[APIRouter]:

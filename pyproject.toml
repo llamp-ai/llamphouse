@@ -12,7 +12,7 @@ dynamic = ["version", "dependencies"]
 
 [tool.setuptools.packages.find]
 where = ["llamphouse"]
-include = ["llamphouse", "llamphouse.core", "llamphouse.core.*"]
+include = ["llamphouse", "llamphouse.core", "llamphouse.core.*", "llamphouse.cli", "llamphouse.cli.*"]
 namespaces = true
 
 [tool.setuptools.package-data]
@@ -20,7 +20,7 @@ namespaces = true
 "llamphouse.core.adapters.compass" = ["static/**/*"]
 
 [project.scripts]
-llamphouse = "llamphouse.core.cli:main"
+llamphouse = "llamphouse.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "llamphouse.__version__" }
