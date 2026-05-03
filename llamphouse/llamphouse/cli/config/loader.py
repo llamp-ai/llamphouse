@@ -36,7 +36,7 @@ import yaml
 
 from ...core.assistant import Agent
 from ...core.context import Context
-from ...core.adapters import AssistantAPIAdapter, A2AAdapter, CompassAdapter, DashboardAdapter
+from ...core.adapters import AssistantAPIAdapter, A2AAdapter, CompassAdapter
 from ...core.workers import AsyncWorker
 from ...core.tracing.stores import InMemoryTracingStore, PostgresTracingStore, ClickHouseTracingStore
 from .schema import DeploymentConfig, LLAMPHouseConfig

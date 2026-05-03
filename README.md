@@ -247,14 +247,15 @@ The `Context` object is passed to every `run()` call and provides the full toolk
 
 ### Adapters
 
-Adapters control how clients communicate with your agents:
+Adapters control how clients communicate with your agents. Multiple adapters can be mounted simultaneously — the same agents are reachable via every enabled protocol.
 
-| Adapter | Protocol | Use case |
+| Adapter | Default prefix | Protocol / purpose |
 |---|---|---|
-| `A2AAdapter` | A2A (Agent-to-Agent) | Interoperable agent communication |
-| `AssistantAPIAdapter` | OpenAI Assistants API | OpenAI SDK compatibility |
+| `AssistantAPIAdapter` | _(root)_ | OpenAI Assistants API — use the `openai` Python SDK as a client |
+| `A2AAdapter` | _(root)_ | A2A JSON-RPC — interoperable agent-to-agent communication |
+| `CompassAdapter` | `/compass` | Full observability UI with traces, config, charts & dashboards |
 
-Both can be used simultaneously. If no adapters are specified, `AssistantAPIAdapter` is used by default.
+If no adapters are specified, `AssistantAPIAdapter` is used by default.
 
 ### Multi-Agent
 
