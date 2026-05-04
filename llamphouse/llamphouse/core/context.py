@@ -592,6 +592,23 @@ class Context:
                                 if chunk:
                                     total_chars += len(chunk)
                                     yield chunk
+
+                    elif evt_name == event_type.MESSAGE_COMPLETED:
+                        try:
+                            evt_data = json.loads(evt.data)
+                        except Exception:
+                            continue
+                        for block in evt_data.get("content", []):
+                            if block.get("type") == "text":
+                                text_val = block.get("text", "")
+                                chunk = (
+                                    text_val.get("value", "")
+                                    if isinstance(text_val, dict)
+                                    else str(text_val)
+                                )
+                                if chunk:
+                                    total_chars += len(chunk)
+                                    yield chunk
             else:
                 # Non-streaming fallback: yield entire result as one chunk
                 text = await self._poll_for_result(child_thread_id, run)
