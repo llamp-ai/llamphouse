@@ -16,10 +16,10 @@ through `llamphouse.yaml`.
 ## What you'll learn
 
 - How to replace `server.py` with a `llamphouse.yaml` config file
-- The difference between an **agent definition** (the class) and a
-  **deployment** (a running instance with specific settings)
+- The difference between a **definition** (the class) and an
+  **agent** (a running instance with specific settings)
 - How an agent reads its deployment config via `self.settings`
-- How to target a specific deployment from a client
+- How to target a specific agent from a client
 
 ## Prerequisites
 
@@ -62,7 +62,7 @@ You should see output like:
 ```
 LLAMPHOUSE Loading deployment 'greeter-formal' ← agent 'greeting-agent' (agents.py:GreetingAgent)
 LLAMPHOUSE Loading deployment 'greeter-casual' ← agent 'greeting-agent' (agents.py:GreetingAgent)
-LLAMPHOUSE Project 'greeter-platform' — 2 deployment(s) loaded.
+LLAMPHOUSE Project 'greeter-platform' — 2 agent(s) loaded.
 LLAMPHOUSE We have light!
 LLAMPHOUSE Server: http://0.0.0.0:8000
 ```
@@ -73,11 +73,11 @@ LLAMPHOUSE Server: http://0.0.0.0:8000
 python client.py
 ```
 
-You'll see both deployments reply to the same message with different
+You'll see both agents reply to the same message with different
 personalities:
 
 ```
-Found 2 deployment(s):
+Found 2 agent(s):
 
   • [greeter-formal]  greeter-formal
   • [greeter-casual]  greeter-casual
@@ -109,19 +109,19 @@ Speaking as your laid-back surfer, I heard you say:
 The config has three sections:
 
 ```yaml
-agents:          # ← the class / entrypoint (reusable)
+definitions:     # ← the class / entrypoint (reusable)
   - name: greeting-agent
     entrypoint: agents.py:GreetingAgent
 
-deployments:     # ← running instances with their own config
+agents:          # ← running instances with their own config
   - name: greeter-formal
-    agent: greeting-agent
+    definition: greeting-agent
     config:
       persona: formal butler
       greeting: "Good day, esteemed visitor."
 
   - name: greeter-casual
-    agent: greeting-agent
+    definition: greeting-agent
     config:
       persona: laid-back surfer
       greeting: "Hey there! What's up, dude?"
@@ -147,16 +147,16 @@ class GreetingAgent(Agent):
         ...
 ```
 
-The same class runs differently depending on which deployment it was
+The same class runs differently depending on which agent config it was
 instantiated for — no if/else, no environment variables.
 
 ### `client.py`
 
 The client:
 
-1. **Discovers** all deployments via `GET /agents`.
-2. **Routes** to a specific deployment by passing
-   `"metadata": {"assistant_id": "<deployment-name>"}` in the JSON-RPC
+1. **Discovers** all agents via `GET /agents`.
+2. **Routes** to a specific agent by passing
+   `"metadata": {"assistant_id": "<agent-name>"}` in the JSON-RPC
    request body.
 
 ## Supported entrypoint formats
@@ -171,7 +171,7 @@ The client:
 
 | Topic | Details |
 |---|---|
-| More deployments | Add a third entry under `deployments:` with `agent: greeting-agent` |
+| More agents | Add a third entry under `agents:` with `definition: greeting-agent` |
 | Secrets | Use `secrets:` + `secrets_store:` to inject API keys from Azure Key Vault or env vars |
 | Global env | Use `globals.env` to set `LOG_LEVEL` or other shared settings |
 | Worker options | Pass `--no-workers` to `llamphouse up` for API-only mode |

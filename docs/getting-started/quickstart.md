@@ -4,13 +4,11 @@ This guide walks you through creating, running, and talking to your first LLAMPH
 
 ## 1. Create your agent
 
-Create a file called `server.py`:
+Create a file called `agents.py`:
 
 ```python
-from llamphouse.core import LLAMPHouse, Agent
+from llamphouse.core import Agent
 from llamphouse.core.context import Context
-from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse.core.adapters.a2a import A2AAdapter
 
 
 class HelloAgent(Agent):
@@ -18,28 +16,28 @@ class HelloAgent(Agent):
         await context.insert_message(
             "Hello! I'm a simple agent running on LLAMPHouse."
         )
-
-
-agent = HelloAgent(
-    id="hello-agent",
-    name="Hello Agent",
-    description="A friendly assistant that answers questions.",
-    version="0.1.0",
-)
-
-app = LLAMPHouse(
-    agents=[agent],
-    data_store=InMemoryDataStore(),
-    adapters=[A2AAdapter()],
-)
-
-app.ignite(host="127.0.0.1", port=8000)
 ```
 
-## 2. Run it
+## 2. Add a config file
+
+Create `llamphouse.yaml` in the same directory:
+
+```yaml
+version: "0.1"
+
+definitions:
+  - name: hello-agent
+    entrypoint: agents.py:HelloAgent
+
+agents:
+  - name: hello-agent
+    definition: hello-agent
+```
+
+## 3. Run it
 
 ```bash
-python server.py
+llamphouse up
 ```
 
 Your agent is now live at `http://127.0.0.1:8000` with:
@@ -47,7 +45,7 @@ Your agent is now live at `http://127.0.0.1:8000` with:
 - **A2A protocol** at `/.well-known/agent.json`
 - **Compass dashboard** at `http://127.0.0.1:8000/compass`
 
-## 3. Talk to it
+## 4. Talk to it
 
 ### Using curl
 
@@ -88,8 +86,8 @@ Because LLAMPHouse is OpenAI-compatible, you can use the standard `openai` Pytho
 ## What just happened?
 
 1. You defined an **Agent** with a `run()` method — this is where your logic lives
-2. You created a **LLAMPHouse** server with an in-memory data store and the A2A adapter
-3. Calling `ignite()` started a FastAPI server exposing both the OpenAI Assistants API and the A2A protocol
+2. `llamphouse.yaml` declared the agent **entrypoint** and a **deployment** (a named running instance)
+3. `llamphouse up` read the config, loaded your agent, and started a FastAPI server exposing the OpenAI Assistants API and the A2A protocol automatically
 4. The client created a **thread** (conversation), added a **message**, and started a **run** — the server executed your agent's `run()` method and stored the response
 
 ## Next steps

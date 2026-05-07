@@ -1,4 +1,4 @@
-# 12 — Planner Agent
+# Example 12 — Planner Agent
 
 A generic **ReAct-style Planner-Executor** agent that you can drop into any project by providing a list of tools and a registry of callables.
 

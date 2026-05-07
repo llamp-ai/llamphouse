@@ -1,4 +1,4 @@
-# 11 — Webhook Signal
+# Example 11 — Webhook Signal
 
 Trigger an agent via an HTTP POST instead of a human chat message.
 

@@ -8,15 +8,15 @@ A llamphouse.yaml file has this top-level structure:
     project:
       name: my-platform
 
-    agents:          # agent *types* — reusable definitions
+    definitions:     # agent *types* — reusable definitions
       - name: research-agent
         entrypoint: agent.py:ResearchAgent   # Agent subclass
         runtime: ...
         interface: ...
 
-    deployments:     # instances of an agent type
+    agents:          # running instances of a definition
       - name: research-fast
-        agent: research-agent
+        definition: research-agent
         config:      # passed to the agent as agent.settings
           model: gpt-4o-mini
         env:         # injected into os.environ for this deployment
@@ -137,7 +137,7 @@ class DeploymentConfig(BaseModel):
     """A concrete deployment — one running instance of an agent type."""
 
     name: str
-    agent: str  # must match an AgentDefinition.name
+    definition: str  # must match an AgentDefinition.name
 
     # Passed to the agent instance as ``agent.settings``
     config: Optional[Dict[str, Any]] = None
@@ -174,8 +174,8 @@ class LLAMPHouseConfig(BaseModel):
     version: str
     project: Optional[ProjectConfig] = None
 
-    agents: List[AgentDefinition] = []
-    deployments: List[DeploymentConfig] = []
+    definitions: List[AgentDefinition] = []
+    agents: List[DeploymentConfig] = []
 
     # Each entry is a single-key mapping ``{adapter_name: {kwargs}}``.
     # ``None`` means "use LLAMPHouse defaults" (AssistantAPIAdapter + Compass).
@@ -196,11 +196,11 @@ class LLAMPHouseConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_deployment_agent_refs(self) -> "LLAMPHouseConfig":
-        agent_names = {a.name for a in self.agents}
-        for dep in self.deployments:
-            if dep.agent not in agent_names:
+        definition_names = {d.name for d in self.definitions}
+        for agent in self.agents:
+            if agent.definition not in definition_names:
                 raise ValueError(
-                    f"Deployment '{dep.name}' references unknown agent '{dep.agent}'. "
-                    f"Defined agents: {sorted(agent_names)}"
+                    f"Agent '{agent.name}' references unknown definition '{agent.definition}'. "
+                    f"Defined definitions: {sorted(definition_names)}"
                 )
         return self

@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 const router = createRouter({
-  history: createWebHistory('/compass/'),
+  history: createWebHistory(document.querySelector('base')?.getAttribute('href') ?? '/compass/'),
   routes: [
     {
       path: '/',

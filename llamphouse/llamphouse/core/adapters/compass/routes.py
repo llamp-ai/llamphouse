@@ -105,12 +105,21 @@ def _serialize_list(items) -> list[dict]:
 # ── UI ───────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-async def compass_ui():
+async def compass_ui(req: Request):
     """Serve the Compass SPA (or placeholder)."""
     html_path = STATIC_DIR / "index.html"
     if not html_path.exists():
         return HTMLResponse("<h1>Compass UI not found</h1>", status_code=500)
-    return HTMLResponse(html_path.read_text())
+
+    # Derive the actual mount prefix from the request URL so that the
+    # <base href="..."> tag is correct for any configured prefix.
+    # req.url.path is the full path (e.g. "/dashboard/"), and this route
+    # is registered as GET "/" relative to the sub-router.
+    prefix = req.url.path.rstrip("/") or "/compass"
+
+    html = html_path.read_text()
+    html = re.sub(r'<base\s+href="[^"]*"', f'<base href="{prefix}/"', html, count=1)
+    return HTMLResponse(html)
 
 
 # ── Overview / stats ─────────────────────────────────────────────────────────
@@ -849,7 +858,7 @@ async def run_dashboard_query(req: Request, body: QueryRequest):
 
 # ── SPA catch-all (must be last) ─────────────────────────────────────────────
 @router.get("/{full_path:path}")
-async def compass_spa_fallback(full_path: str):
+async def compass_spa_fallback(full_path: str, req: Request):
     """Serve static assets with correct MIME types, or fall back to
     index.html for Vue Router history-mode routes."""
     if full_path.startswith("api/"):
@@ -865,4 +874,10 @@ async def compass_spa_fallback(full_path: str):
     html_path = STATIC_DIR / "index.html"
     if not html_path.exists():
         return HTMLResponse("<h1>Compass UI not found</h1>", status_code=500)
-    return HTMLResponse(html_path.read_text())
+    # Derive prefix: strip the sub-path portion from the full request URL.
+    # e.g. req.url.path="/dashboard/threads", full_path="threads" → "/dashboard"
+    prefix = req.url.path[:-(len(full_path) + 1)] if full_path else req.url.path.rstrip("/")
+    prefix = prefix or "/compass"
+    html = html_path.read_text()
+    html = re.sub(r'<base\s+href="[^"]*"', f'<base href="{prefix}/"', html, count=1)
+    return HTMLResponse(html)

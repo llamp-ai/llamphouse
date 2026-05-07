@@ -7,22 +7,22 @@ project:
 # Agent definitions
 # ---------------------
 # One reusable agent *type* — the behavior lives in agents.py.
-# We create two deployments below with different personalities and greetings.
+# We create two agents below with different personalities and greetings.
 
-agents:
+definitions:
   - name: greeting-agent
     entrypoint: agents.py:GreetingAgent
 
 # ---------------------
-# Deployments (instances)
+# Agents (running instances)
 # ---------------------
 # Two independent instances of the same agent type.
-# Each gets its own id (the deployment name) and its own settings dict
+# Each gets its own id (the agent name) and its own settings dict
 # that the agent reads via self.settings.
 
-deployments:
+agents:
   - name: greeter-formal
-    agent: greeting-agent
+    definition: greeting-agent
 
     config:
       persona: formal butler
@@ -33,7 +33,7 @@ deployments:
       concurrency: 5
 
   - name: greeter-casual
-    agent: greeting-agent
+    definition: greeting-agent
 
     config:
       persona: laid-back surfer
@@ -55,7 +55,7 @@ deployments:
 adapters:
   - a2a:
   - compass:
-      prefix: /compass   # default; change e.g. to /dashboard
+      prefix: /dashboard   # default; change e.g. to /dashboard
 
 # ---------------------
 # Workers

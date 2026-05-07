@@ -1,8 +1,14 @@
 site_name: LLAMPHouse
 site_description: Serving Your LLM Apps, Scalable and Reliable.
-site_url: https://llamp-ai.github.io/llamphouse
+site_url: https://llamp-ai.github.io/llamphouse/docs/
 repo_url: https://github.com/llamp-ai/llamphouse
 repo_name: llamp-ai/llamphouse
+
+site_dir: site/docs
+
+hooks:
+  - hooks/landing_page.py
+  - hooks/sync_examples.py
 
 docs_dir: docs
 
