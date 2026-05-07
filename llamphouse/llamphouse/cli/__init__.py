@@ -185,18 +185,18 @@ project:
 # ---------------------
 # Agent definitions
 # ---------------------
-agents:
+definitions:
   - name: hello-agent
     # Points to an Agent subclass, an async run(context) function,
     # or a factory create(deployment_cfg) -> Agent in the given file.
     entrypoint: agent.py:HelloAgent
 
 # ---------------------
-# Deployments (instances)
+# Agents (running instances)
 # ---------------------
-deployments:
+agents:
   - name: hello
-    agent: hello-agent
+    definition: hello-agent
 
     # Arbitrary key/value pairs passed to the agent as agent.settings
     config:

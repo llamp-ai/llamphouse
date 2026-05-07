@@ -1,6 +1,7 @@
 # Examples
 
-The [examples/](https://github.com/llamp-ai/llamphouse/tree/main/examples) directory contains runnable samples for every major feature. Each example includes a `server.py`, `client.py`, and `README.md` with instructions.
+The [examples/](https://github.com/llamp-ai/llamphouse/tree/main/examples) directory contains runnable samples for every major feature.
+Each example includes an `agents.py` (or `server.py`), `client.py`, and `README.md` with instructions.
 
 ## Example index
 
@@ -18,6 +19,7 @@ The [examples/](https://github.com/llamp-ai/llamphouse/tree/main/examples) direc
 | [10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker) | Redis-backed distributed workers | Redis queue, split-mode, Postgres |
 | [11_WebhookSignal](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookSignal) | Webhook signal integration | Signals, external callbacks |
 | [12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent) | Planner/executor agent pattern | Planning, tool use |
+| [13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML) | Config-driven runtime — no server.py required | YAML config, CLI |
 
 ## Running an example
 
@@ -31,7 +33,7 @@ cd examples/01_HelloWorld
 pip install -r requirements.txt
 
 # Start the server
-python server.py
+llamphouse up   # or: python server.py
 
 # In another terminal, run the client
 python client.py
@@ -43,13 +45,19 @@ Some examples require environment variables (e.g., `OPENAI_API_KEY`). Check each
 
 If you're new to LLAMPHouse, we recommend working through the examples in this order:
 
-1. **[01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld)** — understand the basics
-2. **[02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat)** — add an LLM
-3. **[03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming)** — enable streaming
-4. **[04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall)** — add function calling
-5. **[09_A2A](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_A2A)** — try the A2A protocol
-6. **[11_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_AgentHandover)** — multi-agent basics
-7. **[12_CentralOrchestrator](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_CentralOrchestrator)** — orchestration patterns
+1. **[01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld)** — 👋 Hello World
+2. **[02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat)** — 💬 Chat
+3. **[03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming)** — 🌊 Streaming
+4. **[04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall)** — Tool Call Example
+5. **[05_OrchestratorAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_OrchestratorAgent)** — Central Orchestrator with Review & Correction
+6. **[06_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_AgentHandover)** — Agent Handover
+7. **[07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing)** — Tracing Example (A2A)
+8. **[08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore)** — Config Store Example
+9. **[09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth)** — Custom Authenticator Example
+10. **[10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker)** — AsyncWorker vs DistributedWorker
+11. **[11_WebhookSignal](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookSignal)** — Webhook Signal
+12. **[12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent)** — Planner Agent
+13. **[13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML)** — 📄 LLAMPHouse YAML
 
 ## Next steps
 

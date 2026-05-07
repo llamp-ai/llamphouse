@@ -3,7 +3,7 @@
  *  code works embedded (/compass) and standalone (/).
  * ─────────────────────────────────────────────────────────── */
 
-const BASE = import.meta.env.BASE_URL.replace(/\/+$/, '')
+const BASE = (document.querySelector('base')?.getAttribute('href') ?? '/compass/').replace(/\/+$/, '')
 
 async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}/api${path}`, {

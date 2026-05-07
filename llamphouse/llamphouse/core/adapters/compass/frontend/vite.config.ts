@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
-  base: '/compass/',
+  base: './',  // relative — prefix is injected via <base> tag at runtime
   build: {
     outDir: '../static',
     emptyOutDir: true,

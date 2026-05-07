@@ -56,7 +56,7 @@ async def main():
         response.raise_for_status()
         agents = response.json()
 
-        print(f"\nFound {len(agents)} deployment(s):\n")
+        print(f"\nFound {len(agents)} agent(s):\n")
         for a in agents:
             print(f"  • [{a['id']}]  {a.get('name', a['id'])}")
             if a.get("description"):
@@ -77,7 +77,7 @@ async def main():
             print()
 
         print("=" * 60)
-        print("\nSame GreetingAgent class — different deployment configs!")
+        print("\nSame GreetingAgent class — different agent configs!")
 
 
 if __name__ == "__main__":

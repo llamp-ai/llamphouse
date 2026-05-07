@@ -53,7 +53,6 @@ ADAPTER_REGISTRY: Dict[str, type] = {
     "assistant_api": AssistantAPIAdapter,
     "a2a": A2AAdapter,
     "compass": CompassAdapter,
-    "dashboard": DashboardAdapter,
 }
 
 WORKER_REGISTRY: Dict[str, type] = {
@@ -342,12 +341,12 @@ def build_app_from_config(
         _apply_secrets(config.globals.secrets, secrets_store_raw)
 
     # ── 3. Index agent definitions ──────────────────────────────────────────
-    agent_defs = {a.name: a for a in config.agents}
+    agent_defs = {a.name: a for a in config.definitions}
 
     # ── 4. Instantiate one Agent per deployment ─────────────────────────────
     agents = []
-    for deployment in config.deployments:
-        agent_def = agent_defs[deployment.agent]  # validated in schema
+    for deployment in config.agents:
+        agent_def = agent_defs[deployment.definition]  # validated in schema
 
         # Apply deployment-level env vars (override globals)
         if deployment.env:
@@ -361,7 +360,7 @@ def build_app_from_config(
         logger.info(
             "Loading deployment '%s' ← agent '%s' (%s)",
             deployment.name,
-            deployment.agent,
+            deployment.definition,
             agent_def.entrypoint,
         )
         entrypoint_obj = _load_entrypoint(agent_def.entrypoint, config_dir)
