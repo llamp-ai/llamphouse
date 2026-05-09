@@ -40,7 +40,7 @@ run_status_enum = Enum(
     name='run_status_enum'
 )
 step_type_enum = Enum(
-    'message_creation', 'tool_calls', 
+    'message_creation', 'tool_calls', 'step',
     name='run_step_type_enum'
 )
 run_step_status_enum = Enum(

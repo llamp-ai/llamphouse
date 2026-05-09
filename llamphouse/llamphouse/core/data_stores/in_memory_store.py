@@ -1170,12 +1170,15 @@ class InMemoryDataStore(BaseDataStore):
 
                             step.status = status
 
-                            if output and hasattr(step.step_details, "tool_calls"):
-                                tool_calls = step.step_details.tool_calls or []
-                                if tool_calls:
-                                    call_obj = tool_calls[0].root if hasattr(tool_calls[0], "root") else tool_calls[0]
-                                    if hasattr(call_obj, "function"):
-                                        call_obj.function.output = output
+                            if output is not None:
+                                if hasattr(step.step_details, "tool_calls"):
+                                    tool_calls = step.step_details.tool_calls or []
+                                    if tool_calls:
+                                        call_obj = tool_calls[0].root if hasattr(tool_calls[0], "root") else tool_calls[0]
+                                        if hasattr(call_obj, "function"):
+                                            call_obj.function.output = output
+                                elif getattr(step.step_details, "type", None) == "step":
+                                    step.step_details.output = output
 
                             payload = step.model_dump()
                             payload["status"] = status

@@ -9,6 +9,7 @@ _setup_tracing()
 from .core.llamphouse import LLAMPHouse
 from .core.assistant import Agent, Assistant
 from .core.context import Context
+from .core.workflow import step
 from .core.adapters import BaseAPIAdapter, AssistantAPIAdapter, A2AAdapter
 from .core.auth import AuthResult, BaseAuth, KeyAuth
 from .core.types.config import (
@@ -66,4 +67,5 @@ __all__ = [
     "BaseSignal",
     "SignalInfo",
     "WebhookSignal",
+    "step",
 ]
