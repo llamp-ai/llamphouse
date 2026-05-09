@@ -629,7 +629,7 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
     conn.execute(
         "CREATE TABLE messages "
         "(id TEXT, thread_id TEXT, role TEXT, status TEXT, "
-        " assistant_id TEXT, run_id TEXT, created_at REAL, completed_at REAL, text TEXT)"
+        " assistant_id TEXT, run_id TEXT, created_at REAL, completed_at REAL, text TEXT, metadata TEXT)"
     )
     for msgs in (db._messages or {}).values():
         for m in msgs:
@@ -639,9 +639,10 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
             except Exception:
                 msg_text = None
             conn.execute(
-                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (m.id, m.thread_id, m.role, m.status,
-                 m.assistant_id, m.run_id, _epoch(m.created_at), _epoch(m.completed_at), msg_text),
+                 m.assistant_id, m.run_id, _epoch(m.created_at), _epoch(m.completed_at),
+                 msg_text, json.dumps(m.metadata) if getattr(m, 'metadata', None) else None),
             )
 
     # runs
@@ -649,7 +650,7 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
         "CREATE TABLE runs "
         "(id TEXT, thread_id TEXT, assistant_id TEXT, status TEXT, model TEXT, "
         " created_at REAL, started_at REAL, completed_at REAL, failed_at REAL, "
-        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER)"
+        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, metadata TEXT)"
     )
     for runs_list in (db._runs or {}).values():
         for r in runs_list:
@@ -658,10 +659,11 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
             ct = getattr(u, "completion_tokens", None) or (u.get("completion_tokens") if isinstance(u, dict) else None)
             tt = getattr(u, "total_tokens", None) or (u.get("total_tokens") if isinstance(u, dict) else None)
             conn.execute(
-                "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (r.id, r.thread_id, r.assistant_id, r.status, r.model,
                  _epoch(r.created_at), _epoch(r.started_at),
-                 _epoch(r.completed_at), _epoch(r.failed_at), pt, ct, tt),
+                 _epoch(r.completed_at), _epoch(r.failed_at), pt, ct, tt,
+                 json.dumps(r.metadata) if getattr(r, 'metadata', None) else None),
             )
 
     # run_steps
@@ -669,7 +671,7 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
         "CREATE TABLE run_steps "
         "(id TEXT, run_id TEXT, thread_id TEXT, assistant_id TEXT, "
         " type TEXT, status TEXT, created_at REAL, completed_at REAL, "
-        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER)"
+        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, metadata TEXT)"
     )
     for steps_list in (db._run_steps or {}).values():
         for s in steps_list:
@@ -678,10 +680,11 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
             ct = getattr(u, "completion_tokens", None) or (u.get("completion_tokens") if isinstance(u, dict) else None)
             tt = getattr(u, "total_tokens", None) or (u.get("total_tokens") if isinstance(u, dict) else None)
             conn.execute(
-                "INSERT INTO run_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO run_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (s.id, s.run_id, s.thread_id, s.assistant_id,
                  s.type, s.status, _epoch(s.created_at), _epoch(s.completed_at),
-                 pt, ct, tt),
+                 pt, ct, tt,
+                 json.dumps(s.metadata) if getattr(s, 'metadata', None) else None),
             )
 
     conn.commit()
