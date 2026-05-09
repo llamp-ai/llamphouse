@@ -2267,17 +2267,32 @@ class PostgresDataStore(BaseDataStore):
 
                     if output is not None and step.step_details:
                         details = copy.deepcopy(step.step_details or {})
-                        tool_calls = details.get("tool_calls", [])
-                        if tool_calls:
-                            call = tool_calls[0]
-                            call_obj = call.get("root", call)
-                            call_obj.setdefault("function", {})["output"] = output
-                            if "root" in call:
-                                call["root"] = call_obj
-                            details["type"] = "tool_calls"
-                            details["tool_calls"] = tool_calls
+                        if details.get("type") == "step":
+                            details["output"] = output
                             step.step_details = _to_jsonable(details)
                             flag_modified(step, "step_details")
+                        else:
+                            tool_calls = details.get("tool_calls", [])
+                            if tool_calls:
+                                call = tool_calls[0]
+                                call_obj = call.get("root", call)
+                                call_obj.setdefault("function", {})["output"] = output
+                                if "root" in call:
+                                    call["root"] = call_obj
+                                details["type"] = "tool_calls"
+                                details["tool_calls"] = tool_calls
+                                step.step_details = _to_jsonable(details)
+                                flag_modified(step, "step_details")
+
+                    now_ts = round(datetime.now(timezone.utc).timestamp(), 3)
+                    if status == run_step_status.COMPLETED and not step.completed_at:
+                        step.completed_at = now_ts
+                    elif status == run_step_status.FAILED and not step.failed_at:
+                        step.failed_at = now_ts
+                    elif status == run_step_status.CANCELLED and not step.cancelled_at:
+                        step.cancelled_at = now_ts
+                    elif status == run_step_status.EXPIRED and not step.expired_at:
+                        step.expired_at = now_ts
 
                     await session.commit()
                     await session.refresh(step)
