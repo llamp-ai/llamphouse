@@ -13,6 +13,7 @@ from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRe
 from ..types.enum import message_status, event_type, run_status, run_step_status
 from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, StepDetails, RunStepObject
+from .. import telemetry as _telemetry
 import logging
 import json
 
@@ -419,6 +420,7 @@ class InMemoryDataStore(BaseDataStore):
                     await self.insert_message(thread_id, msg, event_queue=event_queue)
                 span.set_status(Status(StatusCode.OK))
                 span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "created": True}))
+                _telemetry.bump("threads_created")
                 return self._threads[thread_id]
             except Exception as e:
                 span.record_exception(e)
@@ -582,6 +584,7 @@ class InMemoryDataStore(BaseDataStore):
                         "assistant_id": new_run.assistant_id,
                     }),
                 )
+                _telemetry.bump("runs_created")
                 return new_run
             except Exception as e:
                 span.record_exception(e)
@@ -1131,6 +1134,15 @@ class InMemoryDataStore(BaseDataStore):
                 self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
                 span.set_status(Status(StatusCode.OK))
                 span.set_attribute("output.value", _json_dump({"run_id": run.id, "status": run.status}))
+                if status in (run_status.COMPLETED, run_status.FAILED, run_status.CANCELLED, run_status.EXPIRED):
+                    _telemetry.bump(f"runs_{status}")
+                    if run.started_at is not None:
+                        try:
+                            _telemetry.observe_run_ms(
+                                (now - run.started_at).total_seconds() * 1000.0
+                            )
+                        except Exception:
+                            pass
                 return run
             except Exception as e:
                 span.record_exception(e)

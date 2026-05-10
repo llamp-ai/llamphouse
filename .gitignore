@@ -170,3 +170,4 @@ cython_debug/
 
 # Node / Compass frontend
 node_modules/
+local/
