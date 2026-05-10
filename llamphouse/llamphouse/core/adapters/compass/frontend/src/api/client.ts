@@ -100,7 +100,7 @@ export interface Run {
 export interface RunStep {
   id: string
   run_id: string
-  type: 'message_creation' | 'tool_calls'
+  type: 'message_creation' | 'tool_calls' | 'step'
   status: string
   step_details: any
   created_at: number

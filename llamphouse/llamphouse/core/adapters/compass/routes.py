@@ -560,8 +560,10 @@ async def get_run_flow(req: Request, run_id: str):
     for idx, e in enumerate(edges):
         e["sequence"] = idx + 1
 
-    # Only return flow if there's more than one node
-    if len(nodes) <= 1:
+    # Surface the workflow view for any run that has at least one node.
+    # Even single-agent runs benefit from it because each node can be
+    # expanded to inspect its @step / tool_call / message_creation timeline.
+    if not nodes:
         return JSONResponse({"nodes": [], "edges": [], "has_flow": False})
 
     return JSONResponse({"nodes": nodes, "edges": edges, "has_flow": True})
