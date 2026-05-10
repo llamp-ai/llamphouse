@@ -16,11 +16,20 @@ import json
 from llamphouse.core import LLAMPHouse, Agent, Context, step
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse.core.adapters.a2a import A2AAdapter
+from llamphouse.core.adapters.compass import CompassAdapter
 
 
 # ─── Fake "tools" implemented as @step-decorated workflow steps ──────────────
 
 class TripPlannerAgent(Agent):
+
+    @step
+    async def validate_destination(self, context: Context, destination: str) -> str:
+        # Demo failure path: certain destinations are not supported and the
+        # step raises, which fails the surrounding run.
+        if destination.strip().lower() in {"mars", "moon", "pluto"}:
+            raise ValueError(f"Destination not supported: {destination}")
+        return destination
 
     @step
     async def get_weather(self, context: Context, city: str) -> dict:
@@ -47,8 +56,21 @@ class TripPlannerAgent(Agent):
     async def run(self, context: Context):
         # Treat ``run`` as the workflow body. Each @step call below is a
         # checkpointed activity recorded in the data store.
-        weather = await self.get_weather(context, city="Amsterdam")
-        flights = await self.find_flights(context, origin="LON", destination="AMS")
+        #
+        # Pull the destination out of the latest user message so the demo
+        # client can trigger a successful run ("Amsterdam") and a failing run
+        # ("Mars") against the same agent.
+        destination = "Amsterdam"
+        for msg in reversed(context.messages):
+            if msg.role == "user":
+                text = msg.text or ""
+                if " to " in text.lower():
+                    destination = text.rsplit(" to ", 1)[-1].strip(" .?!")
+                break
+
+        destination = await self.validate_destination(context, destination=destination)
+        weather = await self.get_weather(context, city=destination)
+        flights = await self.find_flights(context, origin="LON", destination=destination)
         itinerary = await self.summarize(context, weather=weather, flights=flights)
 
         await context.insert_message(itinerary)
@@ -83,7 +105,7 @@ def main():
     llamphouse = LLAMPHouse(
         agents=[agent],
         data_store=InMemoryDataStore(),
-        adapters=[A2AAdapter()],
+        adapters=[A2AAdapter(), CompassAdapter()],
     )
 
     llamphouse.ignite(host="127.0.0.1", port=8000)

@@ -28,6 +28,7 @@ Drill into run steps to see:
 
 - Message creation steps
 - Tool call steps with inputs and outputs
+- `@step`-decorated function invocations (input / output / status)
 - Step timing and status
 
 ### Traces
@@ -48,6 +49,16 @@ For multi-agent runs, the Flow view shows a **swim-lane diagram** of how agents 
 - Dispatches (`call_agent`, `handover_to_agent`) are shown as arrows between lanes
 - Sequence badges indicate the order of operations
 - Thread groups show which messages belong to which thread
+
+#### Workflow inspector
+
+Each run node in the Flow view has an expand toggle (`▸`) in its top-right
+corner. Expanding a node reveals the run's **steps** inline — including
+`message_creation`, `tool_calls`, and any `@step`-decorated function calls —
+so you can see the agent orchestration and the per-run workflow on the same
+canvas. The current run is auto-expanded; other runs lazy-load their steps
+on first expand. Steps are color-coded by type (S = `@step`, T = tool call,
+M = message) with a status dot indicating success / failure / in-progress.
 
 ### Agent Config
 
