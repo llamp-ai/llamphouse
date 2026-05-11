@@ -241,7 +241,7 @@ class LLAMPHouse:
             run_queue=type(self.fastapi.state.run_queue).__name__,
             event_queue=self.fastapi.state.queue_class.__name__,
             config_store=type(self.fastapi.state.config_store).__name__,
-            tracing_store=type(self.fastapi.state.tracing_store).__name__,
+            tracing_store=type(getattr(self.fastapi.state, "tracing_store", None)).__name__,
             auth=bool(self.authenticator),
             retention_enabled=bool(self.retention_policy and self.retention_policy.enabled),
         )
