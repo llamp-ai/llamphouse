@@ -300,6 +300,45 @@ LLAMPHouse(
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
 | `OTEL_SERVICE_NAME` | Service name for traces | `llamphouse` |
 | `CLICKHOUSE_URL` | ClickHouse URL for Compass traces view | _(none)_ |
+| `LLAMPHOUSE_TELEMETRY` | Enable/disable anonymous telemetry (`0`/`false`/`no`/`off` to disable; `lifecycle` for lifecycle-only) | `usage` |
+| `NO_TRACKING` | Alias to disable telemetry (`1`/`true`/`yes`/`on`) | _(unset)_ |
+| `LLAMPHOUSE_TRACKING_ID` | Optional UUID to correlate events from a known deployment | _(unset)_ |
+| `LLAMPHOUSE_TELEMETRY_ENDPOINT` | Override telemetry collector URL | `https://api.llamp.ai/telemetry` |
+
+---
+
+## Telemetry
+
+LLAMPHouse ships with **anonymous, non-blocking telemetry** that helps us
+understand which features are used and prioritise the roadmap. It is
+enabled by default and runs in a background daemon thread — it never
+blocks your app, and silently drops on any error.
+
+**What is collected by default (usage tier):** framework version, Python
+version, OS, CPU architecture, anonymous install/session UUIDs, the
+lifecycle events (`llamphouse_init`, `llamphouse_ignite`,
+`llamphouse_shutdown`), and a single aggregated `llamphouse_usage` event
+flushed every 5 minutes containing **counters only** — number of
+threads/runs created, terminal run statuses, and a duration histogram.
+No IDs, names, or content.
+
+**Want even less?** Set `LLAMPHOUSE_TELEMETRY=lifecycle` to send only
+the three lifecycle events and skip the usage rollup.
+
+**What is _never_ collected:** agent code or names, prompts, message
+content, tool inputs/outputs, file paths, environment variables, or any
+end-user data. Source IPs are truncated to a /24 (IPv4) or /48 (IPv6)
+prefix on the server before being written to disk.
+
+**Opt out** with either of:
+
+```bash
+export LLAMPHOUSE_TELEMETRY=0   # also accepts false / no / off
+export NO_TRACKING=1            # alias — also accepts true / yes / on
+```
+
+See [docs/telemetry.md](docs/telemetry.md) for the full payload schema,
+collector implementation, and self-hosting instructions.
 
 ---
 

@@ -37,6 +37,7 @@ nav:
     - Compass Dashboard: guides/compass.md
   - Configuration: configuration.md
   - Deployment: deployment.md
+  - Telemetry: telemetry.md
   - Examples: examples.md
   - API Compatibility: api-compatibility.md
   - Contributing: contributing.md

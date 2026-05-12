@@ -21,6 +21,7 @@ from .queue.in_memory_queue import InMemoryQueue
 from .config_store.base import BaseConfigStore
 from .config_store.in_memory_store import InMemoryConfigStore
 from .tracing import setup_tracing, shutdown_tracing, set_span_excludes
+from . import telemetry as _telemetry
 
 import os
 import sys
@@ -230,6 +231,21 @@ class LLAMPHouse:
 
         self._register_routes()
 
+        # Anonymous, opt-out telemetry — disable with LLAMPHOUSE_TELEMETRY=0.
+        _telemetry.record(
+            "llamphouse_init",
+            agents=len(self.agents),
+            adapters=[type(a).__name__ for a in self.adapters],
+            worker=type(self.worker).__name__,
+            data_store=type(self.fastapi.state.data_store).__name__,
+            run_queue=type(self.fastapi.state.run_queue).__name__,
+            event_queue=self.fastapi.state.queue_class.__name__,
+            config_store=type(self.fastapi.state.config_store).__name__,
+            tracing_store=type(getattr(self.fastapi.state, "tracing_store", None)).__name__,
+            auth=bool(self.authenticator),
+            retention_enabled=bool(self.retention_policy and self.retention_policy.enabled),
+        )
+
     @asynccontextmanager
     async def _lifespan(self, app:FastAPI):
         loop = asyncio.get_running_loop()
@@ -308,6 +324,8 @@ class LLAMPHouse:
 
             # Flush pending spans and close the OTLP exporter session
             shutdown_tracing()
+            _telemetry.record("llamphouse_shutdown")
+            _telemetry.shutdown()
             llamphouse_logger.info("Shutdown complete.")
 
     def __print_ignite(self, host, port):
@@ -330,6 +348,7 @@ ______[===]______{_R}"""
 
     def ignite(self, host="0.0.0.0", port=80, reload=False, ws="auto", timeout_graceful_shutdown=10):
         self.__print_ignite(host, port)
+        _telemetry.record("llamphouse_ignite", host=host, port=port, reload=bool(reload))
         uvicorn.run(
             self.fastapi,
             host=host,
