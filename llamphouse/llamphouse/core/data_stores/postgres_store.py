@@ -70,7 +70,7 @@ class PostgresDataStore(BaseDataStore):
     pool_size : int, optional
         Number of persistent connections kept in the pool (default ``5``).
         Because the async engine releases connections back to the pool
-        between ``await``\s, a small pool handles high concurrency well.
+        between await points, a small pool handles high concurrency well.
     max_overflow : int, optional
         Extra connections allowed above ``pool_size`` during burst traffic
         (default ``0``).  Total connections per process =
