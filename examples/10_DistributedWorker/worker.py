@@ -15,7 +15,6 @@ Or use the CLI:
 
 import argparse
 import asyncio
-import os
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -32,22 +31,29 @@ def main():
     parser.add_argument(
         "--redis-url",
         type=str,
-        default="redis://localhost:6379/0",
+        default=None,
         help="Redis connection URL",
     )
     args = parser.parse_args()
 
-    # Import the app from server.py to reuse its agents & data_store
-    from server import app
+    redis_url = args.redis_url
+    if redis_url is None:
+        from server import REDIS_URL
+
+        redis_url = REDIS_URL
+
+    # Import only shared definitions. The worker must create its own data-store
+    # connection so it can run as a separate process.
+    from server import agent, build_data_store
 
     from llamphouse.core.workers.distributed_worker import DistributedWorker
     from llamphouse.core.queue.redis_queue import RedisQueue
 
     worker = DistributedWorker(
-        redis_url=args.redis_url,
-        data_store=app.fastapi.state.data_store,
-        agents=app.agents,
-        run_queue=RedisQueue(args.redis_url),
+        redis_url=redis_url,
+        data_store=build_data_store(),
+        agents=[agent],
+        run_queue=RedisQueue(redis_url),
         concurrency=args.concurrency,
         time_out=60,
     )

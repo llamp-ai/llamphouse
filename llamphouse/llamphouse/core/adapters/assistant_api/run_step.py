@@ -13,7 +13,7 @@ async def list_run_steps(thread_id: str, req: Request, run_id: str, limit: int =
         # Get the data store from the app state
         db: BaseDataStore = req.app.state.data_store
 
-        run_steps = db.list_run_steps(thread_id, run_id, limit, order, after, before)
+        run_steps = await db.list_run_steps(thread_id, run_id, limit, order, after, before)
         if not run_steps:
             raise HTTPException(status_code=404, detail="Could not retrieve run steps for the given thread and run.")
 
@@ -30,7 +30,7 @@ async def retrieve_run_step(thread_id: str, run_id: str, step_id: str, req: Requ
         # Get the data store from the app state
         db: BaseDataStore = req.app.state.data_store
 
-        run_step = db.get_run_step_by_id(thread_id, run_id, step_id)
+        run_step = await db.get_run_step_by_id(thread_id, run_id, step_id)
         if not run_step:
             raise HTTPException(status_code=404, detail="Run step not found in the given thread and run.")
 
