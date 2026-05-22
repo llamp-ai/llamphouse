@@ -22,6 +22,7 @@ from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRe
 from ..types.run_step import CreateRunStepRequest, RunStepObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
+from .. import telemetry as _telemetry
 
 store_tracer = get_tracer("llamphouse.data_store")
 logger = logging.getLogger("llamphouse.data_store.postgres")
@@ -564,6 +565,7 @@ class PostgresDataStore(BaseDataStore):
                         await self.insert_message(thread_id, msg, event_queue=event_queue)
                     span.set_status(Status(StatusCode.OK))
                     span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "created": True}))
+                    _telemetry.bump("threads_created")
                     return thread_obj
 
                 except Exception as e:
@@ -790,6 +792,7 @@ class PostgresDataStore(BaseDataStore):
                             "assistant_id": run_obj.assistant_id,
                         }),
                     )
+                    _telemetry.bump("runs_created")
                     return run_obj
 
                 except Exception as e:
@@ -1522,6 +1525,15 @@ class PostgresDataStore(BaseDataStore):
                         "output.value",
                         _json_dump({"run_id": run.id, "status": run.status}),
                     )
+                    if status in (run_status.COMPLETED, run_status.FAILED, run_status.CANCELLED, run_status.EXPIRED):
+                        _telemetry.bump(f"runs_{status}")
+                        if run.started_at is not None:
+                            try:
+                                _telemetry.observe_run_ms(
+                                    (now_ts - float(run.started_at)) * 1000.0
+                                )
+                            except Exception:
+                                pass
                     return RunObject.model_validate(run.to_dict())
                 except Exception as e:
                     await session.rollback()

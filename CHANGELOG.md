@@ -18,6 +18,19 @@
 - Fixed run expiry persistence to use `expires_at`, matching the current run model.
 - Removed the duplicate `InMemoryDataStore.purge_expired` implementation and kept the traced implementation.
 
+
+
+## [1.2.3] - 11/05/2026
+
+### Added
+
+- **Anonymous usage telemetry** — opt-out singleton client (`llamphouse.core.telemetry`) batches lifecycle, usage, and runtime events to `https://api.llamp.ai/telemetry` over a daemon worker thread. Three tiers: `usage` (default), `lifecycle`, `off`. Configure via `LLAMPHOUSE_TELEMETRY` or programmatically.
+
+### Privacy
+
+- No payloads, prompts, or tool arguments are ever transmitted — only event names, counts, and durations.
+- Disable entirely with `LLAMPHOUSE_TELEMETRY=off`.
+
 ## [1.2.2] - 19/03/2026
 
 - Fix double logging LLAMPHouse events.
