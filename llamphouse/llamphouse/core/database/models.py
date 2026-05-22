@@ -163,6 +163,7 @@ class Run(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     reasoning_effort = Column(String, nullable=False, server_default='medium')
     config_values = Column(JSONType)
+    provider_config = Column(JSONType)
     
     thread = relationship("Thread", back_populates="runs")
     run_steps = relationship("RunStep", back_populates="run")
@@ -192,6 +193,7 @@ class Run(Base):
             "response_format": self.response_format,
             "reasoning_effort": self.reasoning_effort,
             "config_values": self.config_values,
+            "provider_config": self.provider_config,
             "thread_id": self.thread_id,
             "assistant_id": self.assistant_id,
             "expires_at": int(self.expires_at) if self.expires_at else None,

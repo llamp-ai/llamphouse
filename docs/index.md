@@ -78,4 +78,8 @@ app.ignite(host="127.0.0.1", port=8000)
 
 Your agent is now live at `http://127.0.0.1:8000` with an A2A endpoint, OpenAI-compatible API, and a [Compass dashboard](guides/compass.md) at `/compass`.
 
+For production deployments, swap `InMemoryDataStore` for `PostgresDataStore`
+and use Redis-backed queues. Both data stores expose the same async contract,
+including run streaming flags and provider configuration.
+
 **Ready to get started?** Head to the [Installation](getting-started/installation.md) guide.

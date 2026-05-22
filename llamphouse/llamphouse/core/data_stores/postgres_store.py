@@ -760,6 +760,7 @@ class PostgresDataStore(BaseDataStore):
                         response_format=_to_jsonable(run.response_format),
                         reasoning_effort=run.reasoning_effort or getattr(assistant, 'reasoning_effort', None),
                         config_values=_to_jsonable(run.config_values),
+                        provider_config=_to_jsonable(run.provider_config),
                         status=run_status.QUEUED,
                     )
 
@@ -769,10 +770,6 @@ class PostgresDataStore(BaseDataStore):
 
                     run_obj = RunObject.model_validate(new_run.to_dict())
 
-                    if event_queue is not None:
-                        await event_queue.add(run_obj.to_event(event_type.RUN_CREATED))
-                        await event_queue.add(run_obj.to_event(event_type.RUN_QUEUED))
-
                     for msg in run.additional_messages or []:
                         await self.insert_message(
                             thread_id,
@@ -780,6 +777,10 @@ class PostgresDataStore(BaseDataStore):
                             status=message_status.COMPLETED,
                             event_queue=event_queue,
                         )
+
+                    if event_queue is not None:
+                        await event_queue.add(run_obj.to_event(event_type.RUN_CREATED))
+                        await event_queue.add(run_obj.to_event(event_type.RUN_QUEUED))
 
                     span.set_status(Status(StatusCode.OK))
                     span.set_attribute(
@@ -1499,6 +1500,24 @@ class PostgresDataStore(BaseDataStore):
 
                     run.status = status
                     run.last_error = _to_jsonable(error)
+
+                    # ── Lifecycle timestamps ─────────────────────────────
+                    now_ts = round(datetime.now(timezone.utc).timestamp(), 3)
+                    if status == run_status.IN_PROGRESS and run.started_at is None:
+                        run.started_at = now_ts
+                    elif status == run_status.COMPLETED:
+                        run.completed_at = now_ts
+                    elif status == run_status.FAILED:
+                        run.failed_at = now_ts
+                    elif status == run_status.CANCELLED:
+                        run.cancelled_at = now_ts
+                    elif status == run_status.EXPIRED:
+                        run.expires_at = now_ts
+
+                    # ── Usage ──────────────────────────────────────────
+                    if usage:
+                        run.usage = _to_jsonable(usage)
+
                     await session.commit()
                     await session.refresh(run)
                     span.set_status(Status(StatusCode.OK))
