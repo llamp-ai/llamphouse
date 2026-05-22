@@ -431,3 +431,33 @@ async def test_run_lifecycle_timestamps_round_trip(data_store):
         assert fetched.usage.total_tokens == 5
     finally:
         await _cleanup_thread(data_store, thread_id)
+
+
+async def test_operational_run_lookup_and_counts(data_store):
+    """Operational read methods must behave the same across data store backends."""
+    thread_id = _uid("thread")
+    assistant = _assistant(_uid("asst"))
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+        run = await data_store.insert_run(thread_id, _run(_uid("run"), assistant.id), assistant)
+        await data_store.insert_message(thread_id, _message(_uid("msg"), "hello"))
+        assert run is not None
+
+        fetched = await data_store.get_run_by_run_id(run.id)
+        assert fetched is not None
+        assert fetched.id == run.id
+        assert fetched.thread_id == thread_id
+
+        threads = await data_store.list_threads(limit=1, order="desc")
+        assert threads is not None
+        assert len(threads.data) == 1
+
+        runs = await data_store.list_runs_all(limit=1, order="desc")
+        assert runs is not None
+        assert len(runs.data) == 1
+
+        assert await data_store.count_threads() >= 1
+        assert await data_store.count_runs() >= 1
+        assert await data_store.count_messages() >= 1
+    finally:
+        await _cleanup_thread(data_store, thread_id)

@@ -77,6 +77,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_run_by_run_id(self, run_id: str) -> RunObject | None:
+        """Retrieve a run by its ID across all threads."""
+        pass
+
+    @abstractmethod
     async def insert_run(self, thread_id: str, run: RunCreateRequest, assistant: AgentObject, event_queue: BaseEventQueue = None) -> RunObject | None:
         """Insert a new run associated with a thread."""
         pass
@@ -97,7 +102,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def insert_run_step(self, thread_id: str, run_id: str, step: CreateRunStepRequest) -> RunStepObject | None:
+    async def insert_run_step(self, thread_id: str, run_id: str, step: CreateRunStepRequest, status: str = "completed", event_queue: BaseEventQueue = None) -> RunStepObject | None:
         """Insert a new step for a specific run."""
         pass
 
@@ -117,13 +122,38 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None, usage: dict | None = None) -> RunObject | None:
         """Update status of a run."""
         pass
 
     @abstractmethod
     async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
         """Update status/output/error of a run step."""
+        pass
+
+    @abstractmethod
+    async def list_threads(self, limit: int = 50, order: str = "desc") -> ListResponse | None:
+        """List threads across the store for operational views."""
+        pass
+
+    @abstractmethod
+    async def list_runs_all(self, limit: int = 200, order: str = "desc") -> ListResponse | None:
+        """List runs across all threads for operational views."""
+        pass
+
+    @abstractmethod
+    async def count_threads(self) -> int:
+        """Return total thread count."""
+        pass
+
+    @abstractmethod
+    async def count_runs(self) -> int:
+        """Return total run count across all threads."""
+        pass
+
+    @abstractmethod
+    async def count_messages(self) -> int:
+        """Return total message count across all threads."""
         pass
 
     @abstractmethod

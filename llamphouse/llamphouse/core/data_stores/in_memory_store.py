@@ -505,6 +505,13 @@ class InMemoryDataStore(BaseDataStore):
             return None
         return next((r for r in self._runs[thread_id] if r.id == run_id), None)
 
+    async def get_run_by_run_id(self, run_id: str) -> RunObject | None:
+        for runs in self._runs.values():
+            run = next((r for r in runs if r.id == run_id), None)
+            if run:
+                return run
+        return None
+
     async def insert_run(self, thread_id: str, run: RunCreateRequest, assistant: AgentObject, event_queue: BaseEventQueue = None) -> RunObject | None:
         with span_context(
             store_tracer,
@@ -1066,7 +1073,7 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
 
-    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None, usage: dict | None = None) -> RunObject | None:
         with span_context(
             store_tracer,
             "llamphouse.data_store.update_run_status",
@@ -1086,6 +1093,7 @@ class InMemoryDataStore(BaseDataStore):
                         "run_id": run_id,
                         "status": status,
                         "error": error,
+                        "usage": usage,
                     }),
                 )
                 if thread_id not in self._threads:
@@ -1105,8 +1113,24 @@ class InMemoryDataStore(BaseDataStore):
                     error = {"message": error, "code": "server_error"}
                 elif error is not None:
                     error = {"message": str(error), "code": "server_error"}
-                run.status = status
-                run.last_error = RunObject.model_validate({**run.model_dump(), "last_error": error}).last_error
+
+                now = datetime.now(timezone.utc)
+                payload = run.model_dump()
+                payload["status"] = status
+                payload["last_error"] = error
+                if usage is not None:
+                    payload["usage"] = usage
+                if status == run_status.IN_PROGRESS and run.started_at is None:
+                    payload["started_at"] = now
+                elif status == run_status.COMPLETED:
+                    payload["completed_at"] = now
+                elif status == run_status.FAILED:
+                    payload["failed_at"] = now
+                elif status == run_status.CANCELLED:
+                    payload["cancelled_at"] = now
+                elif status == run_status.EXPIRED:
+                    payload["expires_at"] = now
+                run = RunObject.model_validate(payload)
                 self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
                 span.set_status(Status(StatusCode.OK))
                 span.set_attribute("output.value", _json_dump({"run_id": run.id, "status": run.status}))
@@ -1190,6 +1214,37 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
+
+    async def list_threads(self, limit: int = 50, order: str = "desc") -> ListResponse | None:
+        threads = list(self._threads.values())
+        threads.sort(key=lambda t: (t.created_at, t.id), reverse=(order == "desc"))
+        limited = threads[:limit]
+        return ListResponse(
+            data=limited,
+            first_id=limited[0].id if limited else None,
+            last_id=limited[-1].id if limited else None,
+            has_more=len(threads) > limit,
+        )
+
+    async def list_runs_all(self, limit: int = 200, order: str = "desc") -> ListResponse | None:
+        runs = [run for thread_runs in self._runs.values() for run in thread_runs]
+        runs.sort(key=lambda r: (r.created_at, r.id), reverse=(order == "desc"))
+        limited = runs[:limit]
+        return ListResponse(
+            data=limited,
+            first_id=limited[0].id if limited else None,
+            last_id=limited[-1].id if limited else None,
+            has_more=len(runs) > limit,
+        )
+
+    async def count_threads(self) -> int:
+        return len(self._threads)
+
+    async def count_runs(self) -> int:
+        return sum(len(runs) for runs in self._runs.values())
+
+    async def count_messages(self) -> int:
+        return sum(len(messages) for messages in self._messages.values())
     
     async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
         with span_context(

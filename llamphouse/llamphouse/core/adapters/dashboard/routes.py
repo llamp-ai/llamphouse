@@ -71,14 +71,8 @@ async def list_assistants(req: Request):
 @router.get("/api/threads")
 async def list_threads(req: Request):
     db = req.app.state.data_store
-    # The base data store has no list_threads, so we access the internal store.
-    threads = []
-    if hasattr(db, "_threads"):
-        # InMemoryDataStore
-        threads = list(db._threads.values())
-    elif hasattr(db, "list_threads"):
-        result = await db.list_threads()
-        threads = result.data if result else []
+    result = await db.list_threads()
+    threads = result.data if result else []
     data = _serialize_list(threads)
     # Sort newest first
     data.sort(key=lambda t: t.get("created_at", ""), reverse=True)
@@ -144,22 +138,11 @@ async def overview(req: Request):
     db = req.app.state.data_store
     assistants = req.app.state.assistants or []
 
-    thread_count = 0
-    run_count = 0
-    message_count = 0
-
-    if hasattr(db, "_threads"):
-        thread_count = len(db._threads)
-    if hasattr(db, "_runs"):
-        run_count = sum(len(runs) for runs in db._runs.values())
-    if hasattr(db, "_messages"):
-        message_count = sum(len(msgs) for msgs in db._messages.values())
-
     return JSONResponse({
         "assistants": len(assistants),
-        "threads": thread_count,
-        "runs": run_count,
-        "messages": message_count,
+        "threads": await db.count_threads(),
+        "runs": await db.count_runs(),
+        "messages": await db.count_messages(),
     })
 
 

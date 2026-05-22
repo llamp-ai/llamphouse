@@ -134,8 +134,8 @@ def build_distributed_app() -> LLAMPHouse:
     return app
 
 
-# Default app for import
-app = build_distributed_app()
+# Default app for import.
+app = build_async_app()
 
 
 if __name__ == "__main__":

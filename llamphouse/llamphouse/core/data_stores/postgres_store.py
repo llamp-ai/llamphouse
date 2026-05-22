@@ -70,7 +70,7 @@ class PostgresDataStore(BaseDataStore):
     pool_size : int, optional
         Number of persistent connections kept in the pool (default ``5``).
         Because the async engine releases connections back to the pool
-        between ``await``\s, a small pool handles high concurrency well.
+        between awaits, a small pool handles high concurrency well.
     max_overflow : int, optional
         Extra connections allowed above ``pool_size`` during burst traffic
         (default ``0``).  Total connections per process =
@@ -703,6 +703,19 @@ class PostgresDataStore(BaseDataStore):
                 logger.exception("get_run_by_id() failed")
                 return None
 
+    async def get_run_by_run_id(self, run_id: str) -> RunObject | None:
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(select(Run).where(Run.id == run_id))
+                run = result.scalars().first()
+                if not run:
+                    return None
+                return RunObject.model_validate(run.to_dict())
+            except Exception:
+                await session.rollback()
+                logger.exception("get_run_by_run_id() failed")
+                return None
+
     async def insert_run(self, thread_id: str, run: RunCreateRequest, assistant: AgentObject, event_queue: BaseEventQueue = None) -> RunObject | None:
         with span_context(
             store_tracer,
@@ -927,8 +940,10 @@ class PostgresDataStore(BaseDataStore):
                     stmt = stmt.order_by(Thread.created_at.asc(), Thread.id.asc())
                 else:
                     stmt = stmt.order_by(Thread.created_at.desc(), Thread.id.desc())
-                result = await session.execute(stmt.limit(limit))
+                result = await session.execute(stmt.limit(limit + 1))
                 rows = result.scalars().all()
+                has_more = len(rows) > limit
+                rows = rows[:limit]
                 threads = [
                     ThreadObject(
                         id=row.id,
@@ -942,7 +957,7 @@ class PostgresDataStore(BaseDataStore):
                     data=threads,
                     first_id=threads[0].id if threads else None,
                     last_id=threads[-1].id if threads else None,
-                    has_more=False,
+                    has_more=has_more,
                 )
             except Exception:
                 logger.exception("list_threads() failed")
@@ -957,14 +972,16 @@ class PostgresDataStore(BaseDataStore):
                     stmt = stmt.order_by(Run.created_at.asc(), Run.id.asc())
                 else:
                     stmt = stmt.order_by(Run.created_at.desc(), Run.id.desc())
-                result = await session.execute(stmt.limit(limit))
+                result = await session.execute(stmt.limit(limit + 1))
                 rows = result.scalars().all()
+                has_more = len(rows) > limit
+                rows = rows[:limit]
                 runs = [RunObject.model_validate(row.to_dict()) for row in rows]
                 return ListResponse(
                     data=runs,
                     first_id=runs[0].id if runs else None,
                     last_id=runs[-1].id if runs else None,
-                    has_more=False,
+                    has_more=has_more,
                 )
             except Exception:
                 logger.exception("list_runs_all() failed")
@@ -1458,7 +1475,7 @@ class PostgresDataStore(BaseDataStore):
     # Run status helpers
     # ------------------------------------------------------------------
 
-    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None, usage: dict | None = None) -> RunObject | None:
         with span_context(
             store_tracer,
             "llamphouse.data_store.update_run_status",
@@ -1479,6 +1496,7 @@ class PostgresDataStore(BaseDataStore):
                             "run_id": run_id,
                             "status": status,
                             "error": error,
+                            "usage": usage,
                         }),
                     )
                     result = await session.execute(
@@ -1515,7 +1533,7 @@ class PostgresDataStore(BaseDataStore):
                         run.expires_at = now_ts
 
                     # ── Usage ──────────────────────────────────────────
-                    if usage:
+                    if usage is not None:
                         run.usage = _to_jsonable(usage)
 
                     await session.commit()
