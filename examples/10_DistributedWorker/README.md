@@ -2,13 +2,13 @@
 
 Compares the two worker modes in llamphouse using the A2A streaming protocol:
 
-| | AsyncWorker | DistributedWorker |
-|---|---|---|
-| **Processes** | All-in-one (API + worker) | API and worker(s) run separately |
-| **Queue** | InMemoryQueue | Redis Streams |
-| **Scaling** | Single process only | Add more worker processes |
-| **Crash recovery** | Runs lost on crash | Redis auto-reclaims unfinished runs |
-| **Redis required** | No | Yes |
+|                          | AsyncWorker               | DistributedWorker                   |
+| ------------------------ | ------------------------- | ----------------------------------- |
+| **Processes**      | All-in-one (API + worker) | API and worker(s) run separately    |
+| **Queue**          | InMemoryQueue             | Redis Streams                       |
+| **Scaling**        | Single process only       | Add more worker processes           |
+| **Crash recovery** | Runs lost on crash        | Redis auto-reclaims unfinished runs |
+| **Redis required** | No                        | Yes                                 |
 
 ## Architecture
 
@@ -39,28 +39,38 @@ pip install -r requirements.txt
 docker run -d --name redis -p 6379:6379 redis:7-alpine
 ```
 
-### Automated Comparison
+### Side-by-Side Comparison
 
-The client starts both server modes automatically and prints a side-by-side comparison:
+The client benchmarks both modes in one run, but **you must start both servers
+yourself first** — the client only fires requests, it does not spawn servers.
+
+Open three terminals:
 
 ```bash
+# Terminal 1 — AsyncWorker on port 8000
+python server.py --mode async --port 8000
+
+# Terminal 2 — DistributedWorker on port 8100 (needs Redis)
+python server.py --mode distributed --port 8100
+
+# Terminal 3 — run the benchmark
 python client.py               # 10 concurrent runs (default)
 python client.py --runs 20     # more runs
 ```
 
-### Manual Mode
+### Single-Mode
 
-You can also run each mode independently:
+Benchmark just one server:
 
 ```bash
 # ── AsyncWorker (no Redis needed) ──
-python server.py --mode async
+python server.py --mode async --port 8000
 python client.py --port 8000    # in another terminal
 
 # ── DistributedWorker (needs Redis) ──
-python server.py --mode distributed
-python worker.py                # in another terminal
-python client.py --port 8000    # in a third terminal
+python server.py --mode distributed --port 8100
+python worker.py                 # in another terminal
+python client.py --port 8100     # in a third terminal
 ```
 
 For a real split-process setup, use Postgres so the API process and worker
@@ -69,7 +79,7 @@ process share run state:
 ```bash
 export REDIS_URL=redis://localhost:6379/0
 export DATA_STORE=postgres
-export DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/llamphouse
+export DATABASE_URL=postgresql://postgres:password@localhost:5432/llamphouse
 
 alembic upgrade head
 
