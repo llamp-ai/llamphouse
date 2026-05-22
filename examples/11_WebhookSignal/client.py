@@ -53,7 +53,7 @@ async def main():
             role = msg.get("role", "?")
             for part in msg.get("content", []):
                 if part.get("type") == "text":
-                    print(f"[{role}] {part['text']['value']}")
+                    print(f"[{role}] {part['text']}")
         print("====================")
 
 

@@ -2,7 +2,7 @@ from llamphouse.core import LLAMPHouse, Agent
 from llamphouse.core.context import Context
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse import WebhookSignal
-
+from llamphouse.core.adapters.assistant_api import AssistantAPIAdapter
 
 class ReportAgent(Agent):
     """Agent that can be triggered via an external webhook.
@@ -61,7 +61,8 @@ def main():
     llamphouse = LLAMPHouse(
         agents=[agent],
         data_store=InMemoryDataStore(),
-        adapters=[],  # No A2A/HTTP chat interface needed — webhook only
+        adapters=[AssistantAPIAdapter(prefix="/v1")],
+        compass=False
     )
 
     llamphouse.ignite(host="127.0.0.1", port=8000)
