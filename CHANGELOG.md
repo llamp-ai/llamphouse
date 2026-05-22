@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.2.4] - 22/05/2026
+
+### Added
+
+- Added `provider_config` persistence for runs in the Postgres schema, ORM model, and data-store serialization.
+- Added data-store contract coverage for run `stream`, `provider_config`, lifecycle timestamps, and distributed-worker streaming behavior.
+
+### Changed
+
+- Standardized run storage across `InMemoryDataStore` and `PostgresDataStore`: `stream` is persisted as a boolean, run event ordering is consistent, and run-step data-store methods are async.
+- Updated the distributed-worker example to document Postgres-backed split-process usage.
+
+### Fixed
+
+- Fixed Postgres-backed distributed workers not seeing streamed runs because `runs.stream` was not persisted consistently.
+- Fixed run expiry persistence to use `expires_at`, matching the current run model.
+- Removed the duplicate `InMemoryDataStore.purge_expired` implementation and kept the traced implementation.
+
 ## [1.2.2] - 19/03/2026
 
 - Fix double logging LLAMPHouse events.

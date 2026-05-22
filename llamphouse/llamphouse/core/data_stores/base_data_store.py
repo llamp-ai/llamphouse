@@ -102,12 +102,12 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
+    async def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         """List steps for a specific run with pagination and ordering."""
         pass
 
     @abstractmethod
-    def get_run_step_by_id(self, thread_id: str, run_id: str, step_id: str) -> RunStepObject | None:
+    async def get_run_step_by_id(self, thread_id: str, run_id: str, step_id: str) -> RunStepObject | None:
         """Retrieve a run step by its ID within a specific thread and run."""
         pass
 

@@ -17,12 +17,13 @@ Usage
   Mode 2 — DistributedWorker (needs Redis running):
       python server.py --mode distributed
 
-Note: Both modes run in a single process because they share an InMemoryDataStore.
-In production you'd use PostgresDataStore and run the worker as a separate process.
+Note: DATA_STORE=memory is only for the local all-in-one comparison. Use
+DATA_STORE=postgres with DATABASE_URL when API and worker processes are split.
 """
 
 import argparse
 import asyncio
+import os
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -32,7 +33,9 @@ from llamphouse.core.adapters.a2a import A2AAdapter
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse.core.context import Context
 
-REDIS_URL = "redis://localhost:6379/0"
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+DATA_STORE = os.getenv("DATA_STORE", "memory").lower()
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 class SlowAgent(Agent):
@@ -57,12 +60,22 @@ agent = SlowAgent(
 )
 
 
+def build_data_store():
+    if DATA_STORE == "postgres":
+        if not DATABASE_URL:
+            raise RuntimeError("DATA_STORE=postgres requires DATABASE_URL")
+        from llamphouse.core.data_stores.postgres_store import PostgresDataStore
+
+        return PostgresDataStore(DATABASE_URL)
+    return InMemoryDataStore()
+
+
 def build_async_app() -> LLAMPHouse:
     """All-in-one: API server + AsyncWorker in one process (no Redis)."""
     return LLAMPHouse(
         agents=[agent],
         adapters=[A2AAdapter()],
-        data_store=InMemoryDataStore(),
+        data_store=build_data_store(),
     )
 
 
@@ -79,7 +92,7 @@ def build_distributed_app() -> LLAMPHouse:
     from llamphouse.core.streaming.event_queue.redis_event_queue import RedisEventQueueFactory
     from llamphouse.core.workers.distributed_worker import DistributedWorker
 
-    data_store = InMemoryDataStore()
+    data_store = build_data_store()
     run_queue = RedisQueue(REDIS_URL)
 
     app = LLAMPHouse(
@@ -93,7 +106,7 @@ def build_distributed_app() -> LLAMPHouse:
     # Disable the default AsyncWorker — we'll start a DistributedWorker instead
     app._skip_worker = True
 
-    # Create a DistributedWorker that shares the same data_store and run_queue
+    # Create an in-process worker for this comparison example.
     worker = DistributedWorker(
         redis_url=REDIS_URL,
         data_store=data_store,

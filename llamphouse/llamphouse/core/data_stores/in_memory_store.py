@@ -554,8 +554,8 @@ class InMemoryDataStore(BaseDataStore):
                     status=run_status.QUEUED,
                     reasoning_effort=run.reasoning_effort,
                     config_values=run.config_values,
-                    stream=run.stream,
-                    provider_config=run.provider_config if hasattr(run, 'provider_config') else None,
+                    stream=bool(run.stream),
+                    provider_config=run.provider_config,
                 )
                 self._runs[thread_id].append(new_run)
 
@@ -567,11 +567,6 @@ class InMemoryDataStore(BaseDataStore):
                     for msg in run.additional_messages:
                         await self.insert_message(thread_id, msg, event_queue=event_queue)
 
-                # Send events if an event queue is provided
-                if event_queue is not None:
-                    await event_queue.add(new_run.to_event(event_type.RUN_CREATED))
-                    await event_queue.add(new_run.to_event(event_type.RUN_QUEUED))
-
                 span.set_status(Status(StatusCode.OK))
                 span.set_attribute(
                     "output.value",
@@ -582,6 +577,11 @@ class InMemoryDataStore(BaseDataStore):
                         "assistant_id": new_run.assistant_id,
                     }),
                 )
+
+                if event_queue is not None:
+                    await event_queue.add(new_run.to_event(event_type.RUN_CREATED))
+                    await event_queue.add(new_run.to_event(event_type.RUN_QUEUED))
+
                 return new_run
             except Exception as e:
                 span.record_exception(e)
@@ -886,7 +886,7 @@ class InMemoryDataStore(BaseDataStore):
 
         return step
 
-    def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
+    async def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         attrs = {
             "store.backend": "in_memory",
             "session.id": thread_id,
@@ -984,7 +984,7 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
     
-    def get_run_step_by_id(self, thread_id: str, run_id: str, step_id: str) -> RunStepObject | None:
+    async def get_run_step_by_id(self, thread_id: str, run_id: str, step_id: str) -> RunStepObject | None:
         with span_context(
             store_tracer,
             "llamphouse.data_store.get_run_step_by_id",
@@ -1319,68 +1319,6 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
-    
-    async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
-        cutoff = policy.cutoff()
-        limit = policy.batch_limit()
-        stats = PurgeStats()
-
-        expired_threads = [
-            (thread_id, thread)
-            for thread_id, thread in self._threads.items()
-            if thread.created_at < cutoff
-        ]
-        expired_threads.sort(key=lambda item: item[1].created_at)
-        if limit:
-            expired_threads = expired_threads[:limit]
-
-        thread_ids = {thread_id for thread_id, _ in expired_threads}
-        stats.threads = len(thread_ids)
-        if not thread_ids:
-            policy.log(
-                f"retention purge dry_run={policy.dry_run} batch={limit} "
-                f"threads=0 messages=0 runs=0 run_steps=0"
-            )
-            return stats
-        
-        stats.messages = sum(
-            1 for thread_id, messages in self._messages.items()
-            if thread_id in thread_ids
-            for _ in messages
-        )
-        stats.runs = sum(
-            1 for thread_id, runs in self._runs.items()
-            if thread_id in thread_ids
-            for _ in runs
-        )
-        run_ids = {
-            run.id for thread_id, runs in self._runs.items()
-            if thread_id in thread_ids for run in runs
-        }
-        stats.run_steps = sum(
-            len(steps) for run_id, steps in self._run_steps.items()
-            if run_id in run_ids
-        )
-
-        if policy.dry_run:
-            policy.log(
-                f"retention purge dry_run={policy.dry_run} batch={limit} "
-                f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
-            )
-            return stats
-        
-        for thread_id in thread_ids:
-            self._messages.pop(thread_id, None)
-            runs = self._runs.pop(thread_id, [])
-            for run in runs:
-                self._run_steps.pop(run.id, None)
-            self._threads.pop(thread_id, None)
-
-        policy.log(
-            f"retention purge dry_run={policy.dry_run} batch={limit} "
-            f"threads={stats.threads} messages={stats.messages} runs={stats.runs} run_steps={stats.run_steps}"
-        )
-        return stats
     
     async def close(self) -> None:
         return None

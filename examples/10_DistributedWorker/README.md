@@ -63,6 +63,23 @@ python worker.py                # in another terminal
 python client.py --port 8000    # in a third terminal
 ```
 
+For a real split-process setup, use Postgres so the API process and worker
+process share run state:
+
+```bash
+export REDIS_URL=redis://localhost:6379/0
+export DATA_STORE=postgres
+export DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/llamphouse
+
+alembic upgrade head
+
+python server.py --mode distributed  # API process
+python worker.py                     # worker process
+```
+
+`DATA_STORE=memory` is useful for the local all-in-one comparison only. It
+should not be used when API and worker processes are separated.
+
 ## Expected Output
 
 ```

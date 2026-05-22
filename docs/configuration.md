@@ -32,7 +32,7 @@ app = LLAMPHouse(
 |---|---|---|---|
 | `agents` | `list[Agent]` | `[]` | List of agent instances to register |
 | `adapters` | `list[BaseAPIAdapter]` | `[AssistantAPIAdapter()]` | Protocol adapters. `None` → default; `[]` → none |
-| `data_store` | `BaseDataStore` | `InMemoryDataStore()` | Storage backend for threads, messages, runs |
+| `data_store` | `BaseDataStore` | `InMemoryDataStore()` | Async storage backend for threads, messages, runs, and run steps |
 | `authenticator` | `BaseAuth` | `None` | Authentication handler |
 | `worker` | `BaseWorker` | `None` | Custom worker implementation |
 | `event_queue_class` | `BaseEventQueue` | `InMemoryEventQueue` | Event queue class for streaming |
@@ -104,7 +104,7 @@ Authorization: Bearer my-secret-key
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string | _(in-memory if unset)_ |
+| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |

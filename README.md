@@ -275,6 +275,11 @@ await context.handover_to_agent("specialist", "Handle this request")
 
 ## Configuration
 
+In-memory and Postgres data stores implement the same async contract. Run
+fields such as `stream`, `provider_config`, lifecycle timestamps, usage, and
+run steps are stored with the same shape so workers can execute runs created by
+another process.
+
 ### LLAMPHouse constructor
 
 ```python
@@ -294,7 +299,7 @@ LLAMPHouse(
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string | _(in-memory if unset)_ |
+| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
@@ -313,16 +318,14 @@ The [examples/](examples/) directory contains runnable samples for every feature
 | [02_Chat](examples/02_Chat/) | OpenAI-powered conversational agent |
 | [03_Streaming](examples/03_Streaming/) | Real-time token streaming with SSE |
 | [04_ToolCall](examples/04_ToolCall/) | Function calling with tool schemas |
-| [06_GeminiStreaming](examples/06_GeminiStreaming/) | Streaming with Google Gemini |
-| [08_Tracing](examples/08_Tracing/) | OpenTelemetry distributed tracing |
-| [09_A2A](examples/09_A2A/) | A2A protocol agent |
-| [10_A2A_ToolCall](examples/10_A2A_ToolCall/) | A2A with tool calls |
-| [11_AgentHandover](examples/11_AgentHandover/) | Multi-agent handover |
-| [12_CentralOrchestrator](examples/12_CentralOrchestrator/) | Central orchestrator pattern |
-| [13_ConfigStore](examples/13_ConfigStore/) | Runtime-tunable agent config |
-| [14_DistributedWorker](examples/14_DistributedWorker/) | Separate API and worker processes |
-| [15_A2A_AIFoundry](examples/15_A2A_AIFoundry/) | A2A with Azure AI Foundry |
-| [LangGraph](examples/LangGraph/) | LangGraph integration |
+| [05_OrchestratorAgent](examples/05_OrchestratorAgent/) | Multi-agent orchestration |
+| [06_AgentHandover](examples/06_AgentHandover/) | Multi-agent handover |
+| [07_Tracing](examples/07_Tracing/) | OpenTelemetry distributed tracing |
+| [08_ConfigStore](examples/08_ConfigStore/) | Runtime-tunable agent config |
+| [09_CustomAuth](examples/09_CustomAuth/) | Custom authentication |
+| [10_DistributedWorker](examples/10_DistributedWorker/) | Redis-backed distributed workers |
+| [11_WebhookSignal](examples/11_WebhookSignal/) | Webhook signal integration |
+| [12_PlannerAgent](examples/12_PlannerAgent/) | Planner/executor agent pattern |
 
 Each example includes a `server.py`, `client.py`, and `README.md` with instructions.
 
@@ -368,7 +371,7 @@ pip install -e ".[dev]"
 # Run all tests (unit + contract + integration)
 python -m pytest tests/ -v
 
-# Postgres-only tests (requires DATABASE_URL)
+# Postgres-only tests (requires DATABASE_URL and migrated schema)
 python -m pytest -m postgres
 ```
 

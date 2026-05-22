@@ -471,37 +471,14 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
             latest_run_step = await db.update_run_step_status(latest_run_step.id, run_step_status.COMPLETED)
             await db.update_run_status(thread_id, run_id, run_status.IN_PROGRESS)
             run = await db.get_run_by_id(thread_id, run_id)
+            if not run:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.not_found_after_update")
+                raise HTTPException(status_code=404, detail="Run not found.")
 
             span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
             span.set_status(Status(StatusCode.OK))
-            return RunObject(
-                id=run.id,
-                created_at=int(run.created_at.timestamp()),
-                thread_id=thread_id,
-                assistant_id=run.assistant_id,
-                status=run.status,
-                required_action=run.required_action,
-                last_error=run.last_error,
-                expires_at=run.expires_at,
-                started_at=run.started_at,
-                cancelled_at=run.cancelled_at,
-                failed_at=run.failed_at,
-                completed_at=run.completed_at,
-                incomplete_details=run.incomplete_details,
-                model=run.model,
-                instructions=run.instructions,
-                tools=run.tools,
-                metadata=run.metadata,
-                usage=run.usage,
-                temperature=run.temperature,
-                top_p=run.top_p,
-                max_prompt_tokens=run.max_prompt_tokens,
-                max_completion_tokens=run.max_completion_tokens,
-                truncation_strategy=run.truncation_strategy,
-                tool_choice=run.tool_choice,
-                parallel_tool_calls=run.parallel_tool_calls,
-                response_format=run.response_format,
-            )
+            return run
         except HTTPException as http_exc:
             raise http_exc
         except Exception as e:
@@ -539,37 +516,14 @@ async def cancel_run(thread_id: str, run_id: str, req: Request):
                 raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
 
             run = await db.update_run_status(thread_id, run_id, run_status.CANCELLED)
+            if not run:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.not_found_after_update")
+                raise HTTPException(status_code=404, detail="Run not found.")
 
             span.set_attribute("output.value", json.dumps({"run_id": run.id, "status": run.status}, ensure_ascii=True))
             span.set_status(Status(StatusCode.OK))
-            return RunObject(
-                id=run.id,
-                created_at=int(run.created_at.timestamp()),
-                thread_id=thread_id,
-                assistant_id=run.assistant_id,
-                status=run.status,
-                required_action=run.required_action,
-                last_error=run.last_error,
-                expires_at=run.expires_at,
-                started_at=run.started_at,
-                cancelled_at=run.cancelled_at,
-                failed_at=run.failed_at,
-                completed_at=run.completed_at,
-                incomplete_details=run.incomplete_details,
-                model=run.model,
-                instructions=run.instructions,
-                tools=run.tools,
-                metadata=run.metadata,
-                usage=run.usage,
-                temperature=run.temperature,
-                top_p=run.top_p,
-                max_prompt_tokens=run.max_prompt_tokens,
-                max_completion_tokens=run.max_completion_tokens,
-                truncation_strategy=run.truncation_strategy,
-                tool_choice=run.tool_choice,
-                parallel_tool_calls=run.parallel_tool_calls,
-                response_format=run.response_format,
-            )
+            return run
         except HTTPException as http_exc:
             raise http_exc
         except Exception as e:
