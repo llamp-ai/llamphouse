@@ -17,8 +17,8 @@ Usage
   Mode 2 — DistributedWorker (needs Redis running):
       python server.py --mode distributed
 
-Note: DATA_STORE=memory is only for the local all-in-one comparison. Use
-DATA_STORE=postgres with DATABASE_URL when API and worker processes are split.
+This example uses InMemoryDataStore for both modes. In distributed mode the
+API and worker run in the same process, so they share the same store object.
 """
 
 import argparse
@@ -34,8 +34,6 @@ from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse.core.context import Context
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-DATA_STORE = os.getenv("DATA_STORE", "memory").lower()
-DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 class SlowAgent(Agent):
@@ -63,12 +61,6 @@ agent = SlowAgent(
 
 
 def build_data_store():
-    if DATA_STORE == "postgres":
-        if not DATABASE_URL:
-            raise RuntimeError("DATA_STORE=postgres requires DATABASE_URL")
-        from llamphouse.core.data_stores.postgres_store import PostgresDataStore
-
-        return PostgresDataStore(DATABASE_URL)
     return InMemoryDataStore()
 
 
@@ -87,8 +79,6 @@ def build_distributed_app() -> LLAMPHouse:
 
     The DistributedWorker consumes from Redis Streams instead of the in-memory
     queue.  We keep it in-process so both share the same InMemoryDataStore.
-    In production, swap InMemoryDataStore for PostgresDataStore and run the
-    worker as a separate process/container.
     """
     from llamphouse.core.queue.redis_queue import RedisQueue
     from llamphouse.core.streaming.event_queue.redis_event_queue import RedisEventQueueFactory

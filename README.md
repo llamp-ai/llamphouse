@@ -1,11 +1,11 @@
 <!-- PROJECT SHIELDS -->
 
-[![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![Unlicense License][license-shield]][license-url]
-[![LinkedIn][linkedin-shield]][linkedin-url]
+[Contributors][contributors-url]
+[Forks][forks-url]
+[Stargazers][stars-url]
+[Issues][issues-url]
+[Unlicense License][license-url]
+[LinkedIn][linkedin-url]
 
 <!-- PROJECT LOGO -->
 
@@ -132,6 +132,7 @@ python server.py
 ```
 
 Your agent is now live at `http://127.0.0.1:8000` with:
+
 - **A2A protocol** at `/.well-known/agent.json`
 - **Compass dashboard** at `http://127.0.0.1:8000/compass`
 
@@ -235,24 +236,24 @@ class MyAgent(Agent):
 
 The `Context` object is passed to every `run()` call and provides the full toolkit:
 
-| Method | Description |
-|---|---|
-| `context.messages` | Conversation history for the current thread |
-| `context.insert_message(text)` | Insert an assistant reply |
-| `context.send_chunk(text)` | Stream a text chunk to the client |
-| `await context.call_agent(agent_id, message)` | Call another agent, returns an async generator of chunks |
-| `await context.handover_to_agent(agent_id, message)` | Hand off the conversation to another agent |
-| `context.get_config(key)` | Read a runtime config parameter |
-| `context.submit_tool_outputs(run_id, outputs)` | Submit tool call results back to a run |
+| Method                                                 | Description                                              |
+| ------------------------------------------------------ | -------------------------------------------------------- |
+| `context.messages`                                   | Conversation history for the current thread              |
+| `context.insert_message(text)`                       | Insert an assistant reply                                |
+| `context.send_chunk(text)`                           | Stream a text chunk to the client                        |
+| `await context.call_agent(agent_id, message)`        | Call another agent, returns an async generator of chunks |
+| `await context.handover_to_agent(agent_id, message)` | Hand off the conversation to another agent               |
+| `context.get_config(key)`                            | Read a runtime config parameter                          |
+| `context.submit_tool_outputs(run_id, outputs)`       | Submit tool call results back to a run                   |
 
 ### Adapters
 
 Adapters control how clients communicate with your agents:
 
-| Adapter | Protocol | Use case |
-|---|---|---|
-| `A2AAdapter` | A2A (Agent-to-Agent) | Interoperable agent communication |
-| `AssistantAPIAdapter` | OpenAI Assistants API | OpenAI SDK compatibility |
+| Adapter                 | Protocol              | Use case                          |
+| ----------------------- | --------------------- | --------------------------------- |
+| `A2AAdapter`          | A2A (Agent-to-Agent)  | Interoperable agent communication |
+| `AssistantAPIAdapter` | OpenAI Assistants API | OpenAI SDK compatibility          |
 
 Both can be used simultaneously. If no adapters are specified, `AssistantAPIAdapter` is used by default.
 
@@ -299,18 +300,18 @@ LLAMPHouse(
 
 ### Environment variables
 
-| Variable | Description | Default |
-|---|---|---|
-| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` and Alembic | _(none)_ |
-| `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
-| `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
-| `OTEL_SERVICE_NAME` | Service name for traces | `llamphouse` |
-| `CLICKHOUSE_URL` | ClickHouse URL for Compass traces view | _(none)_ |
-| `LLAMPHOUSE_TELEMETRY` | Enable/disable anonymous telemetry (`0`/`false`/`no`/`off` to disable; `lifecycle` for lifecycle-only) | `usage` |
-| `NO_TRACKING` | Alias to disable telemetry (`1`/`true`/`yes`/`on`) | _(unset)_ |
-| `LLAMPHOUSE_TRACKING_ID` | Optional UUID to correlate events from a known deployment | _(unset)_ |
-| `LLAMPHOUSE_TELEMETRY_ENDPOINT` | Override telemetry collector URL | `https://api.llamp.ai/telemetry` |
+| Variable                          | Description                                                                                                      | Default                            |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `DATABASE_URL`                  | Postgres connection string passed to `PostgresDataStore` and Alembic                                           | _(none)_                         |
+| `REDIS_URL`                     | Redis URL for queues                                                                                             | _(in-memory if unset)_           |
+| `LLAMPHOUSE_TRACING_ENABLED`    | Enable OpenTelemetry tracing                                                                                     | `true`                           |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`   | OTLP collector endpoint                                                                                          | _(none)_                         |
+| `OTEL_SERVICE_NAME`             | Service name for traces                                                                                          | `llamphouse`                     |
+| `CLICKHOUSE_URL`                | ClickHouse URL for Compass traces view                                                                           | _(none)_                         |
+| `LLAMPHOUSE_TELEMETRY`          | Enable/disable anonymous telemetry (`0`/`false`/`no`/`off` to disable; `lifecycle` for lifecycle-only) | `usage`                          |
+| `NO_TRACKING`                   | Alias to disable telemetry (`1`/`true`/`yes`/`on`)                                                       | _(unset)_                        |
+| `LLAMPHOUSE_TRACKING_ID`        | Optional UUID to correlate events from a known deployment                                                        | _(unset)_                        |
+| `LLAMPHOUSE_TELEMETRY_ENDPOINT` | Override telemetry collector URL                                                                                 | `https://api.llamp.ai/telemetry` |
 
 ---
 
@@ -353,20 +354,18 @@ collector implementation, and self-hosting instructions.
 
 The [examples/](examples/) directory contains runnable samples for every feature:
 
-| Example | Description |
-|---|---|
-| [01_HelloWorld](examples/01_HelloWorld/) | Minimal agent — no LLM needed |
-| [02_Chat](examples/02_Chat/) | OpenAI-powered conversational agent |
-| [03_Streaming](examples/03_Streaming/) | Real-time token streaming with SSE |
-| [04_ToolCall](examples/04_ToolCall/) | Function calling with tool schemas |
-| [05_OrchestratorAgent](examples/05_OrchestratorAgent/) | Multi-agent orchestration |
-| [06_AgentHandover](examples/06_AgentHandover/) | Multi-agent handover |
-| [07_Tracing](examples/07_Tracing/) | OpenTelemetry distributed tracing |
-| [08_ConfigStore](examples/08_ConfigStore/) | Runtime-tunable agent config |
-| [09_CustomAuth](examples/09_CustomAuth/) | Custom authentication |
-| [10_DistributedWorker](examples/10_DistributedWorker/) | Redis-backed distributed workers |
-| [11_WebhookSignal](examples/11_WebhookSignal/) | Webhook signal integration |
-| [12_PlannerAgent](examples/12_PlannerAgent/) | Planner/executor agent pattern |
+| Example                                             | Description                         |
+| --------------------------------------------------- | ----------------------------------- |
+| [01_HelloWorld](examples/01_HelloWorld/)               | Minimal agent — no LLM needed      |
+| [02_Chat](examples/02_Chat/)                           | OpenAI-powered conversational agent |
+| [03_Streaming](examples/03_Streaming/)                 | Real-time token streaming with SSE  |
+| [04_ToolCall](examples/04_ToolCall/)                   | Function calling with tool schemas  |
+| [05_OrchestratorAgent](examples/05_OrchestratorAgent/) | Multi-agent orchestration           |
+| [06_AgentHandover](examples/06_AgentHandover/)         | Multi-agent handover                |
+| [07_Tracing](examples/07_Tracing/)                     | OpenTelemetry distributed tracing   |
+| [08_ConfigStore](examples/08_ConfigStore/)             | Runtime-tunable agent config        |
+| [09_CustomAuth](examples/09_CustomAuth/)               | Custom authentication               |
+| [10_DistributedWorker](examples/10_DistributedWorker/) | Redis-backed distributed workers    |
 
 Each example includes a `server.py`, `client.py`, and `README.md` with instructions.
 
@@ -383,13 +382,13 @@ docker compose up -d
 
 This starts:
 
-| Service | Port | Purpose |
-|---|---|---|
-| **Runtime** | `8080` | Your agent server |
-| **Postgres** | `5432` | Persistent data store |
-| **Redis** | `6379` | Run queue and event queue |
-| **OTel Collector** | `4318` | Trace collection |
-| **ClickHouse** | `8123` | Trace storage for Compass |
+| Service                  | Port     | Purpose                   |
+| ------------------------ | -------- | ------------------------- |
+| **Runtime**        | `8080` | Your agent server         |
+| **Postgres**       | `5432` | Persistent data store     |
+| **Redis**          | `6379` | Run queue and event queue |
+| **OTel Collector** | `4318` | Trace collection          |
+| **ClickHouse**     | `8123` | Trace storage for Compass |
 
 For split-mode deployments (separate API and worker processes), see `docker-compose.prod.yml`.
 
@@ -414,9 +413,6 @@ python -m pytest tests/ -v
 
 # Postgres-only tests (requires DATABASE_URL and migrated schema)
 LLAMPHOUSE_TRACING_ENABLED=false python -m pytest -m postgres
-
-# Data-store contract parity tests
-LLAMPHOUSE_TRACING_ENABLED=false python -m pytest tests/contract/data_store -q
 ```
 
 ### Database Migrations (Postgres only)
@@ -429,23 +425,16 @@ docker run --rm -d --name postgres \
   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
   -e POSTGRES_DB=llamphouse \
   -p 5432:5432 postgres
-export DATABASE_URL=postgresql://postgres:password@localhost:5432/llamphouse
-
-# If port 5432 is already used locally, map another host port instead:
-docker run --rm -d --name postgres-5433 \
-  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=llamphouse \
-  -p 5433:5432 postgres
-export DATABASE_URL=postgresql://postgres:password@localhost:5433/llamphouse
+docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
 
 # Apply migrations
-uv run alembic upgrade head
+alembic upgrade head
 
 # Create a new migration
-uv run alembic revision --autogenerate -m "description"
+alembic revision --autogenerate -m "description"
 
 # Roll back
-uv run alembic downgrade base
+alembic downgrade base
 ```
 
 ### Building
@@ -460,16 +449,16 @@ python -m build
 
 LLAMPHouse implements the [OpenAI Assistants API v2](https://platform.openai.com/docs/api-reference/assistants):
 
-| Endpoint | Status |
-|---|---|
-| **Assistants** — List, Retrieve | ✅ |
-| **Assistants** — Create, Modify, Delete | _By design: agents are defined in code_ |
-| **Threads** — Create, Retrieve, Modify, Delete | ✅ |
-| **Messages** — Create, List, Retrieve, Modify, Delete | ✅ |
-| **Runs** — Create, Create thread & run, List, Retrieve, Modify, Cancel, Submit tool outputs | ✅ |
-| **Run Steps** — List, Retrieve | ✅ |
-| **Streaming** — Message delta, Run step, Assistant stream | ✅ |
-| **Vector Stores** | _Not yet implemented_ |
+| Endpoint                                                                                           | Status                                    |
+| -------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| **Assistants** — List, Retrieve                                                             | ✅                                        |
+| **Assistants** — Create, Modify, Delete                                                     | _By design: agents are defined in code_ |
+| **Threads** — Create, Retrieve, Modify, Delete                                              | ✅                                        |
+| **Messages** — Create, List, Retrieve, Modify, Delete                                       | ✅                                        |
+| **Runs** — Create, Create thread & run, List, Retrieve, Modify, Cancel, Submit tool outputs | ✅                                        |
+| **Run Steps** — List, Retrieve                                                              | ✅                                        |
+| **Streaming** — Message delta, Run step, Assistant stream                                   | ✅                                        |
+| **Vector Stores**                                                                            | _Not yet implemented_                   |
 
 ---
 

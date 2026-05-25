@@ -74,26 +74,13 @@ uv run python client.py --port 8000    # in another terminal
 
 # ── DistributedWorker (needs Redis) ──
 uv run python server.py --mode distributed --port 8100
-uv run python worker.py                 # in another terminal
-uv run python client.py --port 8100     # in a third terminal
+uv run python client.py --port 8100     # in another terminal
 ```
 
-For a real split-process setup, use Postgres so the API process and worker
-process share run state:
-
-```bash
-export REDIS_URL=redis://localhost:6379/0
-export DATA_STORE=postgres
-export DATABASE_URL=postgresql://postgres:password@localhost:5432/llamphouse
-
-uv run alembic upgrade head
-
-uv run python server.py --mode distributed  # API process
-uv run python worker.py                     # worker process
-```
-
-`DATA_STORE=memory` is useful for the local all-in-one comparison only. It
-should not be used when API and worker processes are separated.
+Both modes use `InMemoryDataStore`. In distributed mode, `server.py` starts an
+in-process `DistributedWorker`, so the API and worker share the same store
+object. A true split-process deployment needs a shared persistent store such as
+Postgres; see the deployment guide for that setup.
 
 ## Expected Output
 
@@ -131,14 +118,9 @@ should not be used when API and worker processes are separated.
     • Survive worker crashes (Redis auto-reclaims unfinished runs)
 ```
 
-## Scaling Workers
+## Split-Process Workers
 
-Run multiple worker processes to scale horizontally:
-
-```bash
-uv run python worker.py --concurrency 5    # terminal A
-uv run python worker.py --concurrency 5    # terminal B
-```
-
-Both workers share the load via Redis consumer groups. If one crashes,
-the other automatically picks up its unfinished runs.
+The included `worker.py` is a reference for the real split-process shape, but
+this example intentionally keeps the local benchmark in one process with
+`InMemoryDataStore`. When the API and worker are separate processes, use a
+shared persistent data store so both processes can read the same runs.
