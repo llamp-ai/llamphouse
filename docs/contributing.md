@@ -23,15 +23,18 @@ pip install -e ".[dev]"
 
 ```bash
 # Run all tests (unit + contract + integration)
-python -m pytest tests/ -v
+uv run pytest tests/ -v
 
 # Run specific test categories
-python -m pytest tests/unit/ -v
-python -m pytest tests/contract/ -v
-python -m pytest tests/integration/ -v
+uv run pytest tests/unit/ -v
+uv run pytest tests/contract/ -v
+uv run pytest tests/integration/ -v
 
-# Postgres-only tests (requires DATABASE_URL)
-python -m pytest -m postgres
+# Postgres-only tests (requires DATABASE_URL and migrated schema)
+LLAMPHOUSE_TRACING_ENABLED=false uv run pytest -m postgres
+
+# Data-store contract parity tests
+LLAMPHOUSE_TRACING_ENABLED=false uv run pytest tests/contract/data_store -q
 ```
 
 ## Development workflow
@@ -45,7 +48,7 @@ python -m pytest -m postgres
 
 3. Run the test suite to ensure nothing is broken:
    ```bash
-   python -m pytest tests/ -v
+   uv run pytest tests/ -v
    ```
 
 4. Commit with a descriptive message:
@@ -91,23 +94,36 @@ If your change modifies the database schema:
 # Start a local Postgres
 docker run --rm -d --name postgres \
   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=llamphouse \
   -p 5432:5432 postgres
-docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
 
 # Set connection string
-export DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/llamphouse
+export DATABASE_URL=postgresql://postgres:password@localhost:5432/llamphouse
+
+# If port 5432 is already used locally, map another host port instead:
+docker run --rm -d --name postgres-5433 \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=llamphouse \
+  -p 5433:5432 postgres
+export DATABASE_URL=postgresql://postgres:password@localhost:5433/llamphouse
 
 # Create a new migration
-alembic revision --autogenerate -m "description of change"
+uv run alembic revision --autogenerate -m "description of change"
 
 # Apply migrations
-alembic upgrade head
+uv run alembic upgrade head
 ```
+
+When changing data-store behavior, keep `InMemoryDataStore` and
+`PostgresDataStore` interchangeable. Add or update contract tests under
+`tests/contract/data_store` for any field or helper method that affects
+threads, messages, runs, run steps, attachments, pagination, lifecycle
+timestamps, `stream`, `provider_config`, `config_values`, or `usage`.
 
 ## Building
 
 ```bash
-python -m build
+uv run python -m build
 ```
 
 ## Code style

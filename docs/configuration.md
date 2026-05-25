@@ -31,8 +31,8 @@ app = LLAMPHouse(
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `agents` | `list[Agent]` | `[]` | List of agent instances to register |
-| `adapters` | `list[BaseAPIAdapter]` | `[AssistantAPIAdapter()]` | Protocol adapters. `None` → default; `[]` → none |
-| `data_store` | `BaseDataStore` | `InMemoryDataStore()` | Async storage backend for threads, messages, runs, and run steps |
+| `adapters` | `list[BaseAPIAdapter]` | `[AssistantAPIAdapter()]` | Protocol adapters. `None` uses defaults; `[]` mounts none |
+| `data_store` | `BaseDataStore` | `InMemoryDataStore()` | Async storage backend for threads, messages, runs, run steps, attachments, and pagination helpers |
 | `authenticator` | `BaseAuth` | `None` | Authentication handler |
 | `worker` | `BaseWorker` | `None` | Custom worker implementation |
 | `event_queue_class` | `BaseEventQueue` | `InMemoryEventQueue` | Event queue class for streaming |
@@ -65,9 +65,17 @@ from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 data_store = InMemoryDataStore()
 
 # Postgres
+import os
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
-data_store = PostgresDataStore()  # uses DATABASE_URL env var
+data_store = PostgresDataStore(os.environ["DATABASE_URL"])
 ```
+
+Both stores implement the same async contract. Threads, messages, runs, run
+steps, attachments, Compass dashboard helpers, and pagination helpers should
+round-trip with the same public shape. Run fields such as `stream`,
+`provider_config`, `config_values`, lifecycle timestamps, and `usage` are
+persisted consistently so API servers and distributed workers can swap between
+in-memory and Postgres without changing agent code.
 
 ## Queue backends
 
@@ -104,7 +112,7 @@ Authorization: Bearer my-secret-key
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` | _(none)_ |
+| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` and Alembic migrations | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
@@ -113,6 +121,6 @@ Authorization: Bearer my-secret-key
 
 ## Next steps
 
-- [Deployment](deployment.md) — Docker setup with Postgres, Redis, and tracing
-- [Adapters](concepts/adapters.md) — protocol adapter configuration
-- [Config Store](guides/config-store.md) — runtime-tunable parameters
+- [Deployment](deployment.md) - Docker setup with Postgres, Redis, and tracing
+- [Adapters](concepts/adapters.md) - protocol adapter configuration
+- [Config Store](guides/config-store.md) - runtime-tunable parameters

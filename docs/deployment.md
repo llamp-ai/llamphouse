@@ -59,21 +59,33 @@ LLAMPHouse uses [Alembic](https://alembic.sqlalchemy.org/) for schema migrations
 # Start a local Postgres
 docker run --rm -d --name postgres \
   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=llamphouse \
   -p 5432:5432 postgres
-docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
 
 # Set the connection string
-export DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/llamphouse
+export DATABASE_URL=postgresql://postgres:password@localhost:5432/llamphouse
+
+# If port 5432 is already used locally, map another host port instead:
+docker run --rm -d --name postgres-5433 \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=llamphouse \
+  -p 5433:5432 postgres
+export DATABASE_URL=postgresql://postgres:password@localhost:5433/llamphouse
 
 # Apply all migrations
-alembic upgrade head
+uv run alembic upgrade head
 
 # Create a new migration (after model changes)
-alembic revision --autogenerate -m "description of change"
+uv run alembic revision --autogenerate -m "description of change"
 
 # Roll back all migrations
-alembic downgrade base
+uv run alembic downgrade base
 ```
+
+`PostgresDataStore` accepts both `postgresql://` and
+`postgresql+asyncpg://` URLs. Sync-style Postgres URLs are converted to
+`asyncpg` internally, while Alembic uses the same `DATABASE_URL` when applying
+schema migrations.
 
 ## Redis
 
@@ -93,7 +105,7 @@ app = LLAMPHouse(
 
 ## Distributed workers
 
-For high-throughput deployments, separate the API server from worker processes. The API server handles HTTP requests, while workers pull runs from the shared queue and execute agent logic. Use Postgres for shared run state and Redis for run/event queues.
+For high-throughput deployments, separate the API server from worker processes. The API server handles HTTP requests, while workers pull runs from the shared queue and execute agent logic. Use Postgres for shared run state and Redis for run/event queues. Persisted run fields include `stream`, `provider_config`, `config_values`, lifecycle timestamps, and `usage`, so workers can execute runs created by another process with the same behavior as the in-memory store.
 
 ```python
 # api.py - API server only

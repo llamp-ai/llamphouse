@@ -275,9 +275,11 @@ await context.handover_to_agent("specialist", "Handle this request")
 
 ## Configuration
 
-In-memory and Postgres data stores implement the same async contract. Run
-fields such as `stream`, `provider_config`, lifecycle timestamps, usage, and
-run steps are stored with the same shape so workers can execute runs created by
+In-memory and Postgres data stores implement the same async contract. Threads,
+messages, runs, run steps, attachments, pagination helpers, and Compass
+dashboard helpers are exposed through the same public methods. Run fields such
+as `stream`, `provider_config`, `config_values`, lifecycle timestamps, and
+usage are stored with the same shape so workers can execute runs created by
 another process.
 
 ### LLAMPHouse constructor
@@ -299,7 +301,7 @@ LLAMPHouse(
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` | _(none)_ |
+| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` and Alembic | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
@@ -411,7 +413,10 @@ pip install -e ".[dev]"
 python -m pytest tests/ -v
 
 # Postgres-only tests (requires DATABASE_URL and migrated schema)
-python -m pytest -m postgres
+LLAMPHOUSE_TRACING_ENABLED=false python -m pytest -m postgres
+
+# Data-store contract parity tests
+LLAMPHOUSE_TRACING_ENABLED=false python -m pytest tests/contract/data_store -q
 ```
 
 ### Database Migrations (Postgres only)
@@ -422,17 +427,25 @@ LLAMPHouse uses Alembic for schema migrations:
 # Start a local Postgres
 docker run --rm -d --name postgres \
   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=llamphouse \
   -p 5432:5432 postgres
-docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
+export DATABASE_URL=postgresql://postgres:password@localhost:5432/llamphouse
+
+# If port 5432 is already used locally, map another host port instead:
+docker run --rm -d --name postgres-5433 \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=llamphouse \
+  -p 5433:5432 postgres
+export DATABASE_URL=postgresql://postgres:password@localhost:5433/llamphouse
 
 # Apply migrations
-alembic upgrade head
+uv run alembic upgrade head
 
 # Create a new migration
-alembic revision --autogenerate -m "description"
+uv run alembic revision --autogenerate -m "description"
 
 # Roll back
-alembic downgrade base
+uv run alembic downgrade base
 ```
 
 ### Building
