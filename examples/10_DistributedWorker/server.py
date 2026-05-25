@@ -46,9 +46,11 @@ class SlowAgent(Agent):
 
     async def run(self, context: Context):
         await asyncio.sleep(1.0)  # simulate LLM latency
+        reply = f"Done! (run {context.run_id})"
+        context.send_chunk(reply)
         await context.insert_message(
             role="assistant",
-            content=f"Done! (run {context.run_id})",
+            content=reply,
         )
 
 

@@ -8,6 +8,7 @@ from llamphouse.core import LLAMPHouse, Agent, Context
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse.core.queue.in_memory_queue import InMemoryQueue
 from llamphouse.core.streaming.event_queue.in_memory_event_queue import InMemoryEventQueue
+from llamphouse.core.streaming.event_queue.redis_event_queue import RedisEventQueueFactory
 from llamphouse.core.workers.async_worker import AsyncWorker
 
 
@@ -178,3 +179,23 @@ async def test_default_hooks_are_noop():
     app = _make_app([agent])
     # Should not raise
     await _run_lifespan(app)
+
+
+def test_redis_event_queue_factory_can_be_used():
+    """RedisEventQueueFactory exposes __name__ for LLAMPHouse telemetry."""
+
+    class PlainAgent(Agent):
+        async def run(self, context: Context):
+            pass
+
+    app = LLAMPHouse(
+        agents=[PlainAgent(id="factory-agent")],
+        authenticator=None,
+        worker=AsyncWorker(time_out=5.0),
+        event_queue_class=RedisEventQueueFactory("redis://localhost:6379/0"),
+        data_store=InMemoryDataStore(),
+        run_queue=InMemoryQueue(),
+        compass=False,
+    )
+
+    assert app.fastapi.state.queue_class.__name__ == "RedisEventQueueFactory"

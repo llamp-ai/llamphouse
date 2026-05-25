@@ -7,30 +7,29 @@ you start yourself.  Uses the A2A streaming protocol.
 Usage
 ─────
   1. Start both servers in separate terminals:
-       python server.py --mode async --port 8000
-       python server.py --mode distributed --port 8100
+       uv run python server.py --mode async --port 8000
+       uv run python server.py --mode distributed --port 8100
 
   2. Run the comparison:
-       python client.py                     # compares 8000 vs 8100
-       python client.py --runs 20           # 20 runs per mode
-       python client.py --port 8000         # benchmark a single server
+       uv run python client.py                     # compares 8000 vs 8100
+       uv run python client.py --runs 20           # 20 runs per mode
+       uv run python client.py --port 8000         # benchmark a single server
 """
 
 import argparse
 import asyncio
+import json
+import sys
 import time
 from uuid import uuid4
 
 import httpx
-from a2a.client import A2ACardResolver, ClientFactory, ClientConfig
-from a2a.types import (
-    Message,
-    Part,
-    TextPart,
-    Role,
-    TaskArtifactUpdateEvent,
-    TaskStatusUpdateEvent,
-)
+from a2a.types import Message, Part, Role
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 async def send_and_collect(client, idx: int) -> dict:
@@ -38,26 +37,47 @@ async def send_and_collect(client, idx: int) -> dict:
     t0 = time.perf_counter()
 
     msg = Message(
-        messageId=uuid4().hex,
-        role=Role.user,
-        parts=[Part(root=TextPart(text=f"Hello from run {idx}"))],
+        message_id=uuid4().hex,
+        role=Role.ROLE_USER,
+        parts=[Part(text=f"Hello from run {idx}")],
     )
+    request_id = uuid4().hex
+    payload = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "message/stream",
+        "params": {
+            "message": {
+                "messageId": msg.message_id,
+                "role": "user",
+                "parts": [{"kind": "text", "text": msg.parts[0].text}],
+            }
+        },
+    }
 
     reply = ""
     status = "unknown"
 
-    async for event in client.send_message(msg):
-        if isinstance(event, tuple):
-            _task, streaming_event = event
+    async with client.stream("POST", "/", json=payload) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            if not line.startswith("data: "):
+                continue
 
-            if isinstance(streaming_event, TaskArtifactUpdateEvent):
-                for part in streaming_event.artifact.parts:
-                    if hasattr(part.root, "text") and part.root.text:
-                        reply += part.root.text
+            envelope = json.loads(line.removeprefix("data: "))
+            event = envelope.get("result") or {}
+            kind = event.get("kind")
 
-            elif isinstance(streaming_event, TaskStatusUpdateEvent):
-                if streaming_event.final:
-                    status = streaming_event.status.state.value
+            if kind == "artifact-update":
+                artifact = event.get("artifact") or {}
+                for part in artifact.get("parts") or []:
+                    if part.get("kind") == "text":
+                        reply += part.get("text") or ""
+
+            elif kind == "status-update":
+                status_obj = event.get("status") or {}
+                if event.get("final"):
+                    status = status_obj.get("state", status)
 
     elapsed = time.perf_counter() - t0
     return {"idx": idx, "status": status, "elapsed": elapsed, "reply": reply}
@@ -65,16 +85,19 @@ async def send_and_collect(client, idx: int) -> dict:
 
 async def run_concurrent(base_url: str, n: int) -> list[dict]:
     """Fire N concurrent A2A requests and collect results."""
-    async with httpx.AsyncClient() as httpx_client:
-        resolver = A2ACardResolver(httpx_client=httpx_client, base_url=base_url)
-        card = await resolver.get_agent_card()
-
-        factory = ClientFactory(
-            ClientConfig(httpx_client=httpx_client, streaming=True)
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        timeout=httpx.Timeout(120.0),
+    ) as httpx_client:
+        card_response = await httpx_client.get("/.well-known/agent-card.json")
+        card_response.raise_for_status()
+        card = card_response.json()
+        print(
+            f"  Agent       : {card.get('name', 'unknown')} "
+            f"({card.get('version', 'unknown')})"
         )
-        client = factory.create(card)
 
-        tasks = [send_and_collect(client, i) for i in range(n)]
+        tasks = [send_and_collect(httpx_client, i) for i in range(n)]
         return await asyncio.gather(*tasks)
 
 
@@ -138,8 +161,9 @@ async def async_main():
     print("║        AsyncWorker  vs  DistributedWorker               ║")
     print("╠══════════════════════════════════════════════════════════╣")
     print(f"║  Make sure both servers are running:                     ║")
-    print(f"║    Terminal 1: python server.py --mode async --port {args.async_port:<5}║")
-    print(f"║    Terminal 2: python server.py --mode distributed \\    ║")
+    print(f"║    Terminal 1: uv run python server.py --mode async \\    ║")
+    print(f"║                --port {args.async_port:<5}                            ║")
+    print(f"║    Terminal 2: uv run python server.py --mode distributed \\ ║")
     print(f"║                  --port {args.distributed_port:<5}                            ║")
     print("╚══════════════════════════════════════════════════════════╝")
 

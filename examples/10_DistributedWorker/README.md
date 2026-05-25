@@ -1,6 +1,8 @@
-# Example 10 — AsyncWorker vs DistributedWorker
+# Example 10 - AsyncWorker vs DistributedWorker
 
-Compares the two worker modes in llamphouse using the A2A streaming protocol:
+Compares the two worker modes in LLAMPHouse using the A2A streaming protocol.
+The client uses the current `a2a` SDK protobuf types for messages and `httpx`
+to read the LLAMPHouse A2A JSON-RPC/SSE stream.
 
 |                          | AsyncWorker               | DistributedWorker                   |
 | ------------------------ | ------------------------- | ----------------------------------- |
@@ -35,6 +37,9 @@ DistributedWorker (split):
 ```bash
 pip install -r requirements.txt
 
+# Optional for local runs when no OTel Collector is running on port 4318
+export LLAMPHOUSE_TRACING_ENABLED=false
+
 # Redis (only needed for distributed mode)
 docker run -d --name redis -p 6379:6379 redis:7-alpine
 ```
@@ -48,14 +53,14 @@ Open three terminals:
 
 ```bash
 # Terminal 1 — AsyncWorker on port 8000
-python server.py --mode async --port 8000
+uv run python server.py --mode async --port 8000
 
 # Terminal 2 — DistributedWorker on port 8100 (needs Redis)
-python server.py --mode distributed --port 8100
+uv run python server.py --mode distributed --port 8100
 
 # Terminal 3 — run the benchmark
-python client.py               # 10 concurrent runs (default)
-python client.py --runs 20     # more runs
+uv run python client.py               # 10 concurrent runs (default)
+uv run python client.py --runs 20     # more runs
 ```
 
 ### Single-Mode
@@ -64,13 +69,13 @@ Benchmark just one server:
 
 ```bash
 # ── AsyncWorker (no Redis needed) ──
-python server.py --mode async --port 8000
-python client.py --port 8000    # in another terminal
+uv run python server.py --mode async --port 8000
+uv run python client.py --port 8000    # in another terminal
 
 # ── DistributedWorker (needs Redis) ──
-python server.py --mode distributed --port 8100
-python worker.py                 # in another terminal
-python client.py --port 8100     # in a third terminal
+uv run python server.py --mode distributed --port 8100
+uv run python worker.py                 # in another terminal
+uv run python client.py --port 8100     # in a third terminal
 ```
 
 For a real split-process setup, use Postgres so the API process and worker
@@ -81,10 +86,10 @@ export REDIS_URL=redis://localhost:6379/0
 export DATA_STORE=postgres
 export DATABASE_URL=postgresql://postgres:password@localhost:5432/llamphouse
 
-alembic upgrade head
+uv run alembic upgrade head
 
-python server.py --mode distributed  # API process
-python worker.py                     # worker process
+uv run python server.py --mode distributed  # API process
+uv run python worker.py                     # worker process
 ```
 
 `DATA_STORE=memory` is useful for the local all-in-one comparison only. It
@@ -131,8 +136,8 @@ should not be used when API and worker processes are separated.
 Run multiple worker processes to scale horizontally:
 
 ```bash
-python worker.py --concurrency 5    # terminal A
-python worker.py --concurrency 5    # terminal B
+uv run python worker.py --concurrency 5    # terminal A
+uv run python worker.py --concurrency 5    # terminal B
 ```
 
 Both workers share the load via Redis consumer groups. If one crashes,
