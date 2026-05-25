@@ -1,7 +1,7 @@
 """add stream column to runs
 
 Revision ID: fb9d6bd2410c
-Revises: c4f1d2e3a5b8
+Revises: 9e7371e978bd
 Create Date: 2026-04-28 13:06:06.899582+07:00
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'fb9d6bd2410c'
-down_revision: Union[str, None] = 'c4f1d2e3a5b8'
+down_revision: Union[str, None] = '9e7371e978bd'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

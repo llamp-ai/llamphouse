@@ -6,7 +6,7 @@ import asyncio
 
 from llamphouse.core.types.assistant import AssistantObject
 from llamphouse.core.types.enum import run_status, run_step_status
-from llamphouse.core.types.message import CreateMessageRequest, ModifyMessageRequest
+from llamphouse.core.types.message import Attachment, CreateMessageRequest, ModifyMessageRequest
 from llamphouse.core.types.run import ModifyRunRequest, RunCreateRequest, ToolOutput
 from llamphouse.core.types.run_step import (
     CreateRunStepRequest,
@@ -293,6 +293,33 @@ async def test_message_metadata_empty_when_not_provided(data_store):
         await _cleanup_thread(data_store, thread_id)
 
 
+async def test_message_attachments_round_trip(data_store):
+    """Single attachment input must round-trip as the canonical attachment list."""
+    thread_id = _uid("thread")
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+
+        msg = await data_store.insert_message(
+            thread_id,
+            CreateMessageRequest(
+                role="user",
+                content="with attachment",
+                attachments=Attachment(file_id="file_123", tool="code_interpreter"),
+            ),
+        )
+        assert msg is not None
+        assert msg.attachments is not None
+        assert len(msg.attachments) == 1
+        assert msg.attachments[0].file_id == "file_123"
+
+        fetched = await data_store.get_message_by_id(thread_id, msg.id)
+        assert fetched is not None
+        assert fetched.attachments is not None
+        assert fetched.attachments[0].tool == "code_interpreter"
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
 async def test_run_steps_and_tool_outputs(data_store):
     """Covers run step creation, list/retrieve, update status with error, and tool output propagation."""
     thread_id = _uid("thread")
@@ -345,6 +372,40 @@ async def test_run_steps_and_tool_outputs(data_store):
         assert step2_fetch is not None
         tool_call = _unwrap_tool_call(step2_fetch.step_details.tool_calls[0])
         assert tool_call.function.output == "ok"
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
+async def test_tool_outputs_single_call_fallback_is_consistent(data_store):
+    """A single tool-call step accepts a submitted output even if the id is provider-remapped."""
+    thread_id = _uid("thread")
+    assistant = _assistant(_uid("asst"))
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+        run = await data_store.insert_run(thread_id, _run(_uid("run"), assistant.id), assistant)
+        assert run is not None
+
+        step_id = _uid("step")
+        original_call_id = _uid("call")
+        await data_store.insert_run_step(
+            thread_id,
+            run.id,
+            _tool_calls_step(assistant.id, step_id, original_call_id),
+        )
+
+        await data_store.update_run_status(thread_id, run.id, run_status.AWAITING_TOOLS)
+        run_after = await data_store.submit_tool_outputs_to_run(
+            thread_id,
+            run.id,
+            [ToolOutput(output="fallback-ok", tool_call_id=_uid("provider_call"))],
+        )
+        assert run_after is not None
+        assert run_after.status == run_status.IN_PROGRESS
+
+        step = await data_store.get_run_step_by_id(thread_id, run.id, step_id)
+        assert step is not None
+        tool_call = _unwrap_tool_call(step.step_details.tool_calls[0])
+        assert tool_call.function.output == "fallback-ok"
     finally:
         await _cleanup_thread(data_store, thread_id)
 
@@ -429,5 +490,55 @@ async def test_run_lifecycle_timestamps_round_trip(data_store):
         assert fetched.completed_at is not None
         assert fetched.expires_at is not None
         assert fetched.usage.total_tokens == 5
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
+async def test_failed_and_cancelled_run_timestamps_round_trip(data_store):
+    """Terminal helper statuses must preserve their matching lifecycle timestamps."""
+    thread_id = _uid("thread")
+    assistant = _assistant(_uid("asst"))
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+        failed_run = await data_store.insert_run(thread_id, _run(_uid("run"), assistant.id), assistant)
+        cancelled_run = await data_store.insert_run(thread_id, _run(_uid("run"), assistant.id), assistant)
+        assert failed_run is not None
+        assert cancelled_run is not None
+
+        failed = await data_store.update_run_status(thread_id, failed_run.id, run_status.FAILED, error="boom")
+        cancelled = await data_store.update_run_status(thread_id, cancelled_run.id, run_status.CANCELLED)
+        assert failed is not None
+        assert failed.failed_at is not None
+        assert failed.last_error.message == "boom"
+        assert cancelled is not None
+        assert cancelled.cancelled_at is not None
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
+async def test_default_list_args_and_global_helpers(data_store):
+    """Backends must expose the same default list behavior and dashboard helpers."""
+    thread_id = _uid("thread")
+    assistant = _assistant(_uid("asst"))
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+        await data_store.insert_message(thread_id, _message(_uid("msg"), "hello"))
+        run = await data_store.insert_run(thread_id, _run(_uid("run"), assistant.id), assistant)
+        assert run is not None
+        await data_store.insert_run_step(thread_id, run.id, _message_step(assistant.id, _uid("step"), _uid("msg")))
+
+        assert (await data_store.list_messages(thread_id)).data
+        assert (await data_store.list_runs(thread_id)).data
+        assert (await data_store.list_run_steps(thread_id, run.id)).data
+
+        threads = await data_store.list_threads()
+        runs = await data_store.list_runs_all()
+        assert threads is not None
+        assert runs is not None
+        assert any(t.id == thread_id for t in threads.data)
+        assert any(r.id == run.id for r in runs.data)
+        assert await data_store.count_threads() >= 1
+        assert await data_store.count_runs() >= 1
+        assert await data_store.count_messages() >= 1
     finally:
         await _cleanup_thread(data_store, thread_id)

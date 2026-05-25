@@ -21,8 +21,7 @@ from .queue.in_memory_queue import InMemoryQueue
 from .config_store.base import BaseConfigStore
 from .config_store.in_memory_store import InMemoryConfigStore
 from .tracing import setup_tracing, shutdown_tracing, set_span_excludes
-from .tracing.stores import BaseTracingStore, get_tracing_store_from_env
-from .signals.webhook_signal import WebhookSignal
+from . import telemetry as _telemetry
 
 import os
 import sys
@@ -182,7 +181,6 @@ class LLAMPHouse:
                  config_store: Optional[BaseConfigStore] = None,
                  retention_policy: Optional[RetentionPolicy] = None,
                  exclude_spans: Optional[list[str]] = None,
-                 tracing_store: Optional[BaseTracingStore] = None,
                  compass: bool = True,
                  ):
         # Accept either 'agents' (new) or 'assistants' (legacy) parameter
@@ -214,22 +212,6 @@ class LLAMPHouse:
         setup_tracing()
         set_span_excludes(self.exclude_spans)
 
-        # ── Tracing store ─────────────────────────────────────────────────
-        # Resolve the tracing store: explicit arg > env-based auto-detection.
-        resolved_tracing_store = tracing_store or get_tracing_store_from_env()
-        self.fastapi.state.tracing_store = resolved_tracing_store
-
-        # If the store provides its own exporter (in-memory, Postgres), register
-        # it as a second BatchSpanProcessor on the active TracerProvider so that
-        # spans are captured in addition to any OTLP pipeline.
-        _extra_exporter = resolved_tracing_store.get_span_exporter()
-        if _extra_exporter is not None:
-            from opentelemetry import trace as _otel_trace
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor as _BSP
-            _provider = _otel_trace.get_tracer_provider()
-            if hasattr(_provider, "add_span_processor"):
-                _provider.add_span_processor(_BSP(_extra_exporter))
-
         if self.fastapi.state.data_store:
             self.fastapi.state.data_store.init(resolved)
         else:
@@ -248,6 +230,21 @@ class LLAMPHouse:
             self.fastapi.add_middleware(AuthMiddleware, auth=self.authenticator)
 
         self._register_routes()
+
+        # Anonymous, opt-out telemetry — disable with LLAMPHOUSE_TELEMETRY=0.
+        _telemetry.record(
+            "llamphouse_init",
+            agents=len(self.agents),
+            adapters=[type(a).__name__ for a in self.adapters],
+            worker=type(self.worker).__name__,
+            data_store=type(self.fastapi.state.data_store).__name__,
+            run_queue=type(self.fastapi.state.run_queue).__name__,
+            event_queue=self.fastapi.state.queue_class.__name__,
+            config_store=type(self.fastapi.state.config_store).__name__,
+            tracing_store=type(getattr(self.fastapi.state, "tracing_store", None)).__name__,
+            auth=bool(self.authenticator),
+            retention_enabled=bool(self.retention_policy and self.retention_policy.enabled),
+        )
 
     @asynccontextmanager
     async def _lifespan(self, app:FastAPI):
@@ -327,6 +324,8 @@ class LLAMPHouse:
 
             # Flush pending spans and close the OTLP exporter session
             shutdown_tracing()
+            _telemetry.record("llamphouse_shutdown")
+            _telemetry.shutdown()
             llamphouse_logger.info("Shutdown complete.")
 
     def __print_ignite(self, host, port):
@@ -349,6 +348,7 @@ ______[===]______{_R}"""
 
     def ignite(self, host="0.0.0.0", port=80, reload=False, ws="auto", timeout_graceful_shutdown=10):
         self.__print_ignite(host, port)
+        _telemetry.record("llamphouse_ignite", host=host, port=port, reload=bool(reload))
         uvicorn.run(
             self.fastapi,
             host=host,

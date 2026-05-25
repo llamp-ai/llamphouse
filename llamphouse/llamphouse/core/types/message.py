@@ -134,6 +134,9 @@ class MessageObject(BaseModel):
     def _accept_content_or_parts(cls, data):
         """Accept either 'content' (OpenAI compat) or 'parts' on input."""
         if isinstance(data, dict):
+            attachments = data.get("attachments")
+            if attachments is not None and not isinstance(attachments, list):
+                data["attachments"] = [attachments]
             content = data.pop("content", None)
             parts = data.get("parts")
             if parts is None and content is not None:
@@ -199,7 +202,7 @@ class CreateMessageRequest(BaseModel):
     role: str
     content: Union[str, List[ContentBlock]] = None
     parts: Optional[List[Part]] = None
-    attachments: Optional[Attachment] = None
+    attachments: Optional[Union[Attachment, List[Attachment]]] = None
     metadata: Optional[object] = {}
 
     @model_validator(mode="after")
