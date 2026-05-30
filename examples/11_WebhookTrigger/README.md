@@ -1,16 +1,16 @@
-# Example 11 — Webhook Signal
+# 11 — Webhook Trigger
 
 Trigger an agent via an HTTP POST instead of a human chat message.
 
-Use `WebhookSignal` when an **external system** (a scheduler, CI pipeline, SaaS
+Use `WebhookTrigger` when an **external system** (a scheduler, CI pipeline, SaaS
 webhook, etc.) needs to kick off agent logic without a user sitting at a
 chat interface.
 
 ## What you'll learn
 
-- How to attach a `WebhookSignal` to an agent
+- How to attach a `WebhookTrigger` to an agent
 - How to secure the endpoint with a bearer token (`secret_env`)
-- How to read the incoming JSON payload via `context.signal.data`
+- How to read the incoming JSON payload via `context.trigger.data`
 - How to poll the OpenAI-compatible Threads API to wait for the result
 
 ## How it works
@@ -18,19 +18,19 @@ chat interface.
 ```
 External caller
     │
-    │  POST /signals/report
+    │  POST /triggers/report
     │  Authorization: Bearer <token>
     │  {"customer": "Acme Corp", "event": "trial_expired"}
     ▼
 LLAMPHouse  ──────────────────────────────────┐
-  WebhookSignal validates token               │
+  WebhookTrigger validates token              │
   creates a new Thread + Run                  │
   enqueues the Run                            │
     │                                         │
     ▼                                         │
 AsyncWorker calls agent.run(context)          │
-  context.signal.source == "webhook"          │
-  context.signal.data   == {"customer": ...}  │
+  context.trigger.source == "webhook"         │
+  context.trigger.data   == {"customer": ...} │
   agent writes summary to thread              │
                                               │
 Returns 202 { run_id, thread_id } ◄───────────┘
@@ -90,7 +90,7 @@ Payload  : {'customer': 'Acme Corp', 'event': 'trial_expired'}
 ### 5. Try it with curl
 
 ```sh
-curl -X POST http://127.0.0.1:8000/signals/report \
+curl -X POST http://127.0.0.1:8000/triggers/report \
      -H "Authorization: Bearer supersecret" \
      -H "Content-Type: application/json" \
      -d '{"customer": "Contoso", "event": "payment_failed"}'
@@ -99,7 +99,7 @@ curl -X POST http://127.0.0.1:8000/signals/report \
 ### 6. Try it without a token (should return 401)
 
 ```sh
-curl -X POST http://127.0.0.1:8000/signals/report \
+curl -X POST http://127.0.0.1:8000/triggers/report \
      -H "Content-Type: application/json" \
      -d '{"customer": "Contoso", "event": "payment_failed"}'
 ```

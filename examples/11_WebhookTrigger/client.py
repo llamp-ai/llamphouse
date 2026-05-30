@@ -15,7 +15,7 @@ async def main():
 
         print("Firing webhook...")
         response = await client.post(
-            f"{BASE_URL}/signals/report",
+            f"{BASE_URL}/triggers/report",
             json=payload,
             headers={"Authorization": f"Bearer {WEBHOOK_SECRET}"},
         )

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "2adc0127-b409-471b-8425-2a6419d1ee7d",
+    "title": "File Types",
+    "sql": "WITH transform_threads AS (\n    SELECT DISTINCT thread_id\n    FROM runs\n    WHERE assistant_id = 'transform-agent'\n),\nparsed AS (\n    SELECT\n        (m.content->0->>'text')::jsonb->>'format'                       AS format,\n        (m.content->0->>'text')::jsonb->'metadata'->>'source_url'       AS source_url\n    FROM messages m\n    JOIN transform_threads tt USING (thread_id)\n    WHERE m.role = 'user'\n      AND (m.content->0->>'text') LIKE '{%'\n)\nSELECT\n    format,\n    COUNT(DISTINCT source_url) AS count\nFROM parsed\nWHERE source_url IS NOT NULL\nGROUP BY format\nORDER BY count DESC;",
+    "chart_type": "table",
+    "x_column": "format",
+    "y_columns": [
+      "count"
+    ],
+    "created_at": 1780359207.174,
+    "updated_at": 1780360569.751
+  },
+  {
+    "id": "28bd8774-25cc-4973-a98b-28b33b5d4bb6",
+    "title": "Failed Runs \u2014 Last Orchestrator Run",
+    "sql": "WITH last_orchestrator_run AS (\n    SELECT id\n    FROM runs\n    WHERE assistant_id = 'orchestrator-agent'\n    ORDER BY created_at DESC\n    LIMIT 1\n)\nSELECT\n    r.created_at              AS started_at,\n    r.assistant_id            AS agent,\n    (\n        SELECT (m.content->0->>'text')::jsonb->'metadata'->>'source_url'\n        FROM messages m\n        WHERE m.thread_id = r.thread_id\n          AND m.role = 'user'\n          AND (m.content->0->>'text') LIKE '{%'\n        ORDER BY m.created_at ASC\n        LIMIT 1\n    )                         AS source_url,\n    r.id                      AS run_id,\n    r.thread_id               AS thread_id,\n    r.last_error->>'code'     AS error_code,\n    r.last_error->>'message'  AS error_message\nFROM runs r\nJOIN last_orchestrator_run lor\n    ON r.meta->>'parent_run_id' = lor.id\nWHERE r.status = 'failed'\nORDER BY r.created_at DESC;",
+    "chart_type": "table",
+    "x_column": "started_at",
+    "y_columns": [
+      "started_at"
+    ],
+    "created_at": 1780542252.22,
+    "updated_at": 1780548486.513
+  },
+  {
+    "id": "6fdd43ed-cc06-4c14-895c-cd8b26ecfafd",
+    "title": "Fetched Files on last run",
+    "sql": "WITH last_orchestrator_run AS (\n    SELECT id\n    FROM runs\n    WHERE assistant_id = 'orchestrator-agent'\n    ORDER BY created_at DESC\n    LIMIT 1\n),\nfetch_outputs AS (\n    SELECT (m.content->0->>'text')::jsonb AS payload\n    FROM runs r\n    JOIN last_orchestrator_run lor\n        ON r.meta->>'parent_run_id' = lor.id\n    JOIN messages m\n        ON m.thread_id = r.thread_id\n       AND m.role = 'assistant'\n    WHERE r.assistant_id = 'fetch-agent'\n      AND (m.content->0->>'text') LIKE '{%'\n),\nfiles AS (\n    SELECT\n        doc->'metadata'->>'source_id'   AS source_id,\n        doc->'metadata'->>'title'       AS title,\n        doc->>'format'                  AS format,\n        doc->'metadata'->>'source_url'  AS url\n    FROM (\n        SELECT jsonb_array_elements(payload->'documents') AS doc\n        FROM fetch_outputs\n        WHERE jsonb_typeof(payload->'documents') = 'array'\n    ) d\n),\ntransform_outputs AS (\n    SELECT (m.content->0->>'text')::jsonb AS payload\n    FROM runs r\n    JOIN last_orchestrator_run lor\n        ON r.meta->>'parent_run_id' = lor.id\n    JOIN messages m\n        ON m.thread_id = r.thread_id\n       AND m.role = 'assistant'\n    WHERE r.assistant_id = 'transform-agent'\n      AND (m.content->0->>'text') LIKE '{%'\n),\nchunks AS (\n    SELECT\n        payload->'metadata'->>'source_id'          AS source_id,\n        SUM(jsonb_array_length(payload->'chunks'))  AS chunk_count\n    FROM transform_outputs\n    WHERE jsonb_typeof(payload->'chunks') = 'array'\n    GROUP BY 1\n)\nSELECT\n    f.title,\n    c.chunk_count   AS chunks,\n    f.format,\n    f.url\nFROM files f\nLEFT JOIN chunks c ON c.source_id = f.source_id\nORDER BY f.title ASC;",
+    "chart_type": "table",
+    "x_column": "title",
+    "y_columns": [
+      "format"
+    ],
+    "created_at": 1780544485.897,
+    "updated_at": 1780547540.509
+  }
+]

@@ -20,7 +20,7 @@ from .streaming.adapters.base_stream_adapter import BaseStreamAdapter
 from .streaming.adapters.openai_chat_completions import OpenAIChatCompletionAdapter
 from .streaming.event_queue.base_event_queue import BaseEventQueue
 from .data_stores.base_data_store import BaseDataStore
-from .signals.base import SignalInfo
+from .triggers.base import TriggerInfo
 from .streaming.stream_events import (
     CanonicalStreamEvent,
     StreamError,
@@ -107,15 +107,15 @@ class Context:
         self._pending_emits: set[asyncio.Task] = set()
         # Accumulated token usage across all streaming calls in this run
         self._run_usage: Dict[str, int] = {}
-        # Populated when this run was triggered by a signal; None for human runs.
-        self.signal: Optional[SignalInfo] = self._resolve_signal()
+        # Populated when this run was started by a trigger; None for human runs.
+        self.trigger: Optional[TriggerInfo] = self._resolve_trigger()
 
-    def _resolve_signal(self) -> Optional[SignalInfo]:
-        """Extract SignalInfo from run metadata, if present."""
+    def _resolve_trigger(self) -> Optional[TriggerInfo]:
+        """Extract TriggerInfo from run metadata, if present."""
         try:
-            raw = (self.run.metadata or {}).get("__signal__")
+            raw = (self.run.metadata or {}).get("__trigger__")
             if raw and isinstance(raw, dict):
-                return SignalInfo.from_dict(raw)
+                return TriggerInfo.from_dict(raw)
         except Exception:
             pass
         return None
