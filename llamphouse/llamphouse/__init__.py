@@ -23,7 +23,7 @@ from .core.config_store import BaseConfigStore, InMemoryConfigStore
 from .core.queue import BaseQueue, InMemoryQueue, RedisQueue
 from .core.workers import AsyncWorker, DistributedWorker
 from .core.types.message import TextPart, ImagePart, FilePart, DataPart
-from .core.signals import BaseSignal, SignalInfo, WebhookSignal
+from .core.triggers import BaseTrigger, TriggerInfo, WebhookTrigger
 from .core.tracing import (
     BaseTracingStore,
     InMemoryTracingStore,
@@ -63,7 +63,7 @@ __all__ = [
     "InMemoryTracingStore",
     "PostgresTracingStore",
     "ClickHouseTracingStore",
-    "BaseSignal",
-    "SignalInfo",
-    "WebhookSignal",
+    "BaseTrigger",
+    "TriggerInfo",
+    "WebhookTrigger",
 ]

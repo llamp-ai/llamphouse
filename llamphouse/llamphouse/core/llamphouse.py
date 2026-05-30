@@ -22,7 +22,7 @@ from .config_store.base import BaseConfigStore
 from .config_store.in_memory_store import InMemoryConfigStore
 from .tracing import setup_tracing, shutdown_tracing, set_span_excludes
 from .tracing.stores import BaseTracingStore, get_tracing_store_from_env
-from .signals.webhook_signal import WebhookSignal
+from .triggers.webhook_trigger import WebhookTrigger
 
 import os
 import sys
@@ -271,14 +271,14 @@ class LLAMPHouse:
             except Exception:
                 llamphouse_logger.exception(f"on_startup failed for agent '{agent.id}'")
 
-        # Start signals declared on each agent
+        # Start triggers declared on each agent
         for agent in self.agents:
-            for signal in getattr(agent, "signals", []):
+            for trigger in getattr(agent, "triggers", []):
                 try:
-                    await signal.start(agent.id, self.fastapi.state)
+                    await trigger.start(agent.id, self.fastapi.state)
                 except Exception:
                     llamphouse_logger.exception(
-                        f"signal.start failed for agent '{agent.id}': {signal!r}"
+                        f"trigger.start failed for agent '{agent.id}': {trigger!r}"
                     )
 
         if self.retention_policy and self.retention_policy.enabled:
@@ -325,14 +325,14 @@ class LLAMPHouse:
                 except Exception:
                     llamphouse_logger.exception(f"on_shutdown failed for agent '{agent.id}'")
 
-            # Stop signals
+            # Stop triggers
             for agent in self.agents:
-                for signal in getattr(agent, "signals", []):
+                for trigger in getattr(agent, "triggers", []):
                     try:
-                        await signal.stop()
+                        await trigger.stop()
                     except Exception:
                         llamphouse_logger.exception(
-                            f"signal.stop failed for agent '{agent.id}': {signal!r}"
+                            f"trigger.stop failed for agent '{agent.id}': {trigger!r}"
                         )
 
             # Close data store and run queue
@@ -384,9 +384,9 @@ ______[===]______{_R}"""
             for router in adapter.get_routers():
                 self.fastapi.include_router(router, prefix=adapter.prefix)
 
-        # Register WebhookSignal routes declared on agents (no prefix — the
-        # signal's own path is the canonical URL, e.g. /signals/my-agent).
+        # Register WebhookTrigger routes declared on agents (no prefix — the
+        # trigger's own path is the canonical URL, e.g. /triggers/my-agent).
         for agent in self.agents:
-            for signal in getattr(agent, "signals", []):
-                if isinstance(signal, WebhookSignal):
-                    self.fastapi.include_router(signal.get_router(agent.id))
+            for trigger in getattr(agent, "triggers", []):
+                if isinstance(trigger, WebhookTrigger):
+                    self.fastapi.include_router(trigger.get_router(agent.id))

@@ -1,7 +1,7 @@
 from llamphouse.core import LLAMPHouse, Agent
 from llamphouse.core.context import Context
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse import WebhookSignal
+from llamphouse import WebhookTrigger
 
 
 class ReportAgent(Agent):
@@ -12,25 +12,25 @@ class ReportAgent(Agent):
     or kick off a background job.
 
     Trigger it with:
-        curl -X POST http://127.0.0.1:8000/signals/report \\
+        curl -X POST http://127.0.0.1:8000/triggers/report \\
              -H "Authorization: Bearer supersecret" \\
              -H "Content-Type: application/json" \\
              -d '{"customer": "Acme Corp", "event": "trial_expired"}'
     """
 
-    signals = [
-        WebhookSignal(path="/signals/report", secret_env="WEBHOOK_SECRET"),
+    triggers = [
+        WebhookTrigger(path="/triggers/report", secret_env="WEBHOOK_SECRET"),
     ]
 
     async def run(self, context: Context):
-        if context.signal is None:
+        if context.trigger is None:
             # Normal human-initiated run — shouldn't happen with this agent,
             # but handled gracefully just in case.
-            await context.insert_message("I'm a webhook-driven agent. Trigger me via POST /signals/report.")
+            await context.insert_message("I'm a webhook-driven agent. Trigger me via POST /triggers/report.")
             return
 
-        data = context.signal.data
-        fired_at = context.signal.fired_at
+        data = context.trigger.data
+        fired_at = context.trigger.fired_at
 
         customer = data.get("customer", "unknown customer")
         event = data.get("event", "unknown event")

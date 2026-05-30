@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.0] - TBD
+
+### Added
+
+- **Pluggable tracing stores** — new `BaseTracingStore` interface with `InMemoryTracingStore`, `PostgresTracingStore`, and `ClickHouseTracingStore` implementations for persisting and querying span data.
+- **Trigger handling** — `BaseTrigger` and `WebhookTrigger` for starting an agent run from an external system (e.g. an HTTP POST). Available on `context.trigger`.
+- **Compass dashboards** — new dashboards UI with `DashboardsView`, `DashboardView`, and `DashboardPresentView`, backed by `DashboardStore` and `ChartStore`. Includes a `ChartWidget` for visualising tracing/run data and a `FilterBuilder` for composing queries.
+- **Runs view** — dedicated `RunsView` in Compass for browsing and inspecting runs.
+- **Table preferences** — `useTablePrefs` composable for persisting column/sort/filter state in Compass data tables.
+- **WebhookTrigger example** (`examples/11_WebhookTrigger`) — end-to-end demonstration of triggering an agent run from an external HTTP POST.
+- **PlannerAgent example** (`examples/12_PlannerAgent`) — multi-node planner/executor/synthesizer agent with tracing wired in.
+- Database migration `timestamps_integer_to_float` for higher-precision timestamps.
+
+### Changed
+
+- Orchestrator and Planner example agents now use `InMemoryTracingStore` by default.
+- `SpanTree` truncation logic improved for cleaner display of long spans.
+- Expanded `DataTable`, `MessageBubble`, `RunDetailView`, `ThreadDetailView`, and `ThreadsView` with richer rendering and interaction.
+- `ConfigStore` example now ships with sample `compass_charts.json` and `compass_dashboards.json`.
+- `in_memory_store` and `postgres_store` updated to align with new tracing/signal flows and model changes.
+
 ## [1.2.2] - 19/03/2026
 
 - Fix double logging LLAMPHouse events.

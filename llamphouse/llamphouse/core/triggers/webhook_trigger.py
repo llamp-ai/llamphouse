@@ -9,30 +9,30 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .base import BaseSignal, SignalInfo
+from .base import BaseTrigger, TriggerInfo
 from ..types.run import RunCreateRequest
 from ..types.thread import CreateThreadRequest
 
-logger = logging.getLogger("llamphouse.signals.webhook")
+logger = logging.getLogger("llamphouse.triggers.webhook")
 
 
-class WebhookSignal(BaseSignal):
+class WebhookTrigger(BaseTrigger):
     """Trigger an agent via an HTTP POST to a registered endpoint.
 
     Usage::
 
         class MyAgent(Agent):
-            signals = [
-                WebhookSignal(path="/signals/my-agent", secret_env="WEBHOOK_SECRET"),
+            triggers = [
+                WebhookTrigger(path="/triggers/my-agent", secret_env="WEBHOOK_SECRET"),
             ]
 
-    The endpoint accepts ``POST /signals/my-agent``.
+    The endpoint accepts ``POST /triggers/my-agent``.
     If ``secret_env`` is set, the request must include a matching
     ``Authorization: Bearer <token>`` header (token read from the env var).
 
     On success the endpoint returns ``202 Accepted`` with the new
     ``run_id`` and ``thread_id``.
-    The request body (JSON) is available as ``context.signal.data`` inside
+    The request body (JSON) is available as ``context.trigger.data`` inside
     ``agent.run()``.
     """
 
@@ -50,13 +50,13 @@ class WebhookSignal(BaseSignal):
     def get_router(self, agent_id: str) -> APIRouter:
         """Return a FastAPI router with the webhook POST endpoint wired up."""
         router = APIRouter()
-        signal = self  # capture for closure
+        trigger = self  # capture for closure
 
-        @router.post(f"/{signal.path}", status_code=202)
+        @router.post(f"/{trigger.path}", status_code=202)
         async def _webhook_endpoint(request: Request):
             # ── Auth ───────────────────────────────────────────────────────
             secret = (
-                os.environ.get(signal.secret_env) if signal.secret_env else None
+                os.environ.get(trigger.secret_env) if trigger.secret_env else None
             )
             if secret:
                 auth_header = request.headers.get("Authorization", "")
@@ -86,8 +86,8 @@ class WebhookSignal(BaseSignal):
                     status_code=404, detail=f"Agent '{agent_id}' not found"
                 )
 
-            # ── Create thread + run with signal metadata ───────────────────
-            signal_info = SignalInfo(
+            # ── Create thread + run with trigger metadata ──────────────────
+            trigger_info = TriggerInfo(
                 source="webhook",
                 data=data,
                 fired_at=datetime.now(timezone.utc).isoformat(),
@@ -97,7 +97,7 @@ class WebhookSignal(BaseSignal):
             thread = await db.insert_thread(CreateThreadRequest())
             run_request = RunCreateRequest(
                 assistant_id=agent_id,
-                metadata={"__signal__": signal_info.to_dict()},
+                metadata={"__trigger__": trigger_info.to_dict()},
             )
             run = await db.insert_run(thread.id, run_request, assistant)
 
@@ -111,7 +111,7 @@ class WebhookSignal(BaseSignal):
             )
 
             logger.info(
-                "Webhook signal fired for agent '%s' (run=%s)", agent_id, run.id
+                "Webhook trigger fired for agent '%s' (run=%s)", agent_id, run.id
             )
             return JSONResponse(
                 status_code=202,

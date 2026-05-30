@@ -7,28 +7,28 @@ from typing import Any, Dict, Optional
 
 
 @dataclass
-class SignalInfo:
-    """Metadata about the signal that triggered the current run.
+class TriggerInfo:
+    """Metadata about the trigger that initiated the current run.
 
-    Available on ``context.signal`` inside ``agent.run()``.
-    ``context.signal`` is ``None`` for human-initiated runs.
+    Available on ``context.trigger`` inside ``agent.run()``.
+    ``context.trigger`` is ``None`` for human-initiated runs.
     """
 
-    # "webhook" or "event"
+    # "webhook" or other built-in trigger source.
     source: str
 
-    # Arbitrary payload — webhook request body, or the internal event data.
+    # Arbitrary payload — webhook request body, or the source event data.
     data: Dict[str, Any] = field(default_factory=dict)
 
-    # Populated for EventSignal: the built-in event name (e.g. "agent.run.failed").
+    # Optional event name, if the trigger represents a named event.
     event: Optional[str] = None
 
-    # ISO-8601 timestamp of when the signal fired.
+    # ISO-8601 timestamp of when the trigger fired.
     fired_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
-    # Populated for EventSignal: details about the run that triggered the event.
+    # Populated when the trigger originated from another agent's run.
     source_agent_id: Optional[str] = None
     source_run_id: Optional[str] = None
     source_thread_id: Optional[str] = None
@@ -37,15 +37,15 @@ class SignalInfo:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "SignalInfo":
+    def from_dict(cls, d: Dict[str, Any]) -> "TriggerInfo":
         known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in d.items() if k in known})
 
 
-class BaseSignal(ABC):
-    """Base class for all signal types.
+class BaseTrigger(ABC):
+    """Base class for all trigger types.
 
-    Subclass this to create a custom signal.
+    Subclass this to create a custom trigger.
     ``start`` and ``stop`` are called by LLAMPHouse during server lifespan.
     """
 
