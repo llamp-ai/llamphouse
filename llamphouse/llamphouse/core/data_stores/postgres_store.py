@@ -154,7 +154,7 @@ class PostgresDataStore(BaseDataStore):
                         meta=_to_jsonable(metadata),
                         thread_id=thread_id,
                         status=status,
-                        completed_at=int(datetime.now(timezone.utc).timestamp()) if status == message_status.COMPLETED else None,
+                        completed_at=round(datetime.now(timezone.utc).timestamp(), 3) if status == message_status.COMPLETED else None,
                     )
 
                     session.add(item)
@@ -1125,7 +1125,7 @@ class PostgresDataStore(BaseDataStore):
                         status=step_status,
                         step_details=_to_jsonable(step.step_details if not hasattr(step.step_details, "model_dump") else step.step_details.model_dump()),
                         meta=_to_jsonable(step.metadata),
-                        completed_at=int(datetime.now(timezone.utc).timestamp()) if step_status == run_step_status.COMPLETED else None,
+                        completed_at=round(datetime.now(timezone.utc).timestamp(), 3) if step_status == run_step_status.COMPLETED else None,
                     )
 
                     session.add(new_step)
@@ -1374,7 +1374,7 @@ class PostgresDataStore(BaseDataStore):
     # Run status helpers
     # ------------------------------------------------------------------
 
-    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None) -> RunObject | None:
+    async def update_run_status(self, thread_id: str, run_id: str, status: str, error: dict | None = None, usage: dict | None = None) -> RunObject | None:
         with span_context(
             store_tracer,
             "llamphouse.data_store.update_run_status",
@@ -1416,6 +1416,24 @@ class PostgresDataStore(BaseDataStore):
 
                     run.status = status
                     run.last_error = _to_jsonable(error)
+
+                    # ── Lifecycle timestamps ─────────────────────────────
+                    now_ts = round(datetime.now(timezone.utc).timestamp(), 3)
+                    if status == run_status.IN_PROGRESS and run.started_at is None:
+                        run.started_at = now_ts
+                    elif status == run_status.COMPLETED:
+                        run.completed_at = now_ts
+                    elif status == run_status.FAILED:
+                        run.failed_at = now_ts
+                    elif status == run_status.CANCELLED:
+                        run.cancelled_at = now_ts
+                    elif status == run_status.EXPIRED:
+                        run.expired_at = now_ts
+
+                    # ── Usage ──────────────────────────────────────────
+                    if usage:
+                        run.usage = _to_jsonable(usage)
+
                     await session.commit()
                     await session.refresh(run)
                     span.set_status(Status(StatusCode.OK))

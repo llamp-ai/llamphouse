@@ -184,7 +184,10 @@ class AsyncWorker(BaseWorker):
                     span.set_status(Status(StatusCode.OK))
 
                     if thread_id and run_id:
-                        await data_store.update_run_status(thread_id, run_id, run_status.COMPLETED)
+                        await data_store.update_run_status(
+                            thread_id, run_id, run_status.COMPLETED,
+                            usage=context._run_usage or None,
+                        )
                     if output_queue:
                         run_object = await data_store.get_run_by_id(thread_id, run_id)
                         if run_object:
@@ -257,6 +260,7 @@ class AsyncWorker(BaseWorker):
                     if output_queue and run_object:
                         await output_queue.add(run_object.to_event(event_type.RUN_FAILED))
                         await output_queue.add(ErrorEvent(error))
+
                     if message.attempts < run_queue.retry_policy.max_attempts:
                         await run_queue.requeue(receipt, message)
                     else:

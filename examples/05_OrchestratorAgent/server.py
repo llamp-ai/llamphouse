@@ -28,6 +28,8 @@ Then run the client:
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from llamphouse.core.tracing.stores.in_memory_tracing_store import InMemoryTracingStore
+
 load_dotenv(override=True)
 
 from llamphouse.core import LLAMPHouse, Agent
@@ -36,6 +38,7 @@ from llamphouse.core.context import Context
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse.core.streaming.adapters.registry import get_adapter
 from llamphouse.core.workers.async_worker import AsyncWorker
+from llamphouse.core.adapters.compass import CompassAdapter
 
 openai_client = AsyncOpenAI()
 
@@ -290,8 +293,9 @@ def main():
     llamphouse = LLAMPHouse(
         agents=[orchestrator, researcher, writer],
         data_store=InMemoryDataStore(),
-        adapters=[A2AAdapter()],
+        adapters=[A2AAdapter(), CompassAdapter()],
         worker=AsyncWorker(time_out=180.0),
+        tracing_store=InMemoryTracingStore(),
     )
 
     llamphouse.ignite(host="127.0.0.1", port=8000)

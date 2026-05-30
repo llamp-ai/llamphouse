@@ -30,6 +30,7 @@ load_dotenv(override=True)
 
 from llamphouse.core import LLAMPHouse, Agent
 from llamphouse.core.adapters.a2a import A2AAdapter
+from llamphouse.core.adapters.compass import CompassAdapter
 from llamphouse.core.context import Context
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse.core.streaming.adapters.registry import get_adapter
@@ -125,7 +126,7 @@ def main():
 
     llamphouse = LLAMPHouse(
         agents=[agent],
-        adapters=[A2AAdapter()],
+        adapters=[A2AAdapter(), CompassAdapter()],
         data_store=InMemoryDataStore(),
     )
 

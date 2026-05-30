@@ -2,8 +2,9 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { compass, formatTs, shortId, statusBadge, durationMs } from '../api/client'
-import type { Run, RunStep, Span, FlowData, FlowNode, FlowEdge } from '../api/client'
+import type { Run, RunStep, Span, FlowData, FlowNode, FlowEdge, Message } from '../api/client'
 import SpanTree from '../components/SpanTree.vue'
+import MessageBubble from '../components/MessageBubble.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,9 +16,10 @@ const steps = ref<RunStep[]>([])
 const config = ref<any>(null)
 const spans = ref<Span[]>([])
 const flow = ref<FlowData>({ nodes: [], edges: [], has_flow: false })
+const messages = ref<Message[]>([])
 const loading = ref(true)
 const error = ref('')
-const tab = ref<'details' | 'steps' | 'config' | 'trace' | 'flow'>('details')
+const tab = ref<'io' | 'details' | 'steps' | 'config' | 'trace' | 'flow'>('io')
 
 async function fetchData() {
   loading.value = true
@@ -27,22 +29,25 @@ async function fetchData() {
   config.value = null
   spans.value = []
   flow.value = { nodes: [], edges: [], has_flow: false }
+  messages.value = []
 
   try {
     const runs = await compass.listRuns(threadId.value)
     run.value = runs.find((r) => r.id === runId.value) || null
 
-    const [s, c, t, f] = await Promise.allSettled([
+    const [s, c, t, f, m] = await Promise.allSettled([
       compass.listRunSteps(threadId.value, runId.value),
       compass.getRunConfig(threadId.value, runId.value),
       compass.getRunTrace(runId.value),
       compass.getRunFlow(runId.value),
+      compass.listMessages(threadId.value),
     ])
 
     if (s.status === 'fulfilled') steps.value = s.value
     if (c.status === 'fulfilled') config.value = c.value
     if (t.status === 'fulfilled') spans.value = t.value
     if (f.status === 'fulfilled') flow.value = f.value
+    if (m.status === 'fulfilled') messages.value = m.value
   } catch (e: any) {
     error.value = e.message
   } finally {
@@ -80,7 +85,37 @@ const runMeta = computed(() => {
   ]
 })
 
-/* ── Swim-lane flow layout ─────────────────────────────── */
+/* ── I/O message split ─────────────────────────────────── */
+
+// Messages whose run_id matches this run → output
+const outputMessages = computed(() =>
+  messages.value.filter((m) => m.run_id === runId.value),
+)
+
+// Earliest created_at of any output message (seconds epoch)
+const firstOutputAt = computed(() =>
+  outputMessages.value.length
+    ? Math.min(...outputMessages.value.map((m) => m.created_at))
+    : Infinity,
+)
+
+// Last user/system message strictly before the first output → the prompt
+const inputMessage = computed<Message | null>(() => {
+  const candidates = messages.value.filter(
+    (m) => (m.role === 'user' || m.role === 'system') && m.created_at < firstOutputAt.value,
+  )
+  return candidates.length ? candidates[candidates.length - 1] : null
+})
+
+// Everything before the input message → context/history
+const contextMessages = computed(() => {
+  const cutoff = inputMessage.value?.created_at ?? firstOutputAt.value
+  return messages.value.filter(
+    (m) => m.created_at < cutoff && m.run_id !== runId.value,
+  )
+})
+
+const hasIo = computed(() => outputMessages.value.length > 0 || inputMessage.value !== null)
 
 const LANE_W = 200
 const LANE_GAP = 60
@@ -339,11 +374,65 @@ function navigateToRun(node: LayoutNode) {
 
     <template v-else>
       <div class="tabs">
+        <div class="tab" :class="{ 'tab--active': tab === 'io' }" @click="tab = 'io'">Input / Output</div>
         <div class="tab" :class="{ 'tab--active': tab === 'details' }" @click="tab = 'details'">Details</div>
         <div class="tab" :class="{ 'tab--active': tab === 'steps' }" @click="tab = 'steps'">Steps ({{ steps.length }})</div>
         <div v-if="flow.has_flow" class="tab" :class="{ 'tab--active': tab === 'flow' }" @click="tab = 'flow'">Flow</div>
         <div class="tab" :class="{ 'tab--active': tab === 'config' }" @click="tab = 'config'">Config</div>
         <div class="tab" :class="{ 'tab--active': tab === 'trace' }" @click="tab = 'trace'">Trace ({{ spans.length }})</div>
+      </div>
+
+      <!-- I/O tab -->
+      <div v-if="tab === 'io'">
+        <div v-if="!hasIo" class="empty-state">
+          <div class="empty-state__icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+          <div class="empty-state__title">No messages for this run</div>
+        </div>
+        <div v-else class="io-layout">
+
+          <!-- Context (earlier messages) -->
+          <template v-if="contextMessages.length">
+            <div class="io-section-label io-section-label--context">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+              Context ({{ contextMessages.length }} earlier message{{ contextMessages.length !== 1 ? 's' : '' }})
+            </div>
+            <div class="io-context">
+              <MessageBubble
+                v-for="msg in contextMessages"
+                :key="msg.id"
+                :message="msg"
+                :thread-id="threadId"
+                class="io-context__bubble"
+              />
+            </div>
+          </template>
+
+          <!-- Input -->
+          <template v-if="inputMessage">
+            <div class="io-section-label io-section-label--input">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              Input
+            </div>
+            <MessageBubble :message="inputMessage" :thread-id="threadId" />
+          </template>
+
+          <!-- Output -->
+          <template v-if="outputMessages.length">
+            <div class="io-section-label io-section-label--output">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="5 12 12 5 19 12"/><line x1="12" y1="19" x2="12" y2="5"/></svg>
+              Output
+            </div>
+            <div class="io-output">
+              <MessageBubble
+                v-for="msg in outputMessages"
+                :key="msg.id"
+                :message="msg"
+                :thread-id="threadId"
+              />
+            </div>
+          </template>
+
+        </div>
       </div>
 
       <!-- Details tab -->
@@ -583,6 +672,58 @@ function navigateToRun(node: LayoutNode) {
 </template>
 
 <style scoped>
+/* ── I/O layout ─────────────────────────────────────────── */
+.io-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.io-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 2px;
+  margin-top: 8px;
+}
+
+.io-section-label--context {
+  color: var(--text-muted);
+}
+
+.io-section-label--input {
+  color: var(--accent);
+}
+
+.io-section-label--output {
+  color: var(--success);
+}
+
+.io-context {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--border);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  opacity: 0.65;
+}
+
+.io-context__bubble {
+  font-size: 0.8rem;
+}
+
+.io-output {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── Details grid ──────────────────────────────────────── */
 .detail-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

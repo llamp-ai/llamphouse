@@ -23,6 +23,13 @@ from .core.config_store import BaseConfigStore, InMemoryConfigStore
 from .core.queue import BaseQueue, InMemoryQueue, RedisQueue
 from .core.workers import AsyncWorker, DistributedWorker
 from .core.types.message import TextPart, ImagePart, FilePart, DataPart
+from .core.triggers import BaseTrigger, TriggerInfo, WebhookTrigger
+from .core.tracing import (
+    BaseTracingStore,
+    InMemoryTracingStore,
+    PostgresTracingStore,
+    ClickHouseTracingStore,
+)
 
 __all__ = [
     "LLAMPHouse",
@@ -52,4 +59,11 @@ __all__ = [
     "ImagePart",
     "FilePart",
     "DataPart",
+    "BaseTracingStore",
+    "InMemoryTracingStore",
+    "PostgresTracingStore",
+    "ClickHouseTracingStore",
+    "BaseTrigger",
+    "TriggerInfo",
+    "WebhookTrigger",
 ]

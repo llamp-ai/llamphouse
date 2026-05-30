@@ -4,11 +4,12 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 
 const navItems = [
-  { to: '/',           icon: 'nav-overview',    label: 'Overview' },
-  { to: '/threads',    icon: 'nav-threads',     label: 'Threads' },
-  { to: '/assistants', icon: 'nav-assistants',  label: 'Agents' },
-  { to: '/traces',     icon: 'nav-traces',      label: 'Traces' },
-  { to: '/compare',    icon: 'nav-compare',     label: 'Compare' },
+  { to: '/',            icon: 'nav-overview',    label: 'Overview' },
+  { to: '/assistants',  icon: 'nav-assistants',  label: 'Agents' },
+  { to: '/threads',     icon: 'nav-threads',     label: 'Threads' },
+  { to: '/runs',        icon: 'nav-runs',        label: 'Runs' },
+  { to: '/compare',     icon: 'nav-compare',     label: 'Compare' },
+  { to: '/dashboards',  icon: 'nav-dashboards',  label: 'Dashboards' },
 ]
 
 function isActive(to: string): boolean {
@@ -38,8 +39,9 @@ function isActive(to: string): boolean {
           <svg v-if="item.icon === 'nav-overview'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
           <svg v-else-if="item.icon === 'nav-threads'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           <svg v-else-if="item.icon === 'nav-assistants'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/></svg>
-          <svg v-else-if="item.icon === 'nav-traces'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <svg v-else-if="item.icon === 'nav-runs'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>
           <svg v-else-if="item.icon === 'nav-compare'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          <svg v-else-if="item.icon === 'nav-dashboards'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="9" rx="1"/><rect x="13" y="3" width="9" height="9" rx="1"/><rect x="2" y="14" width="9" height="7" rx="1"/><rect x="13" y="14" width="9" height="7" rx="1"/></svg>
         </span>
         <span>{{ item.label }}</span>
       </router-link>
