@@ -387,6 +387,22 @@ ______[===]______{_R}"""
         for agent in self.agents:
             llamphouse_logger.info(f"    {_DIM}▸{_R} {agent.id}")
 
+        # ── Triggers ───────────────────────────────────────────────────────
+        _trigger_lines: list[str] = []
+        for agent in self.agents:
+            for trigger in getattr(agent, "triggers", []):
+                if isinstance(trigger, WebhookTrigger):
+                    path = "/" + trigger.path
+                    label = type(trigger).__name__
+                    _trigger_lines.append(
+                        f"    {_DIM}▸{_R} {label:<28} {_CY}{path}{_R} "
+                        f"{_DIM}→ {agent.id}{_R}"
+                    )
+        if _trigger_lines:
+            llamphouse_logger.info(f"  {_DIM}Triggers{_R}")
+            for line in _trigger_lines:
+                llamphouse_logger.info(line)
+
         # ── Infrastructure ─────────────────────────────────────────────────
         llamphouse_logger.info(f"  {_DIM}Infrastructure{_R}")
         llamphouse_logger.info(
@@ -446,3 +462,49 @@ ______[===]______{_R}"""
             for trigger in getattr(agent, "triggers", []):
                 if isinstance(trigger, WebhookTrigger):
                     self.fastapi.include_router(trigger.get_router(agent.id))
+
+        self._warn_on_route_conflicts()
+
+    def _warn_on_route_conflicts(self):
+        """Warn when webhook trigger paths collide with each other or fall
+        under a non-root adapter prefix.  Triggers are registered without a
+        prefix, so a path like ``/v1/foo`` would shadow / be shadowed by an
+        adapter mounted at ``/v1``.  Adapters at root (``/`` or empty) are
+        skipped because they own specific paths, not a sub-tree — any
+        actual collision there would only be visible by inspecting the
+        adapter's individual routes, which this check does not do."""
+        adapter_prefixes = []
+        for a in self.adapters:
+            prefix = (a.prefix or "").rstrip("/")
+            if prefix:  # skip root / empty prefixes
+                adapter_prefixes.append((type(a).__name__, prefix))
+
+        seen: dict[str, str] = {}  # path -> owner description
+
+        for agent in self.agents:
+            for trigger in getattr(agent, "triggers", []):
+                if not isinstance(trigger, WebhookTrigger):
+                    continue
+                path = "/" + trigger.path
+                owner = f"{type(trigger).__name__} on agent '{agent.id}'"
+
+                # Duplicate trigger paths across agents.
+                if path in seen:
+                    llamphouse_logger.warning(
+                        f"Route conflict: {owner} declares '{path}', but "
+                        f"{seen[path]} already declared the same path. "
+                        f"The second registration will be ignored by FastAPI."
+                    )
+                else:
+                    seen[path] = owner
+
+                # Trigger path lives under (or equals) an adapter prefix.
+                for adapter_name, prefix in adapter_prefixes:
+                    if path == prefix or path.startswith(prefix + "/"):
+                        llamphouse_logger.warning(
+                            f"Route conflict: {owner} at '{path}' falls under "
+                            f"{adapter_name}'s prefix '{prefix}'. The trigger "
+                            f"may shadow or be shadowed by adapter routes — "
+                            f"consider giving the trigger its own top-level "
+                            f"path (e.g. '/triggers/...')."
+                        )
