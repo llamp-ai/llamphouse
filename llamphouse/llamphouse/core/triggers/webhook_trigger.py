@@ -94,10 +94,14 @@ class WebhookTrigger(BaseTrigger):
             )
 
             db = state.data_store
+            config_store = getattr(state, "config_store", None)
+            config_values = config_store.resolve_config(agent_id) if config_store else None
+
             thread = await db.insert_thread(CreateThreadRequest())
             run_request = RunCreateRequest(
                 assistant_id=agent_id,
                 metadata={"__trigger__": trigger_info.to_dict()},
+                config_values=config_values or None,
             )
             run = await db.insert_run(thread.id, run_request, assistant)
 

@@ -187,9 +187,9 @@ const availableToAdd = computed(() => {
 // Schema reference shown in the collapsible panel
 const schemaInfo = [
   { name: 'threads',   cols: ['id', 'created_at', 'metadata'] },
-  { name: 'messages',  cols: ['id', 'thread_id', 'role', 'status', 'assistant_id', 'run_id', 'created_at', 'completed_at', 'text'] },
-  { name: 'runs',      cols: ['id', 'thread_id', 'assistant_id', 'status', 'model', 'created_at', 'started_at', 'completed_at', 'failed_at', 'prompt_tokens', 'completion_tokens', 'total_tokens'] },
-  { name: 'run_steps', cols: ['id', 'run_id', 'thread_id', 'assistant_id', 'type', 'status', 'created_at', 'completed_at', 'prompt_tokens', 'completion_tokens', 'total_tokens'] },
+  { name: 'messages',  cols: ['id', 'thread_id', 'role', 'status', 'assistant_id', 'run_id', 'created_at', 'completed_at', 'text', 'metadata'] },
+  { name: 'runs',      cols: ['id', 'thread_id', 'assistant_id', 'status', 'model', 'created_at', 'started_at', 'completed_at', 'failed_at', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'metadata'] },
+  { name: 'run_steps', cols: ['id', 'run_id', 'thread_id', 'assistant_id', 'type', 'status', 'created_at', 'completed_at', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'metadata'] },
 ]
 </script>
 
@@ -279,6 +279,11 @@ const schemaInfo = [
             <div class="schema-table__cols">
               <span class="schema-col" v-for="col in t.cols" :key="col">{{ col }}</span>
             </div>
+          </div>
+          <div class="schema-hint">
+            <strong>JSON metadata fields:</strong>
+            <code>json_extract(metadata, '$.key')</code>
+            — e.g. <code>json_extract(metadata, '$.user_id')</code>
           </div>
         </div>
       </details>
@@ -540,6 +545,25 @@ details[open] .schema-chevron { transform: rotate(180deg); }
   font-size: 0.71rem;
   white-space: nowrap;
   cursor: default;
+}
+
+.schema-hint {
+  grid-column: 1 / -1;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.schema-hint code {
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 0.82em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  padding: 1px 5px;
+  border-radius: 4px;
 }
 
 .charts-grid {

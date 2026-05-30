@@ -15,13 +15,24 @@ class BaseConfigStore(ABC):
         self._assistants = self._agents
 
     def init(self, agents: list["Agent"]) -> None:
-        """Seed the store with default config values from each agent's config."""
+        """Seed the store with default config values from each agent's config.
+
+        For each agent the defaults are built in two steps:
+        1. Class-level ``config`` param definitions (``BaseParam`` instances).
+        2. Per-deployment overrides from ``agent.settings`` (populated by the
+           YAML loader from the ``config:`` block) — these win over the
+           class defaults, allowing the same agent class to be deployed with
+           different runtime personalities without changing source code.
+        """
         self._agents = agents
         self._assistants = agents
         for agent in agents:
             params: list["BaseParam"] = getattr(agent, "config", [])
-            if params:
-                defaults = {p.key: p.default_value() for p in params}
+            defaults = {p.key: p.default_value() for p in params}
+            # Apply YAML-supplied per-deployment overrides on top
+            yaml_overrides: dict = getattr(agent, "settings", {}) or {}
+            defaults.update(yaml_overrides)
+            if defaults:
                 self._store_defaults(agent.id, defaults)
 
     @abstractmethod

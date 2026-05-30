@@ -105,12 +105,21 @@ def _serialize_list(items) -> list[dict]:
 # ── UI ───────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-async def compass_ui():
+async def compass_ui(req: Request):
     """Serve the Compass SPA (or placeholder)."""
     html_path = STATIC_DIR / "index.html"
     if not html_path.exists():
         return HTMLResponse("<h1>Compass UI not found</h1>", status_code=500)
-    return HTMLResponse(html_path.read_text())
+
+    # Derive the actual mount prefix from the request URL so that the
+    # <base href="..."> tag is correct for any configured prefix.
+    # req.url.path is the full path (e.g. "/dashboard/"), and this route
+    # is registered as GET "/" relative to the sub-router.
+    prefix = req.url.path.rstrip("/") or "/compass"
+
+    html = html_path.read_text()
+    html = re.sub(r'<base\s+href="[^"]*"', f'<base href="{prefix}/"', html, count=1)
+    return HTMLResponse(html)
 
 
 # ── Overview / stats ─────────────────────────────────────────────────────────
@@ -663,7 +672,7 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
     conn.execute(
         "CREATE TABLE messages "
         "(id TEXT, thread_id TEXT, role TEXT, status TEXT, "
-        " assistant_id TEXT, run_id TEXT, created_at REAL, completed_at REAL, text TEXT)"
+        " assistant_id TEXT, run_id TEXT, created_at REAL, completed_at REAL, text TEXT, metadata TEXT)"
     )
     for msgs in (db._messages or {}).values():
         for m in msgs:
@@ -673,9 +682,10 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
             except Exception:
                 msg_text = None
             conn.execute(
-                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (m.id, m.thread_id, m.role, m.status,
-                 m.assistant_id, m.run_id, _epoch(m.created_at), _epoch(m.completed_at), msg_text),
+                 m.assistant_id, m.run_id, _epoch(m.created_at), _epoch(m.completed_at),
+                 msg_text, json.dumps(m.metadata) if getattr(m, 'metadata', None) else None),
             )
 
     # runs
@@ -683,7 +693,7 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
         "CREATE TABLE runs "
         "(id TEXT, thread_id TEXT, assistant_id TEXT, status TEXT, model TEXT, "
         " created_at REAL, started_at REAL, completed_at REAL, failed_at REAL, "
-        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER)"
+        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, metadata TEXT)"
     )
     for runs_list in (db._runs or {}).values():
         for r in runs_list:
@@ -692,10 +702,11 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
             ct = getattr(u, "completion_tokens", None) or (u.get("completion_tokens") if isinstance(u, dict) else None)
             tt = getattr(u, "total_tokens", None) or (u.get("total_tokens") if isinstance(u, dict) else None)
             conn.execute(
-                "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (r.id, r.thread_id, r.assistant_id, r.status, r.model,
                  _epoch(r.created_at), _epoch(r.started_at),
-                 _epoch(r.completed_at), _epoch(r.failed_at), pt, ct, tt),
+                 _epoch(r.completed_at), _epoch(r.failed_at), pt, ct, tt,
+                 json.dumps(r.metadata) if getattr(r, 'metadata', None) else None),
             )
 
     # run_steps
@@ -703,7 +714,7 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
         "CREATE TABLE run_steps "
         "(id TEXT, run_id TEXT, thread_id TEXT, assistant_id TEXT, "
         " type TEXT, status TEXT, created_at REAL, completed_at REAL, "
-        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER)"
+        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, metadata TEXT)"
     )
     for steps_list in (db._run_steps or {}).values():
         for s in steps_list:
@@ -712,10 +723,11 @@ def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
             ct = getattr(u, "completion_tokens", None) or (u.get("completion_tokens") if isinstance(u, dict) else None)
             tt = getattr(u, "total_tokens", None) or (u.get("total_tokens") if isinstance(u, dict) else None)
             conn.execute(
-                "INSERT INTO run_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO run_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (s.id, s.run_id, s.thread_id, s.assistant_id,
                  s.type, s.status, _epoch(s.created_at), _epoch(s.completed_at),
-                 pt, ct, tt),
+                 pt, ct, tt,
+                 json.dumps(s.metadata) if getattr(s, 'metadata', None) else None),
             )
 
     conn.commit()
@@ -849,7 +861,7 @@ async def run_dashboard_query(req: Request, body: QueryRequest):
 
 # ── SPA catch-all (must be last) ─────────────────────────────────────────────
 @router.get("/{full_path:path}")
-async def compass_spa_fallback(full_path: str):
+async def compass_spa_fallback(full_path: str, req: Request):
     """Serve static assets with correct MIME types, or fall back to
     index.html for Vue Router history-mode routes."""
     if full_path.startswith("api/"):
@@ -865,4 +877,10 @@ async def compass_spa_fallback(full_path: str):
     html_path = STATIC_DIR / "index.html"
     if not html_path.exists():
         return HTMLResponse("<h1>Compass UI not found</h1>", status_code=500)
-    return HTMLResponse(html_path.read_text())
+    # Derive prefix: strip the sub-path portion from the full request URL.
+    # e.g. req.url.path="/dashboard/threads", full_path="threads" → "/dashboard"
+    prefix = req.url.path[:-(len(full_path) + 1)] if full_path else req.url.path.rstrip("/")
+    prefix = prefix or "/compass"
+    html = html_path.read_text()
+    html = re.sub(r'<base\s+href="[^"]*"', f'<base href="{prefix}/"', html, count=1)
+    return HTMLResponse(html)

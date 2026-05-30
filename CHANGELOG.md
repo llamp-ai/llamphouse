@@ -11,7 +11,13 @@
 - **Table preferences** — `useTablePrefs` composable for persisting column/sort/filter state in Compass data tables.
 - **WebhookTrigger example** (`examples/11_WebhookTrigger`) — end-to-end demonstration of triggering an agent run from an external HTTP POST.
 - **PlannerAgent example** (`examples/12_PlannerAgent`) — multi-node planner/executor/synthesizer agent with tracing wired in.
-- Database migration `timestamps_integer_to_float` for higher-precision timestamps.
+- **`llamphouse.yaml` config** — declarative server config loaded by `llamphouse.cli.config.loader` and validated by Pydantic models in `llamphouse.cli.config.schema`. CLI now reads it on startup.
+- **CLI reorganisation** — moved entrypoints into the `llamphouse.cli` package.
+- **Internal span exporter from tracing store** — tracing setup can wire the configured tracing store as a span exporter without external OTLP plumbing.
+- **MkDocs landing page hook** — `hooks/landing_page.py` generates a custom `site/index.html` after each build.
+- **Examples sync hook** — `hooks/sync_examples.py` keeps `docs/examples.md` in sync with the `examples/` directory, including a structured table and progression guide.
+- **LLAMPHouseYAML example** (`examples/13_LLAMPHouseYAML`) — declarative server setup driven by `llamphouse.yaml`.
+- Database migration `timestamps_integer_to_float` — moves timestamp columns from `Integer` to `Float` for millisecond precision.
 
 ### Changed
 
@@ -19,7 +25,16 @@
 - `SpanTree` truncation logic improved for cleaner display of long spans.
 - Expanded `DataTable`, `MessageBubble`, `RunDetailView`, `ThreadDetailView`, and `ThreadsView` with richer rendering and interaction.
 - `ConfigStore` example now ships with sample `compass_charts.json` and `compass_dashboards.json`.
-- `in_memory_store` and `postgres_store` updated to align with new tracing/signal flows and model changes.
+- `in_memory_store` and `postgres_store` updated to align with new tracing/trigger flows and model changes.
+- Logging during startup now surfaces more detailed information about the application state.
+
+### Deprecated
+
+- `AssistantAPIAdapter` — superseded by `A2AAdapter`. Using it emits a `DeprecationWarning`.
+
+### Removed
+
+- `DashboardAdapter` and its API routes / static files. Dashboard functionality is now served exclusively via the Compass adapter.
 
 ## [1.2.3] - 11/05/2026
 

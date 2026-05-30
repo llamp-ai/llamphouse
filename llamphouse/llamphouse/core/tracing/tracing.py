@@ -15,12 +15,32 @@ def _env_bool(name:str, default: bool = False) -> bool:
         return default
     return val.strip().lower() in {"1", "true", "yes", "on"}
 
-def setup_tracing() -> None:
-    """Initialize OpenTelemetry tracing once. No-op when disabled."""
+def setup_tracing(tracing_store=None) -> None:
+    """Initialize OpenTelemetry tracing once. No-op when disabled.
+
+    Parameters
+    ----------
+    tracing_store : BaseTracingStore | None
+        When provided, the store's ``get_span_exporter()`` is registered
+        as the internal span processor so traces are captured locally
+        without requiring an external collector.  An OTLP exporter is
+        still added on top when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set.
+    """
     global _TRACING_INITIALIZED, _TRACING_DISABLED
+
+    # If the provider is already set up but we now have a store, attach its
+    # exporter to the existing provider (the import-time call has no store).
     if _TRACING_INITIALIZED:
+        if _TRACING_DISABLED or tracing_store is None:
+            return
+        _store_exporter = tracing_store.get_span_exporter()
+        if _store_exporter is not None:
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            provider = trace.get_tracer_provider()
+            if hasattr(provider, "add_span_processor"):
+                provider.add_span_processor(BatchSpanProcessor(_store_exporter))
         return
-    
+
     if not _env_bool("LLAMPHOUSE_TRACING_ENABLED", True):
         _TRACING_DISABLED = True
         _TRACING_INITIALIZED = True
@@ -36,28 +56,36 @@ def setup_tracing() -> None:
     provider = TracerProvider(resource=resource)
     trace.set_tracer_provider(provider)
 
+    # ── Internal store exporter (first, so it's always registered) ──────
+    if tracing_store is not None:
+        _store_exporter = tracing_store.get_span_exporter()
+        if _store_exporter is not None:
+            provider.add_span_processor(BatchSpanProcessor(_store_exporter))
+
+    # ── External exporters ───────────────────────────────────────────────
     exporter_kind = os.getenv("OTEL_TRACES_EXPORTER", "otlp")
     if exporter_kind == "console":
         exporter = ConsoleSpanExporter()
         provider.add_span_processor(BatchSpanProcessor(exporter))
     else:
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+        if endpoint:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-        headers_raw = (
-            os.getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
-            or os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
-            or ""
-        )
-        headers = parse_env_headers(headers_raw) if headers_raw else None
+            headers_raw = (
+                os.getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+                or os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
+                or ""
+            )
+            headers = parse_env_headers(headers_raw) if headers_raw else None
 
-        # OTLPSpanExporter treats `endpoint` as the full URL.
-        # Append /v1/traces when the caller only supplied the base URL.
-        if endpoint and not endpoint.rstrip("/").endswith("/v1/traces"):
-            endpoint = endpoint.rstrip("/") + "/v1/traces"
+            # OTLPSpanExporter treats `endpoint` as the full URL.
+            # Append /v1/traces when the caller only supplied the base URL.
+            if not endpoint.rstrip("/").endswith("/v1/traces"):
+                endpoint = endpoint.rstrip("/") + "/v1/traces"
 
-        exporter = OTLPSpanExporter(endpoint=endpoint or None, headers=headers)
-        provider.add_span_processor(BatchSpanProcessor(exporter))
+            exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
+            provider.add_span_processor(BatchSpanProcessor(exporter))
 
     _TRACING_INITIALIZED = True
 

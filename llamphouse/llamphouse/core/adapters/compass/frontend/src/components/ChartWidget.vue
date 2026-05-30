@@ -47,13 +47,14 @@ const SQL_KEYWORDS = [
   'LIKE', 'BETWEEN', 'DISTINCT', 'LIMIT', 'OFFSET', 'WITH',
   'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'ROUND', 'CAST', 'COALESCE',
   'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'ASC', 'DESC',
+  'json_extract', 'json_object', 'json_array', 'json_each', 'json_type',
 ]
 
 const SCHEMA_TABLES: Record<string, string[]> = {
   threads:   ['id', 'created_at', 'metadata'],
-  messages:  ['id', 'thread_id', 'role', 'status', 'assistant_id', 'run_id', 'created_at', 'completed_at', 'text'],
-  runs:      ['id', 'thread_id', 'assistant_id', 'status', 'model', 'created_at', 'started_at', 'completed_at', 'failed_at', 'prompt_tokens', 'completion_tokens', 'total_tokens'],
-  run_steps: ['id', 'run_id', 'thread_id', 'assistant_id', 'type', 'status', 'created_at', 'completed_at', 'prompt_tokens', 'completion_tokens', 'total_tokens'],
+  messages:  ['id', 'thread_id', 'role', 'status', 'assistant_id', 'run_id', 'created_at', 'completed_at', 'text', 'metadata'],
+  runs:      ['id', 'thread_id', 'assistant_id', 'status', 'model', 'created_at', 'started_at', 'completed_at', 'failed_at', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'metadata'],
+  run_steps: ['id', 'run_id', 'thread_id', 'assistant_id', 'type', 'status', 'created_at', 'completed_at', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'metadata'],
 }
 const ALL_COLUMNS = [...new Set(Object.values(SCHEMA_TABLES).flat())]
 

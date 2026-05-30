@@ -1,0 +1,83 @@
+version: "0.1"
+
+project:
+  name: greeter-platform
+
+# ---------------------
+# Agent definitions
+# ---------------------
+# One reusable agent *type* — the behavior lives in agents.py.
+# We create two agents below with different personalities and greetings.
+
+definitions:
+  - name: greeting-agent
+    entrypoint: agents.py:GreetingAgent
+
+# ---------------------
+# Agents (running instances)
+# ---------------------
+# Two independent instances of the same agent type.
+# Each gets its own id (the agent name) and its own settings dict
+# that the agent reads via self.settings.
+
+agents:
+  - name: greeter-formal
+    definition: greeting-agent
+
+    config:
+      persona: formal butler
+      greeting: "Good day, esteemed visitor. I am at your service."
+
+    execution:
+      timeout: 30
+      concurrency: 5
+
+  - name: greeter-casual
+    definition: greeting-agent
+
+    config:
+      persona: laid-back surfer
+      greeting: "Hey there! What's up, dude?"
+
+    execution:
+      timeout: 30
+      concurrency: 5
+
+# ---------------------
+# Adapters
+# ---------------------
+# Controls which API surface is mounted on the server.
+# Omit this section to use the defaults (assistant_api + compass).
+# Each entry maps an adapter name to its constructor kwargs (can be empty).
+#
+# Available: assistant_api, a2a, compass, dashboard
+
+adapters:
+  - a2a:
+  - compass:
+      prefix: /dashboard   # default; change e.g. to /dashboard
+
+# ---------------------
+# Workers
+# ---------------------
+# Controls how queued runs are executed.
+# Omit to use AsyncWorker with its default timeout.
+#
+# Available: asyncworker
+
+workers:
+  - asyncworker:
+      time_out: 60
+
+# ---------------------
+# Tracing store
+# ---------------------
+# Controls where traces are stored / queried (used by the Compass dashboard).
+# Omit this section to use env-var auto-detection (TRACING_STORE / CLICKHOUSE_URL),
+# which defaults to in_memory when no vars are set.
+#
+# Available: in_memory (no extra config), postgres (requires DATABASE_URL or db_url),
+#            clickhouse (requires CLICKHOUSE_URL or url)
+
+tracing:
+  in_memory:
