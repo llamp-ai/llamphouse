@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] - TBD
+
+### Added
+
+- **Workflow `@step` decorator** — new `llamphouse.core.workflow.step` decorator that wraps a function as a tracked workflow step. Captures input and output, manages step state, integrates with `context`, supports both `async` and sync functions, and accepts an optional `timeout`.
+- **`step` run-step type** — `run_step_type_enum` extended with a `step` value; corresponding Alembic migration ships for both PostgreSQL and SQLite.
+- **WorkflowSteps example** (`examples/14_WorkflowSteps`) — end-to-end demonstration of `@step` usage.
+- `pyyaml` added to project dependencies.
+
+### Changed
+
+- `RunDetailView` in Compass expanded to render workflow steps alongside existing run details.
+- `context.py`, `in_memory_store`, `postgres_store`, and `types/run_step` updated to support the new step type and decorator integration.
+
 ## [1.2.2] - 19/03/2026
 
 - Fix double logging LLAMPHouse events.
