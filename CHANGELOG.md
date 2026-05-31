@@ -28,6 +28,9 @@
 - **WebhookTrigger example** (`examples/11_WebhookTrigger`) — end-to-end demonstration of triggering an agent run from an external HTTP POST.
 - **PlannerAgent example** (`examples/12_PlannerAgent`) — multi-node planner/executor/synthesizer agent with tracing wired in.
 - **LLAMPHouseYAML example** (`examples/13_LLAMPHouseYAML`) — declarative server setup driven by `llamphouse.yaml`.
+- **Workflow `@step` decorator** — new `llamphouse.core.workflow.step` decorator that records step input/output and step lifecycle within a run.
+- **`step` run-step type** — `run_step_type_enum` now includes `step` with matching Alembic migration support.
+- **WorkflowSteps example** (`examples/14_WorkflowSteps`) — end-to-end demonstration of `@step` usage.
 - **WebhookTrigger idempotency / dedupe** — webhook triggers can opt into atomic inbound command idempotency by mapping a request payload field as the idempotency key. Duplicate requests with the same semantic fingerprint replay the original response without inserting another user message or enqueueing another run; the same key with a different fingerprint returns `409 Conflict`.
 - **WebhookTrigger inbound messages and thread selection** — webhook triggers can map a JSON payload field into an inbound user message and can continue an existing thread from a mapped `thread_id`, falling back to a new thread when no thread id is provided.
 - **WebhookTrigger metadata mapping** — webhook request payload fields can be mapped into thread metadata and run metadata. Internal webhook metadata is stored under reserved `__webhook_*` run metadata keys.
@@ -54,6 +57,8 @@
 - `ConfigStore` example now ships with sample `compass_charts.json` and `compass_dashboards.json`.
 - `in_memory_store` and `postgres_store` updated to align with the new tracing/trigger flows and model changes.
 - Logging during startup now surfaces more detailed information about the application state.
+- `RunDetailView` in Compass expanded to render workflow step information alongside existing run details.
+- `context.py`, `in_memory_store`, `postgres_store`, and `types/run_step` updated to support `@step` integration and the new `step` run-step type.
 - **Ignite banner reorganised** into `Adapters` / `Triggers` / `Agents` / `Infrastructure` / `Optional features` sections; webhook trigger routes are listed inline (`▸ WebhookTrigger    /triggers/report → report-agent`).
 - **Route-conflict warnings on boot** — duplicate webhook trigger paths, or trigger paths that fall under a non-root adapter prefix, now log a warning at startup.
 - **Compass flow rendering optimised** — edge geometry (`path`, `midX`, `midY`, colour, dash, marker) is pre-computed once inside `flowLayout` and bound directly in the template instead of being recomputed per-edge per-render. Roughly `O(E·N) → O(E + N)` per re-render.
