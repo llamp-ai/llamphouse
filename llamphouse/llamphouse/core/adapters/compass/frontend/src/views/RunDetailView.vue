@@ -17,12 +17,22 @@ const config = ref<any>(null)
 const spans = ref<Span[]>([])
 const flow = ref<FlowData>({ nodes: [], edges: [], has_flow: false })
 const messages = ref<Message[]>([])
-const loading = ref(true)
+
+// Per-section loading flags so each panel can render its own state as soon
+// as its data arrives, instead of blocking on the slowest request.
+const loading = ref({
+  run:      true,
+  steps:    true,
+  config:   true,
+  spans:    true,
+  flow:     true,
+  messages: true,
+})
 const error = ref('')
 const tab = ref<'io' | 'details' | 'steps' | 'config' | 'trace' | 'flow'>('io')
 
-async function fetchData() {
-  loading.value = true
+function fetchData() {
+  // Reset state before re-fetching (used by the route watcher).
   error.value = ''
   run.value = null
   steps.value = []
@@ -30,29 +40,43 @@ async function fetchData() {
   spans.value = []
   flow.value = { nodes: [], edges: [], has_flow: false }
   messages.value = []
-
-  try {
-    const runs = await compass.listRuns(threadId.value)
-    run.value = runs.find((r) => r.id === runId.value) || null
-
-    const [s, c, t, f, m] = await Promise.allSettled([
-      compass.listRunSteps(threadId.value, runId.value),
-      compass.getRunConfig(threadId.value, runId.value),
-      compass.getRunTrace(runId.value),
-      compass.getRunFlow(runId.value),
-      compass.listMessages(threadId.value),
-    ])
-
-    if (s.status === 'fulfilled') steps.value = s.value
-    if (c.status === 'fulfilled') config.value = c.value
-    if (t.status === 'fulfilled') spans.value = t.value
-    if (f.status === 'fulfilled') flow.value = f.value
-    if (m.status === 'fulfilled') messages.value = m.value
-  } catch (e: any) {
-    error.value = e.message
-  } finally {
-    loading.value = false
+  loading.value = {
+    run: true, steps: true, config: true, spans: true, flow: true, messages: true,
   }
+
+  // Fire all requests in parallel.  Each settles independently and updates
+  // its own slice of state + loading flag — the page chrome renders right
+  // away and each section fills in as its response lands.
+
+  compass.listRuns(threadId.value)
+    .then((runs) => { run.value = runs.find((r) => r.id === runId.value) || null })
+    .catch((e: any) => { error.value = e.message })
+    .finally(() => { loading.value.run = false })
+
+  compass.listRunSteps(threadId.value, runId.value)
+    .then((v) => { steps.value = v })
+    .catch(() => {})
+    .finally(() => { loading.value.steps = false })
+
+  compass.getRunConfig(threadId.value, runId.value)
+    .then((v) => { config.value = v })
+    .catch(() => {})
+    .finally(() => { loading.value.config = false })
+
+  compass.getRunTrace(runId.value)
+    .then((v) => { spans.value = v })
+    .catch(() => {})
+    .finally(() => { loading.value.spans = false })
+
+  compass.getRunFlow(runId.value)
+    .then((v) => { flow.value = v })
+    .catch(() => {})
+    .finally(() => { loading.value.flow = false })
+
+  compass.listMessages(threadId.value)
+    .then((v) => { messages.value = v })
+    .catch(() => {})
+    .finally(() => { loading.value.messages = false })
 }
 
 onMounted(fetchData)
@@ -87,10 +111,26 @@ const runMeta = computed(() => {
 
 /* ── I/O message split ─────────────────────────────────── */
 
-// Messages whose run_id matches this run → output
-const outputMessages = computed(() =>
-  messages.value.filter((m) => m.run_id === runId.value),
-)
+// A message qualifies as "output" of this run if either:
+//   (a) its run_id explicitly matches, OR
+//   (b) it has no run_id stamped AND it was created during this run's
+//       lifespan (started_at .. completed_at/failed_at) and it's not from
+//       the user/system.
+// This handles legacy / agent-inserted messages that weren't tagged with
+// run_id by `context.insert_message`.
+function isOutputMessage(m: Message): boolean {
+  if (m.run_id && m.run_id === runId.value) return true
+  if (m.run_id) return false   // belongs to a different run
+
+  if (!run.value) return false
+  if (m.role === 'user' || m.role === 'system') return false
+  const start = run.value.started_at ?? run.value.created_at
+  const end   = run.value.completed_at ?? run.value.failed_at ?? Infinity
+  if (!start) return false
+  return m.created_at >= start && m.created_at <= end
+}
+
+const outputMessages = computed(() => messages.value.filter(isOutputMessage))
 
 // Earliest created_at of any output message (seconds epoch)
 const firstOutputAt = computed(() =>
@@ -111,7 +151,7 @@ const inputMessage = computed<Message | null>(() => {
 const contextMessages = computed(() => {
   const cutoff = inputMessage.value?.created_at ?? firstOutputAt.value
   return messages.value.filter(
-    (m) => m.created_at < cutoff && m.run_id !== runId.value,
+    (m) => m.created_at < cutoff && !isOutputMessage(m),
   )
 })
 
@@ -151,12 +191,24 @@ interface ThreadGroup {
   threadId: string
 }
 
+interface LayoutEdge extends FlowEdge {
+  /** SVG path `d` attribute, pre-computed once during layout. */
+  path: string
+  /** Midpoint for the sequence badge. */
+  midX: number
+  midY: number
+  /** Pre-computed styling so the template avoids function calls. */
+  color: string
+  dash: string
+  markerEnd: string
+}
+
 const flowLayout = computed(() => {
   const { nodes, edges, has_flow } = flow.value
   if (!nodes.length || !has_flow) {
     return {
       nodes: [] as LayoutNode[],
-      edges: [] as FlowEdge[],
+      edges: [] as LayoutEdge[],
       lanes: [] as Lane[],
       spines: [] as Spine[],
       threadGroups: [] as ThreadGroup[],
@@ -270,12 +322,54 @@ const flowLayout = computed(() => {
   const width = PAD * 2 + agentOrder.length * LANE_W + (agentOrder.length - 1) * LANE_GAP
   const height = PAD + HEADER_H + (maxRow + 1) * ROW_H + PAD
 
-  return { nodes: layoutNodes, edges: sorted, lanes, spines, threadGroups, width, height }
-})
+  // ── Pre-compute edge geometry & styling ────────────────────────────────────
+  // This is the hot path for big graphs: doing it here (memoised by the
+  // computed) instead of in template-time functions turns rendering into
+  // pure data binding — O(E) once, not O(E·N) per render.
+  const layoutEdges: LayoutEdge[] = []
+  for (const e of sorted) {
+    const src = layoutNodeMap.get(e.source)
+    const tgt = layoutNodeMap.get(e.target)
+    if (!src || !tgt) continue
 
-function flowNodeById(id: string): LayoutNode | undefined {
-  return flowLayout.value.nodes.find(n => n.id === id)
-}
+    const spineX = src.x + NODE_W / 2
+    const tgtCY = tgt.y + NODE_H / 2
+
+    let path = ''
+    let midX = 0
+    let midY = 0
+
+    if (src.lane === tgt.lane) {
+      // Same lane: straight vertical from parent bottom to child top.
+      path = `M ${spineX} ${src.y + NODE_H} L ${spineX} ${tgt.y}`
+      midX = spineX
+      midY = (src.y + NODE_H + tgt.y) / 2
+    } else if (tgt.lane > src.lane) {
+      // Cross-lane right: horizontal from spine to target's left edge.
+      path = `M ${spineX} ${tgtCY} L ${tgt.x} ${tgtCY}`
+      midX = (spineX + tgt.x) / 2
+      midY = tgtCY
+    } else {
+      // Cross-lane left: horizontal from spine to target's right edge.
+      path = `M ${spineX} ${tgtCY} L ${tgt.x + NODE_W} ${tgtCY}`
+      midX = (spineX + tgt.x + NODE_W) / 2
+      midY = tgtCY
+    }
+
+    const isHandover = e.type === 'handover'
+    layoutEdges.push({
+      ...e,
+      path,
+      midX,
+      midY,
+      color:     isHandover ? '#7c3aed' : '#64748b',
+      dash:      isHandover ? 'none' : '6,4',
+      markerEnd: isHandover ? 'url(#arrow-handover)' : 'url(#arrow-call)',
+    })
+  }
+
+  return { nodes: layoutNodes, edges: layoutEdges, lanes, spines, threadGroups, width, height }
+})
 
 function flowStatusColor(status: string): string {
   switch (status) {
@@ -288,53 +382,10 @@ function flowStatusColor(status: string): string {
   }
 }
 
-function flowEdgeDash(type: string): string {
-  return type === 'handover' ? 'none' : '6,4'
-}
-
-function flowEdgeColor(type: string): string {
-  return type === 'handover' ? '#7c3aed' : '#64748b'
-}
-
 function flowDuration(ms: number | null): string {
   if (ms == null) return ''
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
-}
-
-function flowEdgePath(edge: FlowEdge): string {
-  const src = flowNodeById(edge.source)
-  const tgt = flowNodeById(edge.target)
-  if (!src || !tgt) return ''
-
-  const spineX = src.x + NODE_W / 2
-  const tgtCY = tgt.y + NODE_H / 2
-
-  // Same lane: straight down from parent bottom to child top
-  if (src.lane === tgt.lane) {
-    return `M ${spineX} ${src.y + NODE_H} L ${spineX} ${tgt.y}`
-  }
-
-  // Cross-lane: horizontal from spine to target node edge
-  if (tgt.lane > src.lane) {
-    return `M ${spineX} ${tgtCY} L ${tgt.x} ${tgtCY}`
-  }
-  return `M ${spineX} ${tgtCY} L ${tgt.x + NODE_W} ${tgtCY}`
-}
-
-function flowEdgeMid(edge: FlowEdge): { x: number; y: number } {
-  const src = flowNodeById(edge.source)
-  const tgt = flowNodeById(edge.target)
-  if (!src || !tgt) return { x: 0, y: 0 }
-
-  const spineX = src.x + NODE_W / 2
-
-  if (src.lane === tgt.lane) {
-    return { x: spineX, y: (src.y + NODE_H + tgt.y) / 2 }
-  }
-
-  const tgtEdgeX = tgt.lane > src.lane ? tgt.x : tgt.x + NODE_W
-  return { x: (spineX + tgtEdgeX) / 2, y: tgt.y + NODE_H / 2 }
 }
 
 function navigateToRun(node: LayoutNode) {
@@ -369,22 +420,34 @@ function navigateToRun(node: LayoutNode) {
       </router-link>
     </div>
 
-    <div v-if="loading" class="loading-center"><div class="spinner"></div></div>
-    <div v-else-if="error" class="card" style="color: var(--error)">{{ error }}</div>
+    <div v-if="error" class="card" style="color: var(--error)">{{ error }}</div>
 
     <template v-else>
       <div class="tabs">
-        <div class="tab" :class="{ 'tab--active': tab === 'io' }" @click="tab = 'io'">Input / Output</div>
+        <div class="tab" :class="{ 'tab--active': tab === 'io' }" @click="tab = 'io'">
+          Input / Output
+          <span v-if="loading.messages || loading.run" class="spinner spinner--tiny"></span>
+        </div>
         <div class="tab" :class="{ 'tab--active': tab === 'details' }" @click="tab = 'details'">Details</div>
-        <div class="tab" :class="{ 'tab--active': tab === 'steps' }" @click="tab = 'steps'">Steps ({{ steps.length }})</div>
-        <div v-if="flow.has_flow" class="tab" :class="{ 'tab--active': tab === 'flow' }" @click="tab = 'flow'">Flow</div>
+        <div class="tab" :class="{ 'tab--active': tab === 'steps' }" @click="tab = 'steps'">
+          Steps <span v-if="!loading.steps">({{ steps.length }})</span>
+          <span v-else class="spinner spinner--tiny"></span>
+        </div>
+        <div class="tab" :class="{ 'tab--active': tab === 'flow' }" @click="tab = 'flow'">
+          Flow <span v-if="!loading.flow">({{ flow.nodes.length }})</span>
+          <span v-else class="spinner spinner--tiny"></span>
+        </div>
         <div class="tab" :class="{ 'tab--active': tab === 'config' }" @click="tab = 'config'">Config</div>
-        <div class="tab" :class="{ 'tab--active': tab === 'trace' }" @click="tab = 'trace'">Trace ({{ spans.length }})</div>
+        <div class="tab" :class="{ 'tab--active': tab === 'trace' }" @click="tab = 'trace'">
+          Trace <span v-if="!loading.spans">({{ spans.length }})</span>
+          <span v-else class="spinner spinner--tiny"></span>
+        </div>
       </div>
 
       <!-- I/O tab -->
       <div v-if="tab === 'io'">
-        <div v-if="!hasIo" class="empty-state">
+        <div v-if="loading.messages || loading.run" class="loading-center"><div class="spinner"></div></div>
+        <div v-else-if="!hasIo" class="empty-state">
           <div class="empty-state__icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
           <div class="empty-state__title">No messages for this run</div>
         </div>
@@ -437,6 +500,8 @@ function navigateToRun(node: LayoutNode) {
 
       <!-- Details tab -->
       <div v-if="tab === 'details'" class="card">
+        <div v-if="loading.run" class="loading-center"><div class="spinner"></div></div>
+        <template v-else>
         <div class="detail-grid">
           <div v-for="item in runMeta" :key="item.label" class="detail-row">
             <span class="detail-row__label">{{ item.label }}</span>
@@ -466,11 +531,13 @@ function navigateToRun(node: LayoutNode) {
           <div class="section__title">Skills</div>
           <div class="json-view">{{ JSON.stringify(run.tools, null, 2) }}</div>
         </div>
+        </template>
       </div>
 
       <!-- Steps tab -->
       <div v-if="tab === 'steps'">
-        <div v-if="steps.length === 0" class="empty-state">
+        <div v-if="loading.steps" class="loading-center"><div class="spinner"></div></div>
+        <div v-else-if="steps.length === 0" class="empty-state">
           <div class="empty-state__icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
           <div class="empty-state__title">No run steps</div>
         </div>
@@ -497,7 +564,8 @@ function navigateToRun(node: LayoutNode) {
 
       <!-- Config tab -->
       <div v-if="tab === 'config'" class="card">
-        <template v-if="config">
+        <div v-if="loading.config" class="loading-center"><div class="spinner"></div></div>
+        <template v-else-if="config">
           <div class="json-view">{{ JSON.stringify(config, null, 2) }}</div>
         </template>
         <div v-else class="empty-state">
@@ -508,11 +576,27 @@ function navigateToRun(node: LayoutNode) {
 
       <!-- Trace tab -->
       <div v-if="tab === 'trace'">
-        <SpanTree :spans="spans" />
+        <div v-if="loading.spans" class="loading-center"><div class="spinner"></div></div>
+        <SpanTree v-else :spans="spans" />
       </div>
 
       <!-- Flow tab -->
       <div v-if="tab === 'flow'" class="card flow-card">
+        <div v-if="loading.flow" class="loading-center"><div class="spinner"></div></div>
+        <div v-else-if="!flow.has_flow" class="empty-state">
+          <div class="empty-state__icon">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="6" cy="6" r="3"/>
+              <circle cx="18" cy="18" r="3"/>
+              <line x1="8.5" y1="8.5" x2="15.5" y2="15.5"/>
+            </svg>
+          </div>
+          <div class="empty-state__title">No agent flow for this run</div>
+          <div class="empty-state__subtitle">
+            This run did not call or hand over to other agents.
+          </div>
+        </div>
+        <template v-else>
         <div class="flow-legend">
           <span class="flow-legend__item">
             <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="#64748b" stroke-width="2" stroke-dasharray="6,4"/></svg>
@@ -587,23 +671,24 @@ function navigateToRun(node: LayoutNode) {
               >same thread</text>
             </g>
 
-            <!-- Edges (arrows with sequence badges) -->
+            <!-- Edges (arrows with sequence badges) — geometry pre-computed
+                 in flowLayout, so each binding is O(1). -->
             <g v-for="edge in flowLayout.edges" :key="`edge-${edge.source}-${edge.target}`">
               <path
-                :d="flowEdgePath(edge)"
+                :d="edge.path"
                 fill="none"
-                :stroke="flowEdgeColor(edge.type)"
-                :stroke-dasharray="flowEdgeDash(edge.type)"
+                :stroke="edge.color"
+                :stroke-dasharray="edge.dash"
                 stroke-width="2"
-                :marker-end="edge.type === 'handover' ? 'url(#arrow-handover)' : 'url(#arrow-call)'"
+                :marker-end="edge.markerEnd"
               />
               <!-- Sequence badge -->
               <circle
-                :cx="flowEdgeMid(edge).x" :cy="flowEdgeMid(edge).y"
+                :cx="edge.midX" :cy="edge.midY"
                 r="10" fill="white" stroke="#94a3b8" stroke-width="1"
               />
               <text
-                :x="flowEdgeMid(edge).x" :y="flowEdgeMid(edge).y + 3.5"
+                :x="edge.midX" :y="edge.midY + 3.5"
                 text-anchor="middle" class="flow-seq-label"
               >{{ edge.sequence }}</text>
             </g>
@@ -666,6 +751,7 @@ function navigateToRun(node: LayoutNode) {
             </g>
           </svg>
         </div>
+        </template>
       </div>
     </template>
   </div>

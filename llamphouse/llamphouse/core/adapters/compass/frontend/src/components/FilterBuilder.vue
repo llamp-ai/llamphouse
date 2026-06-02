@@ -1,7 +1,21 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+/**
+ * Reusable filter builder.
+ *
+ * Edits live in a *draft* state.  Nothing is committed to the parent until the
+ * user clicks **Apply** — at which point the current draft is emitted as the
+ * canonical `apply` event.  This lets consumers fetch server-side without
+ * thrashing the network on every keystroke, and gives users a clear "Apply /
+ * Reset" affordance.
+ *
+ * Events:
+ *   - `apply`  — user clicked Apply.  Payload: current conditions.
+ *   - `change` — draft changed (every keystroke).  Useful if a consumer wants
+ *                live-preview client-side filtering; can usually be ignored.
+ */
+import { ref, computed, watch } from 'vue'
 
-// ── Public types ──────────────────────────────────────────────────────────────
+// ── Public types ─────────────────────────────────────────────────────────────
 export interface FieldDef {
   key: string
   label: string
@@ -18,7 +32,7 @@ export interface FilterCondition {
   value2: string   // second bound for 'between' operators
 }
 
-// ── Operator sets ─────────────────────────────────────────────────────────────
+// ── Operator sets ────────────────────────────────────────────────────────────
 const STRING_OPS = [
   { value: 'contains',      label: 'contains' },
   { value: 'not_contains',  label: 'does not contain' },
@@ -52,15 +66,49 @@ const SELECT_OPS = [
   { value: 'not_equals', label: 'is not' },
 ]
 
-// ── Props / emits ─────────────────────────────────────────────────────────────
-const props = defineProps<{ fields: FieldDef[] }>()
-const emit  = defineEmits<{ change: [conditions: FilterCondition[]] }>()
+// ── Props / emits ────────────────────────────────────────────────────────────
+const props = withDefaults(
+  defineProps<{
+    fields: FieldDef[]
+    /** Pre-populate filters on mount / when parent resets. */
+    modelValue?: FilterCondition[]
+    /** Show the row of pre-defined fields as quick-add buttons. */
+    quickAdd?: boolean
+  }>(),
+  { modelValue: () => [], quickAdd: true },
+)
 
-// ── State ─────────────────────────────────────────────────────────────────────
-const conditions = ref<FilterCondition[]>([])
+const emit = defineEmits<{
+  apply:  [conditions: FilterCondition[]]
+  change: [conditions: FilterCondition[]]
+}>()
+
+// ── State: draft (editing) vs applied (last emitted) ─────────────────────────
 let _idCtr = 0
+const newId = () => String(++_idCtr)
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+function clone(list: FilterCondition[]): FilterCondition[] {
+  return list.map((c) => ({ ...c }))
+}
+
+const draft   = ref<FilterCondition[]>(clone(props.modelValue))
+const applied = ref<FilterCondition[]>(clone(props.modelValue))
+
+// Keep draft in sync if the parent overwrites modelValue (e.g. reset).
+watch(
+  () => props.modelValue,
+  (v) => {
+    draft.value   = clone(v)
+    applied.value = clone(v)
+  },
+)
+
+// "Dirty" means draft differs from applied.
+const dirty = computed(
+  () => JSON.stringify(draft.value) !== JSON.stringify(applied.value),
+)
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function fieldFor(key: string) {
   return props.fields.find((f) => f.key === key)
 }
@@ -92,31 +140,32 @@ function isBetween(op: string) {
   return op === 'is_between' || op === 'between'
 }
 
-// ── Mutations ─────────────────────────────────────────────────────────────────
-function push() {
-  emit('change', [...conditions.value])
+function onChange() {
+  emit('change', clone(draft.value))
 }
 
-function add() {
-  const first = props.fields[0]
-  conditions.value.push({
-    id:       String(++_idCtr),
-    field:    first.key,
-    operator: defaultOp(first.key),
+// ── Mutations on the draft ───────────────────────────────────────────────────
+function addCondition(fieldKey?: string) {
+  const f = fieldKey ? fieldFor(fieldKey) : props.fields[0]
+  if (!f) return
+  draft.value.push({
+    id:       newId(),
+    field:    f.key,
+    operator: defaultOp(f.key),
     value:    '',
     value2:   '',
   })
-  push()
+  onChange()
 }
 
-function remove(id: string) {
-  conditions.value = conditions.value.filter((c) => c.id !== id)
-  push()
+function removeCondition(id: string) {
+  draft.value = draft.value.filter((c) => c.id !== id)
+  onChange()
 }
 
-function clearAll() {
-  conditions.value = []
-  push()
+function clearDraft() {
+  draft.value = []
+  onChange()
 }
 
 function onFieldChange(cond: FilterCondition, key: string) {
@@ -124,117 +173,245 @@ function onFieldChange(cond: FilterCondition, key: string) {
   cond.operator = defaultOp(key)
   cond.value    = ''
   cond.value2   = ''
-  push()
+  onChange()
 }
 
 function onOpChange(cond: FilterCondition, op: string) {
   cond.operator = op
-  push()
+  onChange()
+}
+
+// ── Apply / Reset ────────────────────────────────────────────────────────────
+function apply() {
+  applied.value = clone(draft.value)
+  emit('apply', clone(applied.value))
+}
+
+function reset() {
+  draft.value = clone(applied.value)
+  emit('change', clone(draft.value))
+}
+
+function clearAndApply() {
+  draft.value = []
+  apply()
 }
 </script>
 
 <template>
-  <div class="fb-root">
-    <!-- Active conditions -->
-    <div
-      v-for="cond in conditions"
-      :key="cond.id"
-      class="fb-row"
-    >
-      <!-- Field select -->
-      <select
-        class="fb-select"
-        :value="cond.field"
-        @change="(e) => onFieldChange(cond, (e.target as HTMLSelectElement).value)"
-      >
-        <option v-for="f in fields" :key="f.key" :value="f.key">{{ f.label }}</option>
-      </select>
+  <div class="fb">
+    <!-- Header row: title + dirty indicator + actions -->
+    <div class="fb__header">
+      <div class="fb__title">
+        <span class="fb__chip">Filters</span>
+        <span v-if="applied.length > 0" class="fb__count">{{ applied.length }} active</span>
+        <span v-if="dirty" class="fb__pending">● unsaved changes</span>
+      </div>
+      <div class="fb__actions">
+        <button
+          class="fb__btn fb__btn--ghost"
+          :disabled="!dirty"
+          @click="reset"
+          title="Discard unsaved changes"
+        >Reset</button>
+        <button
+          v-if="applied.length > 0"
+          class="fb__btn fb__btn--ghost"
+          @click="clearAndApply"
+          title="Remove all filters"
+        >Clear</button>
+        <button
+          class="fb__btn fb__btn--primary"
+          :disabled="!dirty"
+          @click="apply"
+        >Apply</button>
+      </div>
+    </div>
 
-      <!-- Operator select -->
-      <select
-        class="fb-select"
-        :value="cond.operator"
-        @change="(e) => onOpChange(cond, (e.target as HTMLSelectElement).value)"
-      >
-        <option v-for="op in opsFor(cond.field)" :key="op.value" :value="op.value">
-          {{ op.label }}
-        </option>
-      </select>
-
-      <!-- Value input(s) -->
-      <template v-if="needsValue(cond.operator)">
-        <!-- select-type field: render a <select> for options -->
+    <!-- Active draft conditions -->
+    <div v-if="draft.length > 0" class="fb__rows">
+      <div v-for="cond in draft" :key="cond.id" class="fb__row">
         <select
-          v-if="fieldFor(cond.field)?.type === 'select'"
-          class="fb-select fb-select--value"
-          v-model="cond.value"
-          @change="push"
+          class="fb__select"
+          :value="cond.field"
+          @change="(e) => onFieldChange(cond, (e.target as HTMLSelectElement).value)"
         >
-          <option value="">— choose —</option>
-          <option v-for="opt in fieldFor(cond.field)?.options ?? []" :key="opt" :value="opt">
-            {{ opt }}
+          <option v-for="f in fields" :key="f.key" :value="f.key">{{ f.label }}</option>
+        </select>
+
+        <select
+          class="fb__select"
+          :value="cond.operator"
+          @change="(e) => onOpChange(cond, (e.target as HTMLSelectElement).value)"
+        >
+          <option v-for="op in opsFor(cond.field)" :key="op.value" :value="op.value">
+            {{ op.label }}
           </option>
         </select>
 
-        <!-- other types: text / date / number input -->
-        <template v-else>
-          <input
-            class="fb-input"
-            :type="inputType(cond.field)"
+        <template v-if="needsValue(cond.operator)">
+          <select
+            v-if="fieldFor(cond.field)?.type === 'select'"
+            class="fb__select fb__select--value"
             v-model="cond.value"
-            @input="push"
-            placeholder="value"
-          />
-          <template v-if="isBetween(cond.operator)">
-            <span class="fb-sep">and</span>
+            @change="onChange"
+          >
+            <option value="">— choose —</option>
+            <option v-for="opt in fieldFor(cond.field)?.options ?? []" :key="opt" :value="opt">
+              {{ opt }}
+            </option>
+          </select>
+          <template v-else>
             <input
-              class="fb-input"
+              class="fb__input"
               :type="inputType(cond.field)"
-              v-model="cond.value2"
-              @input="push"
+              v-model="cond.value"
+              @input="onChange"
               placeholder="value"
             />
+            <template v-if="isBetween(cond.operator)">
+              <span class="fb__sep">and</span>
+              <input
+                class="fb__input"
+                :type="inputType(cond.field)"
+                v-model="cond.value2"
+                @input="onChange"
+                placeholder="value"
+              />
+            </template>
           </template>
         </template>
-      </template>
 
-      <!-- Remove button -->
-      <button class="fb-remove" @click="remove(cond.id)" title="Remove filter">✕</button>
+        <button class="fb__icon-btn" @click="removeCondition(cond.id)" title="Remove">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
-    <!-- Toolbar -->
-    <div class="fb-toolbar">
-      <button class="fb-add" @click="add">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="12" y1="5" x2="12" y2="19" />
-          <line x1="5" y1="12" x2="19" y2="12" />
-        </svg>
-        Add filter
-      </button>
-      <button v-if="conditions.length > 0" class="fb-clear" @click="clearAll">
-        Clear all
-      </button>
+    <!-- Quick-add row: pre-defined field chips + custom add -->
+    <div class="fb__toolbar">
+      <template v-if="quickAdd">
+        <span class="fb__toolbar-label">Add:</span>
+        <button
+          v-for="f in fields"
+          :key="f.key"
+          class="fb__chip-btn"
+          @click="addCondition(f.key)"
+          :title="`Filter by ${f.label}`"
+        >
+          + {{ f.label }}
+        </button>
+      </template>
+      <button v-else class="fb__chip-btn" @click="addCondition()">+ Add filter</button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.fb-root {
+.fb {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--bg-elevated, var(--bg-surface));
+  margin-bottom: 1rem;
+}
+
+/* ── Header ─────────────────────────────────────────── */
+.fb__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.fb__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.fb__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.fb__count {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+.fb__pending {
+  color: var(--accent, #4a90e2);
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.fb__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fb__btn {
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
+}
+.fb__btn--primary {
+  background: var(--accent, #4a90e2);
+  color: white;
+  border-color: var(--accent, #4a90e2);
+}
+.fb__btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.fb__btn--ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.fb__btn--ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.fb__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Condition rows ─────────────────────────────────── */
+.fb__rows {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-
-.fb-row {
+.fb__row {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  padding: 6px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
 }
-
-/* ── Controls ──────────────────────────────────────── */
-.fb-select,
-.fb-input {
+.fb__select,
+.fb__input {
   padding: 4px 8px;
   font-size: 0.8rem;
   border: 1px solid var(--border);
@@ -244,82 +421,66 @@ function onOpChange(cond: FilterCondition, op: string) {
   outline: none;
   height: 28px;
 }
-
-.fb-select { cursor: pointer; }
-.fb-select:focus,
-.fb-input:focus  { border-color: var(--accent); }
-
-.fb-select--value { min-width: 130px; }
-
-.fb-input {
-  min-width: 150px;
-}
-.fb-input[type='date'],
-.fb-input[type='number'] { min-width: 140px; }
-
-.fb-input::placeholder { color: var(--text-muted); }
-
-.fb-sep {
+.fb__select { cursor: pointer; }
+.fb__select:focus,
+.fb__input:focus { border-color: var(--accent); }
+.fb__select--value { min-width: 130px; }
+.fb__input { min-width: 150px; }
+.fb__input[type='date'],
+.fb__input[type='number'] { min-width: 140px; }
+.fb__input::placeholder { color: var(--text-muted); }
+.fb__sep {
   font-size: 0.78rem;
   color: var(--text-muted);
   white-space: nowrap;
 }
 
-.fb-remove {
+.fb__icon-btn {
   background: none;
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 0.75rem;
-  padding: 3px 6px;
+  padding: 4px;
   border-radius: var(--radius-sm, 4px);
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
   transition: background 0.1s, color 0.1s;
 }
-.fb-remove:hover {
+.fb__icon-btn:hover {
   background: var(--bg-hover);
   color: var(--error, #e84040);
 }
 
-/* ── Toolbar ───────────────────────────────────────── */
-.fb-toolbar {
+/* ── Quick-add toolbar ──────────────────────────────── */
+.fb__toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
-
-.fb-add {
+.fb__toolbar-label {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+.fb__chip-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   padding: 4px 10px;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 500;
   border: 1px dashed var(--border);
-  border-radius: var(--radius-sm, 4px);
+  border-radius: 999px;
   background: none;
   color: var(--text-secondary);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
-.fb-add:hover {
+.fb__chip-btn:hover {
   background: var(--bg-hover);
   border-color: var(--accent);
   color: var(--accent);
-}
-
-.fb-clear {
-  background: none;
-  border: none;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: var(--radius-sm, 4px);
-  transition: background 0.1s, color 0.1s;
-}
-.fb-clear:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 </style>

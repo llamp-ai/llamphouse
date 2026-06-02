@@ -18,6 +18,19 @@
 - **Examples sync hook** — `hooks/sync_examples.py` keeps `docs/examples.md` in sync with the `examples/` directory, including a structured table and progression guide.
 - **LLAMPHouseYAML example** (`examples/13_LLAMPHouseYAML`) — declarative server setup driven by `llamphouse.yaml`.
 - Database migration `timestamps_integer_to_float` — moves timestamp columns from `Integer` to `Float` for millisecond precision.
+- **Data-store list / count contract extended** — `BaseDataStore` now declares `list_threads`, `list_all_runs`, `get_run_any_thread`, `list_runs_by_parent_ids`, `get_first_run_assistant_ids`, `count_threads`, `count_runs`, and `count_messages`. Both `InMemoryDataStore` and `PostgresDataStore` implement them. These were previously missing or in-memory-only, which silently returned empty results on Postgres in Compass for Threads, Runs, the flow tree, and the home-page stats.
+- **Server-side pagination on Compass list endpoints** — `/api/threads` and `/api/runs` now accept `limit` / `order` / `after` / `before` cursor params and return `{ data, first_id, last_id, has_more, total }`. Threads and Runs views render Prev / Next page controls; the cursor stack and active filters live in the URL so Back from a detail page restores the exact same state.
+- **Server-side filtering** — shared `_filters` helper translates a Compass filter condition into either a SQLAlchemy clause or a Python predicate. Each list endpoint declares a filterable-field allowlist (`Thread`: `id`, `agent_id`, `created_at`, `metadata`; `Run`: `id`, `agent_id`, `thread_id`, `status`, `created_at`). `agent_id` on threads is resolved via a Postgres `EXISTS` subquery.
+- **Reusable Compass `FilterBuilder`** — draft / applied state with explicit Apply, Reset, and Clear buttons; "N active" / "unsaved changes" indicators; quick-add chips per field. Views are unaffected until Apply is pressed.
+- **Hard server-side cap** on list endpoints (`_MAX_PAGE_SIZE = 200`) so stale clients can't request 10 000-row pages.
+- **`include_total=false` opt-out** on `list_threads` / `list_all_runs` (and the matching Compass routes), so views that only need a top-N can skip the `COUNT(*)` query. Compass Overview uses it.
+- **Compass Overview rewrite** — stats / threads / runs render progressively with per-section spinners as their requests resolve; the old serial N+1 (`for thread in threads: listRuns(thread.id)`) is replaced by a single `listAllRuns` call. Three home-page counts run concurrently via `asyncio.gather`.
+- **Progressive loading in Compass Run Detail view** — per-section loading flags (`run`, `steps`, `config`, `spans`, `flow`, `messages`); each tab renders its data when it lands, with inline tab-label spinners.
+- **Flow tab always visible** with an explicit "No agent flow for this run" empty state instead of being hidden.
+- **Bounded flow-tree walk** — flow route now walks up from a run via `get_run_any_thread` (depth-capped) and BFS-down via `list_runs_by_parent_ids` (node-capped at 5000). Replaces the unbounded "load all runs and scan in Python" implementation that silently dropped ancestors when the parent was older than the recent-runs window.
+- **Synced Compass home-page example** (`examples/00_sync/server.py`) — minimal `HelloAgent` backed by `PostgresDataStore` with both A2A and Compass adapters mounted, loading `DATABASE_URL` from `.env`.
+- **Plan: lifecycle events & subscribers** — `docs/PLAN_LIFECYCLE_EVENTS.md` for the upcoming Trigger / Event / Subscriber model.
+- **Plan: Compass dev focus** — `docs/PLAN_COMPASS_DEV_FOCUS.md` for Playground, Replay, Scores, Datasets, SQL editor, editable Overview, and webhook actions.
 
 ### Changed
 
@@ -27,6 +40,22 @@
 - `ConfigStore` example now ships with sample `compass_charts.json` and `compass_dashboards.json`.
 - `in_memory_store` and `postgres_store` updated to align with new tracing/trigger flows and model changes.
 - Logging during startup now surfaces more detailed information about the application state.
+- **Ignite banner reorganised** into `Adapters` / `Triggers` / `Agents` / `Infrastructure` / `Optional features` sections; webhook trigger routes are listed inline (`▸ WebhookTrigger    /triggers/report → report-agent`).
+- **Route-conflict warnings on boot** — duplicate webhook trigger paths, or trigger paths that fall under a non-root adapter prefix, now log a warning at startup.
+- **Compass flow rendering optimised** — edge geometry (`path`, `midX`, `midY`, colour, dash, marker) is pre-computed once inside `flowLayout` and bound directly in the template instead of being recomputed per-edge per-render. Roughly `O(E·N) → O(E + N)` per re-render.
+- **Run-detail I/O resolver tolerates missing `run_id`** — assistant messages without a stamped `run_id` now match the run's `started_at..completed_at` window. Messages route also re-introduces `run_id` / `assistant_id` as explicit `null` (the prior `exclude_none=True` serialiser was stripping them entirely).
+- **`PostgresDataStore.close()` is bounded** — `engine.dispose()` is wrapped in `asyncio.wait_for(..., timeout=5.0)` so a hung asyncpg socket can't block server shutdown for the OS TCP timeout.
+- **Compass adapter no longer relies on missing methods.** All `hasattr(db, "…")` branches that masked data-store API gaps (`list_threads`, `list_all_runs`, `count_threads/runs/messages`, `get_run_by_run_id`, `list_runs_all`) are gone, replaced by abstract methods on `BaseDataStore`. The only `hasattr` left is the legitimate backend dispatch in the dashboard SQL endpoint.
+
+### Fixed
+
+- Compass home page no longer shows `0` for Agents / Threads / Runs against `PostgresDataStore` (missing count methods).
+- Compass Threads tab no longer renders empty against `PostgresDataStore` (missing `list_threads`).
+- Compass Runs tab no longer renders empty against `PostgresDataStore` (missing `list_all_runs`).
+- Compass agent-flow view no longer silently truncates the tree when a parent run is older than the recent-runs window (the BFS used to bail out at the first missing ancestor).
+- Compass Run Detail Input/Output panel no longer appears empty for messages produced by `context.insert_message(...)` that weren't stamped with a `run_id`.
+- `SAWarning: garbage collector is trying to clean up non-checked-in connection` on Compass thread listings, caused by an N+1 burst of sessions for per-thread agent enrichment (replaced with a single `SELECT DISTINCT ON (thread_id) thread_id, assistant_id` query via the new `get_first_run_assistant_ids`).
+- `SyntaxWarning: invalid escape sequence '\s'` in `PostgresDataStore` docstring.
 
 ### Deprecated
 

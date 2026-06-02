@@ -130,24 +130,15 @@ async def overview(req: Request):
     db = req.app.state.data_store
     assistants = req.app.state.assistants or []
 
-    thread_count = 0
-    run_count = 0
-    message_count = 0
-
-    if hasattr(db, "_threads"):
-        thread_count = len(db._threads)
-    if hasattr(db, "_runs"):
-        run_count = sum(len(runs) for runs in db._runs.values())
-    if hasattr(db, "_messages"):
-        message_count = sum(len(msgs) for msgs in db._messages.values())
-
-    # Postgres stores expose count methods
-    if hasattr(db, "count_threads"):
-        thread_count = await db.count_threads()
-    if hasattr(db, "count_runs"):
-        run_count = await db.count_runs()
-    if hasattr(db, "count_messages"):
-        message_count = await db.count_messages()
+    # Run the three counts concurrently — each is a COUNT(*) that can be
+    # slow on big tables, and there's no reason for them to wait on each
+    # other.  Any failure leaves the corresponding count at 0.
+    thread_count, run_count, message_count = await asyncio.gather(
+        db.count_threads(),
+        db.count_runs(),
+        db.count_messages(),
+        return_exceptions=False,
+    )
 
     return JSONResponse({
         "assistants": len(assistants),
@@ -193,47 +184,65 @@ async def list_assistants(req: Request):
 
 # ── Threads ──────────────────────────────────────────────────────────────────
 
+_MAX_PAGE_SIZE = 200
+
+
 @router.get("/api/threads")
-async def list_threads(req: Request, limit: int = 50, order: str = "desc"):
+async def list_threads(
+    req: Request,
+    limit: int = 50,
+    order: str = "desc",
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    filters: Optional[str] = None,
+    include_total: bool = True,
+):
+    # Hard cap to protect the DB from clients (e.g. stale bundles) asking
+    # for thousands of rows at once.
+    limit = max(1, min(limit, _MAX_PAGE_SIZE))
+
+    parsed_filters: list[dict] = []
+    if filters:
+        try:
+            raw = json.loads(filters)
+            if isinstance(raw, list):
+                parsed_filters = [f for f in raw if isinstance(f, dict)]
+        except json.JSONDecodeError:
+            pass  # bad payload — fall back to no filters
+
     db = req.app.state.data_store
     assistants = {a.id: a for a in (req.app.state.assistants or [])}
 
-    threads = []
-    if hasattr(db, "list_threads"):
-        result = await db.list_threads()
-        threads = result.data if result else []
-    elif hasattr(db, "_threads"):
-        threads = list(db._threads.values())
+    result = await db.list_threads(
+        limit=limit, order=order, after=after, before=before,
+        filters=parsed_filters or None, include_total=include_total,
+    )
+    threads = result.data if result else []
+    has_more = bool(result.has_more) if result else False
+    first_id = result.first_id if result else None
+    last_id = result.last_id if result else None
+    total = result.total if result else None
     data = _serialize_list(threads)
-    reverse = order == "desc"
-    data.sort(key=lambda t: t.get("created_at", ""), reverse=reverse)
 
     # Enrich each thread with the agent that owns it (first run in that thread).
     # Sub-agent threads (created via call_agent) have runs with a parent_run_id,
     # but the agent of that thread is still the sub-agent — so we take the first
-    # run regardless of parent_run_id.
+    # run regardless of parent_run_id.  Single bulk lookup instead of N+1.
+    thread_ids = [t.get("id") for t in data if t.get("id")]
+    agent_id_by_thread = await db.get_first_run_assistant_ids(thread_ids)
     for t in data:
-        tid = t.get("id")
-        agent_id = None
-        if tid and hasattr(db, "_runs"):
-            runs_for_thread = sorted(
-                db._runs.get(tid) or [],
-                key=lambda r: getattr(r, "created_at", "") or "",
-            )
-            if runs_for_thread:
-                agent_id = runs_for_thread[0].assistant_id if hasattr(runs_for_thread[0], "assistant_id") else None
-        elif tid and hasattr(db, "list_runs"):
-            try:
-                result = await db.list_runs(tid, limit=1, order="asc", after=None, before=None)
-                if result and result.data:
-                    agent_id = result.data[0].assistant_id if hasattr(result.data[0], "assistant_id") else None
-            except Exception:
-                pass
+        agent_id = agent_id_by_thread.get(t.get("id"))
         agent = assistants.get(agent_id) if agent_id else None
         t["agent_id"] = agent_id
         t["agent_name"] = (agent.name if agent and hasattr(agent, "name") else agent_id) if agent_id else None
 
-    return JSONResponse({"data": data[:limit], "total": len(data)})
+    return JSONResponse({
+        "data": data,
+        "first_id": first_id,
+        "last_id": last_id,
+        "has_more": has_more,
+        "total": total,
+    })
 
 
 @router.get("/api/threads/{thread_id}")
@@ -257,6 +266,12 @@ async def list_messages(req: Request, thread_id: str, limit: int = 100, order: s
 
     data = _serialize_list(result.data)
     for msg in data:
+        # _serialize uses exclude_none=True, so these keys can be missing when
+        # the message was never stamped with a run / assistant.  Re-introduce
+        # them as explicit `null` so the UI can reason about them.
+        msg.setdefault("run_id", None)
+        msg.setdefault("assistant_id", None)
+
         aid = msg.get("assistant_id")
         agent = assistants.get(aid) if aid else None
         msg["agent_name"] = (agent.name if agent and hasattr(agent, "name") else aid) if aid else None
@@ -278,29 +293,53 @@ async def list_runs(req: Request, thread_id: str, limit: int = 100, order: str =
 # ── Global Runs ───────────────────────────────────────────────────────────────
 
 @router.get("/api/runs")
-async def list_all_runs(req: Request, limit: int = 200, order: str = "desc"):
-    """Return runs across all threads, enriched with agent name."""
+async def list_all_runs(
+    req: Request,
+    limit: int = 50,
+    order: str = "desc",
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    filters: Optional[str] = None,
+    include_total: bool = True,
+):
+    """Return runs across all threads, paginated, with optional filters."""
+    limit = max(1, min(limit, _MAX_PAGE_SIZE))
+
+    parsed_filters: list[dict] = []
+    if filters:
+        try:
+            raw = json.loads(filters)
+            if isinstance(raw, list):
+                parsed_filters = [f for f in raw if isinstance(f, dict)]
+        except json.JSONDecodeError:
+            pass
+
     db = req.app.state.data_store
     assistants = {a.id: a for a in (req.app.state.assistants or [])}
 
-    all_runs: list[dict] = []
-    if hasattr(db, "_runs"):
-        for thread_runs in db._runs.values():
-            for r in thread_runs:
-                all_runs.append(_serialize(r))
-    elif hasattr(db, "list_runs_all"):
-        result = await db.list_runs_all(limit=limit, order=order)
-        all_runs = _serialize_list(result.data if result else [])
+    result = await db.list_all_runs(
+        limit=limit, order=order, after=after, before=before,
+        filters=parsed_filters or None, include_total=include_total,
+    )
+    runs = result.data if result else []
+    has_more = bool(result.has_more) if result else False
+    first_id = result.first_id if result else None
+    last_id = result.last_id if result else None
+    total = result.total if result else None
+    data = _serialize_list(runs)
 
-    reverse = order == "desc"
-    all_runs.sort(key=lambda r: r.get("created_at") or 0, reverse=reverse)
-
-    for r in all_runs:
+    for r in data:
         aid = r.get("assistant_id")
         agent = assistants.get(aid) if aid else None
         r["agent_name"] = (agent.name if agent and hasattr(agent, "name") else aid) if aid else None
 
-    return JSONResponse({"data": all_runs[:limit], "total": len(all_runs)})
+    return JSONResponse({
+        "data": data,
+        "first_id": first_id,
+        "last_id": last_id,
+        "has_more": has_more,
+        "total": total,
+    })
 
 
 @router.get("/api/threads/{thread_id}/runs/{run_id}")
@@ -386,11 +425,9 @@ async def compare_runs(
     ids = [r.strip() for r in run_ids.split(",") if r.strip()]
     results = []
     for run_id in ids:
-        # We need to find the run across threads
-        run = None
-        # Try direct lookup if store supports it
-        if hasattr(db, "get_run_by_run_id"):
-            run = await db.get_run_by_run_id(run_id)
+        # We need to find the run across threads — every store implements
+        # this since the flow / overview routes started using it.
+        run = await db.get_run_any_thread(run_id)
         if not run:
             continue
         thread_id = run.thread_id
@@ -454,54 +491,42 @@ async def get_run_flow(req: Request, run_id: str):
     db = req.app.state.data_store
     assistants = {a.id: a for a in (req.app.state.assistants or [])}
 
-    # Collect ALL runs across every thread
-    all_runs: list = []
-    if hasattr(db, "_runs"):
-        for runs_list in db._runs.values():
-            all_runs.extend(runs_list)
-    elif hasattr(db, "list_all_runs"):
-        result = await db.list_all_runs()
-        all_runs = result.data if result else []
+    # Defensive caps so a malformed cycle in metadata can't run forever.
+    _MAX_DEPTH = 64
+    _MAX_NODES = 5000
 
-    # Index runs by id
+    # ── 1. Walk up to the root ────────────────────────────────────────────
     runs_by_id: dict = {}
-    for r in all_runs:
-        rid = r.id if hasattr(r, "id") else r.get("id")
-        runs_by_id[rid] = r
-
-    # Find the root: walk parent pointers from the requested run
     root_id = run_id
-    visited = {root_id}
-    while True:
-        root_run = runs_by_id.get(root_id)
-        if not root_run:
+    for _ in range(_MAX_DEPTH):
+        if root_id in runs_by_id:
             break
-        meta = (root_run.metadata if hasattr(root_run, "metadata") else {}) or {}
+        run = await db.get_run_any_thread(root_id)
+        if not run:
+            break
+        runs_by_id[root_id] = run
+        meta = (run.metadata or {}) if hasattr(run, "metadata") else {}
         parent = meta.get("parent_run_id")
-        if parent and parent not in visited and parent in runs_by_id:
-            visited.add(parent)
-            root_id = parent
-        else:
+        if not parent or parent == root_id:
             break
+        root_id = parent
 
-    # BFS from root to collect the tree
-    from collections import deque
-    queue = deque([root_id])
-    tree_ids = set()
-    children_of: dict[str, list[str]] = {}
-
-    while queue:
-        current = queue.popleft()
-        if current in tree_ids:
-            continue
-        tree_ids.add(current)
-        # Find children of current
-        for r in all_runs:
-            rid = r.id if hasattr(r, "id") else r.get("id")
-            meta = (r.metadata if hasattr(r, "metadata") else {}) or {}
-            if meta.get("parent_run_id") == current and rid not in tree_ids:
-                children_of.setdefault(current, []).append(rid)
-                queue.append(rid)
+    # ── 2. BFS down from root, one DB call per level ──────────────────────
+    tree_ids: set[str] = {root_id} if root_id in runs_by_id else set()
+    frontier = [root_id] if root_id in runs_by_id else []
+    while frontier and len(tree_ids) < _MAX_NODES:
+        children = await db.list_runs_by_parent_ids(frontier)
+        next_frontier: list[str] = []
+        for child in children:
+            cid = child.id
+            if cid in tree_ids:
+                continue
+            runs_by_id[cid] = child
+            tree_ids.add(cid)
+            next_frontier.append(cid)
+            if len(tree_ids) >= _MAX_NODES:
+                break
+        frontier = next_frontier
 
     # Build nodes and edges
     nodes = []
