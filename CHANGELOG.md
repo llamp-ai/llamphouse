@@ -1,22 +1,24 @@
 # Changelog
 
-## [1.2.4] - 22/05/2026
+## [1.2.4] - 02/06/2026
 
 ### Added
 
-- Added `provider_config` persistence for runs in the Postgres schema, ORM model, and data-store serialization.
-- Added data-store contract coverage for run `stream`, `provider_config`, lifecycle timestamps, and distributed-worker streaming behavior.
+- Added core data-store contract methods for run lookup, operational listing, and aggregate counts.
+- Added data-store contract coverage for run `stream`, `provider_config`, lifecycle timestamps, `usage`, and operational APIs.
+- Added Compass compare integration coverage for loading runs by run id across data-store backends.
 
 ### Changed
 
-- Standardized run storage across `InMemoryDataStore` and `PostgresDataStore`: `stream` is persisted as a boolean, run event ordering is consistent, and run-step data-store methods are async.
-- Updated the distributed-worker example to document Postgres-backed split-process usage.
+- Standardized run storage behavior across `InMemoryDataStore` and `PostgresDataStore`.
+- Updated Compass and Dashboard routes to use public data-store APIs instead of in-memory private structures.
+- Squashed `provider_config` into the existing `runs.stream` migration for a clean migration chain.
 
 ### Fixed
 
-- Fixed Postgres-backed distributed workers not seeing streamed runs because `runs.stream` was not persisted consistently.
-- Fixed run expiry persistence to use `expires_at`, matching the current run model.
-- Removed the duplicate `InMemoryDataStore.purge_expired` implementation and kept the traced implementation.
+- Fixed Postgres-backed runs missing persisted `stream` data.
+- Fixed run status updates so lifecycle timestamps and `usage` are persisted consistently.
+- Fixed `LLAMPHouse` initialization with callable event queue factories such as `RedisEventQueueFactory`.
 
 
 
