@@ -27,7 +27,7 @@ class BaseEventHandler(ABC):
                 "created_at": int(datetime.now().timestamp()),
                 "thread_id": thread_id,
                 "role": "assistant",
-                "parts": [],
+                "status": "in_progress",
                 "content": [],
                 "assistant_id": assistant_id,
                 "run_id": run_id,
@@ -45,7 +45,7 @@ class BaseEventHandler(ABC):
                 "created_at": int(datetime.now().timestamp()),
                 "thread_id": thread_id,
                 "role": "assistant",
-                "parts": [],
+                "status": "in_progress",
                 "content": [],
                 "assistant_id": assistant_id,
                 "run_id": run_id,
@@ -84,6 +84,7 @@ class BaseEventHandler(ABC):
                 "created_at": int(datetime.now().timestamp()),
                 "thread_id": thread_id,
                 "role": "assistant",
+                "status": "completed",
                 "parts": [
                     {"type": "text", "text": text}
                 ],
