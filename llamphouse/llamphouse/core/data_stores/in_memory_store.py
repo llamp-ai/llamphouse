@@ -367,6 +367,18 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
     
+    async def get_first_run_assistant_ids(self, thread_ids: List[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for tid in thread_ids:
+            runs = self._runs.get(tid) or []
+            if not runs:
+                continue
+            first = min(runs, key=lambda r: getattr(r, "created_at", 0) or 0)
+            aid = getattr(first, "assistant_id", None)
+            if aid:
+                out[tid] = aid
+        return out
+
     async def insert_thread(self, thread: CreateThreadRequest, event_queue: BaseEventQueue = None) -> ThreadObject | None:
         with span_context(
             store_tracer,
@@ -426,7 +438,116 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
-    
+
+    # Allowlist for thread filters: name → (extractor, kind).
+    _THREAD_FILTER_FIELDS = {
+        "id":         (lambda t: t.id,         "string"),
+        "created_at": (lambda t: t.created_at, "date"),
+        "metadata":   (lambda t: t.metadata,   "json_string"),
+    }
+
+    async def list_threads(self, limit: int = 50, order: str = "desc", after: Optional[str] = None, before: Optional[str] = None, filters: Optional[List[dict]] = None, include_total: bool = True) -> ListResponse:
+        attrs = {
+            "store.backend": "in_memory",
+            "limit": limit,
+            "order": order,
+            "gen_ai.operation.name": "threads.list",
+        }
+        if after is not None:
+            attrs["after"] = after
+        if before is not None:
+            attrs["before"] = before
+
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_threads",
+            require_parent=True,
+            attributes=attrs,
+        ) as span:
+            try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({"limit": limit, "order": order, "after": after, "before": before}),
+                )
+
+                threads = list(self._threads.values())
+
+                # ── Filters (allowlisted fields only) ─────────────────
+                if filters:
+                    from . import _filters as _fmod
+                    for f in filters:
+                        field = f.get("field")
+
+                        # Special case: agent_id matches if *any* run on
+                        # the thread uses an assistant_id satisfying the
+                        # predicate.
+                        if field == "agent_id":
+                            def _agent_match(t, _f=f):
+                                runs = self._runs.get(t.id) or []
+                                aids = {getattr(r, "assistant_id", None) for r in runs}
+                                return any(
+                                    _fmod.matches(aid, "string", _f)
+                                    for aid in aids if aid is not None
+                                )
+                            threads = [t for t in threads if _agent_match(t)]
+                            continue
+
+                        spec = self._THREAD_FILTER_FIELDS.get(field)
+                        if not spec:
+                            continue
+                        extractor, kind = spec
+                        threads = [t for t in threads if _fmod.matches(extractor(t), kind, f)]
+
+                threads = sorted(
+                    threads,
+                    key=lambda t: t.created_at or 0,
+                    reverse=(order != "asc"),
+                )
+                total = len(threads) if include_total else None
+
+                # Cursor pagination.
+                def _index_of(thread_id: str) -> Optional[int]:
+                    for i, t in enumerate(threads):
+                        if t.id == thread_id:
+                            return i
+                    return None
+
+                if after:
+                    idx = _index_of(after)
+                    if idx is not None:
+                        threads = threads[idx + 1:]
+                if before:
+                    idx = _index_of(before)
+                    if idx is not None:
+                        threads = threads[:idx]
+
+                has_more = len(threads) > limit
+                page = threads[:limit]
+
+                response = ListResponse(
+                    data=page,
+                    first_id=page[0].id if page else None,
+                    last_id=page[-1].id if page else None,
+                    has_more=has_more,
+                    total=total,
+                )
+                span.set_status(Status(StatusCode.OK))
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({
+                        "count": len(page),
+                        "first_id": response.first_id,
+                        "last_id": response.last_id,
+                        "has_more": has_more,
+                    }),
+                )
+                return response
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+                logger.exception("list_threads() failed")
+                return ListResponse(data=[])
+
     async def update_thread(self, thread_id: str, modifications: ModifyThreadRequest) -> ThreadObject | None:
         with span_context(
             store_tracer,
@@ -512,6 +633,34 @@ class InMemoryDataStore(BaseDataStore):
                 return run
         return None
 
+    async def get_run_any_thread(self, run_id: str) -> RunObject | None:
+        for runs_list in self._runs.values():
+            for r in runs_list:
+                if r.id == run_id:
+                    return r
+        return None
+
+    async def list_runs_by_parent_ids(self, parent_ids: List[str]) -> List[RunObject]:
+        if not parent_ids:
+            return []
+        wanted = set(parent_ids)
+        out: List[RunObject] = []
+        for runs_list in self._runs.values():
+            for r in runs_list:
+                meta = getattr(r, "metadata", None) or {}
+                if meta.get("parent_run_id") in wanted:
+                    out.append(r)
+        return out
+
+    async def count_threads(self) -> int:
+        return len(self._threads)
+
+    async def count_runs(self) -> int:
+        return sum(len(runs) for runs in self._runs.values())
+
+    async def count_messages(self) -> int:
+        return sum(len(msgs) for msgs in self._messages.values())
+
     async def insert_run(self, thread_id: str, run: RunCreateRequest, assistant: AgentObject, event_queue: BaseEventQueue = None) -> RunObject | None:
         with span_context(
             store_tracer,
@@ -596,6 +745,90 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
+
+    # Allowlist for run filters: name → (extractor, kind).
+    _RUN_FILTER_FIELDS = {
+        "id":           (lambda r: getattr(r, "id", None),           "string"),
+        "assistant_id": (lambda r: getattr(r, "assistant_id", None), "string"),
+        "agent_id":     (lambda r: getattr(r, "assistant_id", None), "string"),
+        "thread_id":    (lambda r: getattr(r, "thread_id", None),    "string"),
+        "status":       (lambda r: getattr(r, "status", None),       "string"),
+        "created_at":   (lambda r: getattr(r, "created_at", None),   "date"),
+    }
+
+    async def list_all_runs(
+        self,
+        limit: int = 50,
+        order: str = "desc",
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        filters: Optional[List[dict]] = None,
+        include_total: bool = True,
+    ) -> ListResponse:
+        attrs = {
+            "store.backend": "in_memory",
+            "limit": limit,
+            "order": order,
+            "gen_ai.operation.name": "runs.list_all",
+        }
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_all_runs",
+            require_parent=True,
+            attributes=attrs,
+        ) as span:
+            try:
+                runs = [r for thread_runs in self._runs.values() for r in thread_runs]
+
+                if filters:
+                    from . import _filters as _fmod
+                    for f in filters:
+                        spec = self._RUN_FILTER_FIELDS.get(f.get("field"))
+                        if not spec:
+                            continue
+                        extractor, kind = spec
+                        runs = [r for r in runs if _fmod.matches(extractor(r), kind, f)]
+
+                runs = sorted(
+                    runs,
+                    key=lambda r: getattr(r, "created_at", 0) or 0,
+                    reverse=(order != "asc"),
+                )
+                total = len(runs) if include_total else None
+
+                # Cursor pagination.
+                def _index_of(run_id: str) -> Optional[int]:
+                    for i, r in enumerate(runs):
+                        if getattr(r, "id", None) == run_id:
+                            return i
+                    return None
+
+                if after:
+                    idx = _index_of(after)
+                    if idx is not None:
+                        runs = runs[idx + 1:]
+                if before:
+                    idx = _index_of(before)
+                    if idx is not None:
+                        runs = runs[:idx]
+
+                has_more = len(runs) > limit
+                page = runs[:limit]
+
+                response = ListResponse(
+                    data=page,
+                    first_id=getattr(page[0], "id", None) if page else None,
+                    last_id=getattr(page[-1], "id", None) if page else None,
+                    has_more=has_more,
+                    total=total,
+                )
+                span.set_status(Status(StatusCode.OK))
+                return response
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+                logger.exception("list_all_runs() failed")
+                return ListResponse(data=[])
 
     async def list_runs(self, thread_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse:
         attrs = {
@@ -1222,17 +1455,6 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
 
-    async def list_threads(self, limit: int = 50, order: str = "desc") -> ListResponse | None:
-        threads = list(self._threads.values())
-        threads.sort(key=lambda t: (t.created_at, t.id), reverse=(order == "desc"))
-        limited = threads[:limit]
-        return ListResponse(
-            data=limited,
-            first_id=limited[0].id if limited else None,
-            last_id=limited[-1].id if limited else None,
-            has_more=len(threads) > limit,
-        )
-
     async def list_runs_all(self, limit: int = 200, order: str = "desc") -> ListResponse | None:
         runs = [run for thread_runs in self._runs.values() for run in thread_runs]
         runs.sort(key=lambda r: (r.created_at, r.id), reverse=(order == "desc"))
@@ -1244,15 +1466,6 @@ class InMemoryDataStore(BaseDataStore):
             has_more=len(runs) > limit,
         )
 
-    async def count_threads(self) -> int:
-        return len(self._threads)
-
-    async def count_runs(self) -> int:
-        return sum(len(runs) for runs in self._runs.values())
-
-    async def count_messages(self) -> int:
-        return sum(len(messages) for messages in self._messages.values())
-    
     async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
         with span_context(
             store_tracer,

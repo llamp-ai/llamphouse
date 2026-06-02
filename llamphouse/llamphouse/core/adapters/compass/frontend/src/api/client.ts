@@ -35,7 +35,10 @@ export interface Overview {
 /** Wrapper returned by most list endpoints */
 interface ListResponse<T> {
   data: T[]
-  total: number
+  total?: number
+  first_id?: string | null
+  last_id?:  string | null
+  has_more?: boolean
 }
 
 export interface AgentSkill {
@@ -251,9 +254,26 @@ export const compass = {
     }),
 
   /* Threads */
-  listThreads: async (limit = 50) => {
-    const res = await api<ListResponse<Thread>>(`/threads?limit=${limit}`)
-    return res.data ?? []
+  listThreads: async (
+    opts: {
+      limit?:        number
+      order?:        'asc' | 'desc'
+      after?:        string
+      before?:       string
+      filters?:      { field: string; operator: string; value?: string; value2?: string }[]
+      includeTotal?: boolean
+    } = {},
+  ) => {
+    const params = new URLSearchParams()
+    params.set('limit', String(opts.limit ?? 50))
+    if (opts.order)  params.set('order',  opts.order)
+    if (opts.after)  params.set('after',  opts.after)
+    if (opts.before) params.set('before', opts.before)
+    if (opts.filters && opts.filters.length > 0) {
+      params.set('filters', JSON.stringify(opts.filters))
+    }
+    if (opts.includeTotal === false) params.set('include_total', 'false')
+    return await api<ListResponse<Thread>>(`/threads?${params.toString()}`)
   },
 
   /* Messages */
@@ -268,9 +288,26 @@ export const compass = {
     return res.data ?? []
   },
 
-  listAllRuns: async (limit = 200) => {
-    const res = await api<ListResponse<Run>>(`/runs?limit=${limit}`)
-    return res.data ?? []
+  listAllRuns: async (
+    opts: {
+      limit?:        number
+      order?:        'asc' | 'desc'
+      after?:        string
+      before?:       string
+      filters?:      { field: string; operator: string; value?: string; value2?: string }[]
+      includeTotal?: boolean
+    } = {},
+  ) => {
+    const params = new URLSearchParams()
+    params.set('limit', String(opts.limit ?? 50))
+    if (opts.order)  params.set('order',  opts.order)
+    if (opts.after)  params.set('after',  opts.after)
+    if (opts.before) params.set('before', opts.before)
+    if (opts.filters && opts.filters.length > 0) {
+      params.set('filters', JSON.stringify(opts.filters))
+    }
+    if (opts.includeTotal === false) params.set('include_total', 'false')
+    return await api<ListResponse<Run>>(`/runs?${params.toString()}`)
   },
 
   getRunConfig: (threadId: string, runId: string) =>

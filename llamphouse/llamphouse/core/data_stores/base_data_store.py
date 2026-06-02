@@ -72,6 +72,28 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def list_threads(
+        self,
+        limit: int = 50,
+        order: str = "desc",
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        filters: Optional[List[dict]] = None,
+        include_total: bool = True,
+    ) -> ListResponse | None:
+        """List threads with pagination, ordering, and optional filters.
+
+        ``filters`` is a list of ``{"field", "operator", "value", "value2"?}``
+        dicts.  Implementations should silently ignore filters referencing
+        unsupported fields.
+
+        Set ``include_total=False`` to skip the matching ``COUNT(*)`` query —
+        useful for views that only need a page of rows and treat the total as
+        a nice-to-have.
+        """
+        pass
+
+    @abstractmethod
     async def get_run_by_id(self, thread_id: str, run_id: str) -> RunObject | None:
         """Retrieve a run by its ID."""
         pass
@@ -90,6 +112,72 @@ class BaseDataStore(ABC):
     async def list_runs(self, thread_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         """List runs for a specific thread with pagination and ordering."""
         pass
+
+    @abstractmethod
+    async def list_all_runs(
+        self,
+        limit: int = 50,
+        order: str = "desc",
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        filters: Optional[List[dict]] = None,
+        include_total: bool = True,
+    ) -> ListResponse | None:
+        """List runs across all threads with pagination, ordering, and optional filters.
+
+        Set ``include_total=False`` to skip the matching ``COUNT(*)`` query.
+        """
+        pass
+
+    @abstractmethod
+    async def get_run_any_thread(self, run_id: str) -> RunObject | None:
+        """Fetch a single run by id without knowing its ``thread_id``.
+
+        Used by graph-walking flows (e.g. the Compass agent flow view) that
+        need to traverse parent_run_id pointers without scanning all runs.
+        """
+        pass
+
+    @abstractmethod
+    async def list_runs_by_parent_ids(self, parent_ids: List[str]) -> List[RunObject]:
+        """Return every run whose ``metadata.parent_run_id`` is in
+        ``parent_ids``.  One bulk query — used to BFS down a run tree."""
+        pass
+
+    @abstractmethod
+    async def count_threads(self) -> int:
+        """Total number of threads in the store."""
+        pass
+
+    @abstractmethod
+    async def count_runs(self) -> int:
+        """Total number of runs in the store."""
+        pass
+
+    @abstractmethod
+    async def count_messages(self) -> int:
+        """Total number of messages in the store."""
+        pass
+
+    async def get_first_run_assistant_ids(self, thread_ids: List[str]) -> dict[str, str]:
+        """Return a ``{thread_id: assistant_id}`` mapping for the first
+        (earliest) run in each given thread.  Threads with no runs are
+        omitted from the result.
+
+        The default implementation loops over ``list_runs`` per thread.
+        Concrete stores should override with a single bulk query.
+        """
+        out: dict[str, str] = {}
+        for tid in thread_ids:
+            try:
+                result = await self.list_runs(tid, limit=1, order="asc", after=None, before=None)
+            except Exception:
+                continue
+            if result and result.data:
+                aid = getattr(result.data[0], "assistant_id", None)
+                if aid:
+                    out[tid] = aid
+        return out
 
     @abstractmethod
     async def update_run(self, thread_id: str, run_id: str, modifications: ModifyRunRequest) -> RunObject | None:
