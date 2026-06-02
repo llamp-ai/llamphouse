@@ -24,7 +24,7 @@ class BaseEventHandler(ABC):
             {
                 "id": message_id,
                 "object": "thread.message",
-                "created_at": datetime.now().isoformat(),
+                "created_at": int(datetime.now().timestamp()),
                 "thread_id": thread_id,
                 "role": "assistant",
                 "parts": [],
@@ -42,7 +42,7 @@ class BaseEventHandler(ABC):
             {
                 "id": message_id,
                 "object": "thread.message",
-                "created_at": datetime.now().isoformat(),
+                "created_at": int(datetime.now().timestamp()),
                 "thread_id": thread_id,
                 "role": "assistant",
                 "parts": [],
@@ -81,7 +81,7 @@ class BaseEventHandler(ABC):
             {
                 "id": message_id,
                 "object": "thread.message",
-                "created_at": datetime.now().isoformat(),
+                "created_at": int(datetime.now().timestamp()),
                 "thread_id": thread_id,
                 "role": "assistant",
                 "parts": [
@@ -120,7 +120,7 @@ class BaseEventHandler(ABC):
             {
                 "id": step_id,
                 "object": "thread.run.step",
-                "created_at": datetime.now().isoformat(),
+                "created_at": int(datetime.now().timestamp()),
                 "run_id": run_id,
                 "assistant_id": assistant_id,
                 "thread_id": thread_id,
@@ -181,14 +181,14 @@ class BaseEventHandler(ABC):
             {
                 "id": step_id,
                 "object": "thread.run.step",
-                "created_at": datetime.now().isoformat(),
+                "created_at": int(datetime.now().timestamp()),
                 "run_id": run_id,
                 "assistant_id": assistant_id,
                 "thread_id": thread_id,
                 "type": "tool_calls",
                 "status": "completed",
                 "cancelled_at": None,
-                "completed_at": datetime.now().isoformat(),
+                "completed_at": int(datetime.now().timestamp()),
                 "expired_at": None,
                 "failed_at": None,
                 "last_error": None,
