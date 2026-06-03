@@ -24,10 +24,10 @@ class BaseEventHandler(ABC):
             {
                 "id": message_id,
                 "object": "thread.message",
-                "created_at": int(datetime.now().timestamp()),
+                "created_at": datetime.now().isoformat(),
                 "thread_id": thread_id,
                 "role": "assistant",
-                "status": "in_progress",
+                "parts": [],
                 "content": [],
                 "assistant_id": assistant_id,
                 "run_id": run_id,
@@ -42,10 +42,10 @@ class BaseEventHandler(ABC):
             {
                 "id": message_id,
                 "object": "thread.message",
-                "created_at": int(datetime.now().timestamp()),
+                "created_at": datetime.now().isoformat(),
                 "thread_id": thread_id,
                 "role": "assistant",
-                "status": "in_progress",
+                "parts": [],
                 "content": [],
                 "assistant_id": assistant_id,
                 "run_id": run_id,
@@ -81,10 +81,9 @@ class BaseEventHandler(ABC):
             {
                 "id": message_id,
                 "object": "thread.message",
-                "created_at": int(datetime.now().timestamp()),
+                "created_at": datetime.now().isoformat(),
                 "thread_id": thread_id,
                 "role": "assistant",
-                "status": "completed",
                 "parts": [
                     {"type": "text", "text": text}
                 ],
@@ -121,7 +120,7 @@ class BaseEventHandler(ABC):
             {
                 "id": step_id,
                 "object": "thread.run.step",
-                "created_at": int(datetime.now().timestamp()),
+                "created_at": datetime.now().isoformat(),
                 "run_id": run_id,
                 "assistant_id": assistant_id,
                 "thread_id": thread_id,
@@ -182,14 +181,14 @@ class BaseEventHandler(ABC):
             {
                 "id": step_id,
                 "object": "thread.run.step",
-                "created_at": int(datetime.now().timestamp()),
+                "created_at": datetime.now().isoformat(),
                 "run_id": run_id,
                 "assistant_id": assistant_id,
                 "thread_id": thread_id,
                 "type": "tool_calls",
                 "status": "completed",
                 "cancelled_at": None,
-                "completed_at": int(datetime.now().timestamp()),
+                "completed_at": datetime.now().isoformat(),
                 "expired_at": None,
                 "failed_at": None,
                 "last_error": None,
