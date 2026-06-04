@@ -13,6 +13,7 @@ const emit = defineEmits<{
   (e: 'update:chart', chart: ChartDef): void
   (e: 'update:layout', layout: DashboardChart): void
   (e: 'delete'): void
+  (e: 'grab'): void
 }>()
 
 // ── Local state ───────────────────────────────────────────────────────────────
@@ -363,7 +364,10 @@ const lineYTicks = computed(() => {
 })
 
 // ── Table: limit display rows ─────────────────────────────────────────────────
-const tableRows = computed(() => result.value?.rows.slice(0, 200) ?? [])
+// Matches the backend query cap (_run_postgres_query max_rows), so the table
+// can show every row the server returned.
+const TABLE_ROW_CAP = 1000
+const tableRows = computed(() => result.value?.rows.slice(0, TABLE_ROW_CAP) ?? [])
 
 // ── Big number ───────────────────────────────────────────────────────────────
 const bigNumData = computed(() => {
@@ -520,7 +524,7 @@ onBeforeUnmount(() => {
     <!-- ── Widget header ── -->
     <div class="widget__header">
       <div class="widget__title-row">
-        <div v-if="!readonly" class="drag-grip" title="Drag to reorder"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="19" r="1" fill="currentColor"/><circle cx="15" cy="5" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="19" r="1" fill="currentColor"/></svg></div>
+        <div v-if="!readonly" class="drag-grip" title="Drag to reorder" @mousedown="emit('grab')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="19" r="1" fill="currentColor"/><circle cx="15" cy="5" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="19" r="1" fill="currentColor"/></svg></div>
         <input
           v-if="editingTitle && !readonly"
           ref="titleInput"
@@ -683,8 +687,8 @@ onBeforeUnmount(() => {
                 </tr>
               </tbody>
             </table>
-            <div v-if="result.rows.length > 200" class="table-truncated">
-              Showing 200 of {{ result.rows.length }} rows
+            <div v-if="result.rows.length > TABLE_ROW_CAP" class="table-truncated">
+              Showing {{ TABLE_ROW_CAP }} of {{ result.rows.length }} rows
             </div>
           </div>
         </template>

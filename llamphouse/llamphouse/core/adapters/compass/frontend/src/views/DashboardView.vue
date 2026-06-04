@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { compass, formatTs } from '../api/client'
 import type { Dashboard, ChartDef, DashboardChart } from '../api/client'
@@ -149,8 +149,21 @@ async function deleteDashboard() {
 // ── Drag-to-reorder ───────────────────────────────────────────────────────────
 const dragFromIdx = ref(-1)
 const dragOverIdx = ref(-1)
+// A cell is only draggable while its drag-grip handle is held down. This keeps
+// the rest of the chart (table cells, SQL, labels) selectable with the mouse —
+// a `draggable` element swallows text selection on mousedown.
+const dragEnabledIdx = ref(-1)
+
+function onGrab(idx: number) {
+  dragEnabledIdx.value = idx
+}
 
 function onChartDragStart(idx: number, e: DragEvent) {
+  // Safety net: ignore drags that didn't originate from the grip handle.
+  if (dragEnabledIdx.value !== idx) {
+    e.preventDefault()
+    return
+  }
   dragFromIdx.value = idx
   e.dataTransfer!.effectAllowed = 'move'
   e.dataTransfer!.setDragImage(e.currentTarget as HTMLElement, 20, 20)
@@ -176,7 +189,15 @@ function onChartDrop(idx: number) {
 function onChartDragEnd() {
   dragFromIdx.value = -1
   dragOverIdx.value = -1
+  dragEnabledIdx.value = -1
 }
+
+// If the grip is pressed but no drag begins (just a click), re-lock the cell.
+function onWindowMouseUp() {
+  if (dragFromIdx.value < 0) dragEnabledIdx.value = -1
+}
+onMounted(() => window.addEventListener('mouseup', onWindowMouseUp))
+onBeforeUnmount(() => window.removeEventListener('mouseup', onWindowMouseUp))
 
 // ── Charts not on this dashboard (for "add existing" modal) ──────────────────
 const availableToAdd = computed(() => {
@@ -295,7 +316,7 @@ const schemaInfo = [
           :key="slot.chart_id"
           :style="{ gridColumn: `span ${slot.col_span ?? 2}` }"
           :class="['chart-cell', { 'chart-cell--drag-over': dragOverIdx === idx }]"
-          draggable="true"
+          :draggable="dragEnabledIdx === idx"
           @dragstart="onChartDragStart(idx, $event)"
           @dragover.prevent="onChartDragOver(idx)"
           @drop.prevent="onChartDrop(idx)"
@@ -306,6 +327,7 @@ const schemaInfo = [
             v-if="resolveChart(slot)"
             :chart="resolveChart(slot)!"
             :layout="slot"
+            @grab="onGrab(idx)"
             @update:chart="onUpdateChart"
             @update:layout="onUpdateLayout(slot.chart_id, $event)"
             @delete="deleteChartSlot(slot.chart_id)"
