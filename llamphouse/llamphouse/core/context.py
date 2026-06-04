@@ -452,7 +452,19 @@ class Context:
                 assistant_id=agent_id, thread_id=thread_id,
             )
             self._event_queues[task_key] = output_queue
-            await output_queue.subscribe()
+            try:
+                await output_queue.subscribe()
+            except Exception:
+                # subscribe() raised before call_agent entered its try/finally,
+                # so the cleanup in _cleanup_queue would never run. Drop the
+                # registered queue and close it here to avoid leaking the entry
+                # and its connection pool, then re-raise.
+                self._event_queues.pop(task_key, None)
+                try:
+                    await output_queue.close()
+                except Exception:
+                    pass
+                raise
 
         await self._run_queue.enqueue({
             "run_id": run.id,
