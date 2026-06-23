@@ -117,7 +117,7 @@ async def compass_ui(req: Request):
     # is registered as GET "/" relative to the sub-router.
     prefix = req.url.path.rstrip("/") or "/compass"
 
-    html = html_path.read_text()
+    html = html_path.read_text(encoding="utf-8")
     html = re.sub(r'<base\s+href="[^"]*"', f'<base href="{prefix}/"', html, count=1)
     return HTMLResponse(html)
 
@@ -906,6 +906,6 @@ async def compass_spa_fallback(full_path: str, req: Request):
     # e.g. req.url.path="/dashboard/threads", full_path="threads" → "/dashboard"
     prefix = req.url.path[:-(len(full_path) + 1)] if full_path else req.url.path.rstrip("/")
     prefix = prefix or "/compass"
-    html = html_path.read_text()
+    html = html_path.read_text(encoding="utf-8")
     html = re.sub(r'<base\s+href="[^"]*"', f'<base href="{prefix}/"', html, count=1)
     return HTMLResponse(html)

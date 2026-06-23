@@ -1,4 +1,5 @@
 import uuid
+import inspect
 from datetime import datetime, timezone
 
 import pytest
@@ -77,6 +78,12 @@ async def _cleanup_thread(data_store, thread_id):
         pass
 
 
+async def _resolve(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 async def test_retention_purge_dry_run_and_delete(data_store):
     thread_id = _uid("thread")
     message_id = _uid("msg")
@@ -119,7 +126,7 @@ async def test_retention_purge_dry_run_and_delete(data_store):
         assert await data_store.get_thread_by_id(thread_id) is not None
         assert await data_store.get_message_by_id(thread_id, message_id) is not None
         assert await data_store.get_run_by_id(thread_id, run_id) is not None
-        assert data_store.get_run_step_by_id(thread_id, run_id, step_id) is not None
+        assert await _resolve(data_store.get_run_step_by_id(thread_id, run_id, step_id)) is not None
 
         delete_policy = RetentionPolicy(
             ttl_days=1,
@@ -136,7 +143,7 @@ async def test_retention_purge_dry_run_and_delete(data_store):
         assert await data_store.get_thread_by_id(thread_id) is None
         assert await data_store.get_message_by_id(thread_id, message_id) is None
         assert await data_store.get_run_by_id(thread_id, run_id) is None
-        assert data_store.get_run_step_by_id(thread_id, run_id, step_id) is None
+        assert await _resolve(data_store.get_run_step_by_id(thread_id, run_id, step_id)) is None
 
     finally:
         await _cleanup_thread(data_store, thread_id)

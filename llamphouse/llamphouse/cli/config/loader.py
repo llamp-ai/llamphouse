@@ -129,7 +129,7 @@ def load_config(config_path: str | Path) -> LLAMPHouseConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with config_path.open() as f:
+    with config_path.open(encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     if not isinstance(raw, dict):

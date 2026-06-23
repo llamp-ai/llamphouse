@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 import asyncio
+import inspect
 
 from llamphouse.core.types.assistant import AssistantObject
 from llamphouse.core.types.enum import run_status, run_step_status
@@ -119,6 +120,12 @@ async def _cleanup_thread(data_store, thread_id):
 
 def _unwrap_tool_call(call):
     return call.root if hasattr(call, "root") else call
+
+
+async def _resolve(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def test_thread_crud(data_store):
@@ -313,12 +320,14 @@ async def test_run_steps_and_tool_outputs(data_store):
         await asyncio.sleep(0.001)
         await data_store.insert_run_step(thread_id, run.id, step2)
 
-        listed = data_store.list_run_steps(thread_id, run.id, limit=1, order="desc", after=None, before=None)
+        listed = await _resolve(
+            data_store.list_run_steps(thread_id, run.id, limit=1, order="desc", after=None, before=None)
+        )
         assert listed is not None
         assert len(listed.data) == 1
         assert listed.has_more is True
 
-        fetch = data_store.get_run_step_by_id(thread_id, run.id, step1_id)
+        fetch = await _resolve(data_store.get_run_step_by_id(thread_id, run.id, step1_id))
         assert fetch is not None
         assert fetch.status == run_step_status.COMPLETED
 
@@ -341,7 +350,7 @@ async def test_run_steps_and_tool_outputs(data_store):
         assert run_after.status == run_status.IN_PROGRESS
         assert run_after.required_action is None
 
-        step2_fetch = data_store.get_run_step_by_id(thread_id, run.id, step2_id)
+        step2_fetch = await _resolve(data_store.get_run_step_by_id(thread_id, run.id, step2_id))
         assert step2_fetch is not None
         tool_call = _unwrap_tool_call(step2_fetch.step_details.tool_calls[0])
         assert tool_call.function.output == "ok"
