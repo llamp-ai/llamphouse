@@ -1,4 +1,5 @@
 import uuid
+import inspect
 from datetime import datetime, timezone
 
 import pytest
@@ -75,6 +76,12 @@ async def _cleanup_thread(data_store, thread_id):
         await data_store.delete_thread(thread_id)
     except Exception:
         pass
+
+
+async def _resolve(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def test_retention_purge_dry_run_and_delete(data_store):

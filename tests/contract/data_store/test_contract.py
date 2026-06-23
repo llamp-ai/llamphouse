@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 import asyncio
+import inspect
 
 from llamphouse.core.types.assistant import AssistantObject
 from llamphouse.core.types.enum import run_status, run_step_status
@@ -119,6 +120,12 @@ async def _cleanup_thread(data_store, thread_id):
 
 def _unwrap_tool_call(call):
     return call.root if hasattr(call, "root") else call
+
+
+async def _resolve(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def test_thread_crud(data_store):

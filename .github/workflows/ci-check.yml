@@ -7,6 +7,25 @@ on:
     branches: [dev, main]
 
 jobs:
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: llamphouse/llamphouse/core/adapters/compass/frontend/package-lock.json
+
+      - name: Build Compass frontend
+        working-directory: llamphouse/llamphouse/core/adapters/compass/frontend
+        run: |
+          npm ci
+          npm run build
+
   test:
     runs-on: ubuntu-latest
     strategy:

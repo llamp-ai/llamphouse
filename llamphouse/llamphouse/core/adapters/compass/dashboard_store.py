@@ -44,7 +44,7 @@ class DashboardStore:
     def _load(self):
         if self._path.exists():
             try:
-                raw = json.loads(self._path.read_text())
+                raw = json.loads(self._path.read_text(encoding="utf-8"))
                 self._dashboards = {d["id"]: d for d in raw}
                 self._migrate_embedded_charts()
             except Exception:
@@ -89,7 +89,8 @@ class DashboardStore:
     def _save(self):
         try:
             self._path.write_text(
-                json.dumps(list(self._dashboards.values()), indent=2, default=str)
+                json.dumps(list(self._dashboards.values()), indent=2, default=str),
+                encoding="utf-8",
             )
         except Exception:
             pass

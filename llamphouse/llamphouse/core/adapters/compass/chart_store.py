@@ -36,7 +36,7 @@ class ChartStore:
     def _load(self):
         if self._path.exists():
             try:
-                raw = json.loads(self._path.read_text())
+                raw = json.loads(self._path.read_text(encoding="utf-8"))
                 self._charts = {c["id"]: c for c in raw}
             except Exception:
                 self._charts = {}
@@ -44,7 +44,8 @@ class ChartStore:
     def _save(self):
         try:
             self._path.write_text(
-                json.dumps(list(self._charts.values()), indent=2, default=str)
+                json.dumps(list(self._charts.values()), indent=2, default=str),
+                encoding="utf-8",
             )
         except Exception:
             pass
