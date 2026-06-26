@@ -113,7 +113,7 @@ async def test_retention_purge_dry_run_and_delete(data_store):
         dry_policy = RetentionPolicy(
             ttl_days=1,
             dry_run=True,
-            batch_size=1,
+            batch_size=None,
             now_fn=lambda: now_future,
         )
 
@@ -131,7 +131,7 @@ async def test_retention_purge_dry_run_and_delete(data_store):
         delete_policy = RetentionPolicy(
             ttl_days=1,
             dry_run=False,
-            batch_size=1,
+            batch_size=None,
             now_fn=lambda: now_future,            
         )
         stats = await data_store.purge_expired(delete_policy)

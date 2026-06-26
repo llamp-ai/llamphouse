@@ -144,6 +144,10 @@ _uvicorn_access.propagate = False
 DEFAULT_RETENTION_POLICY = RetentionPolicy(ttl_days=365, run_hour=2, run_minute=0, batch_size=1000, dry_run=False, enabled=False,)
 
 
+def _callable_name(value) -> str:
+    return getattr(value, "__name__", type(value).__name__)
+
+
 class _StreamingTagMiddleware:
     """ASGI middleware that sets a contextvar flag when the response
     uses text/event-stream so the access log formatter can append
@@ -248,7 +252,7 @@ class LLAMPHouse:
             worker=type(self.worker).__name__,
             data_store=type(self.fastapi.state.data_store).__name__,
             run_queue=type(self.fastapi.state.run_queue).__name__,
-            event_queue=self.fastapi.state.queue_class.__name__,
+            event_queue=_callable_name(self.fastapi.state.queue_class),
             config_store=type(self.fastapi.state.config_store).__name__,
             tracing_store=type(getattr(self.fastapi.state, "tracing_store", None)).__name__,
             auth=bool(self.authenticator),

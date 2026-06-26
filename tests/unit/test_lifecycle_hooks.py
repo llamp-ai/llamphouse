@@ -75,6 +75,11 @@ def _make_app(agents):
     )
 
 
+class CallableEventQueueFactory:
+    def __call__(self, assistant_id: str, thread_id: str):
+        return InMemoryEventQueue(assistant_id, thread_id)
+
+
 async def _run_lifespan(app: LLAMPHouse):
     """Drive the ASGI lifespan manually: startup → yield → shutdown."""
     ctx = app._lifespan(app.fastapi)
@@ -178,3 +183,20 @@ async def test_default_hooks_are_noop():
     app = _make_app([agent])
     # Should not raise
     await _run_lifespan(app)
+
+
+def test_accepts_callable_event_queue_factory_without_name():
+    agent = LifecycleAgent(id="lc-factory")
+    factory = CallableEventQueueFactory()
+
+    app = LLAMPHouse(
+        agents=[agent],
+        authenticator=None,
+        worker=AsyncWorker(time_out=5.0),
+        event_queue_class=factory,
+        data_store=InMemoryDataStore(),
+        run_queue=InMemoryQueue(),
+        compass=False,
+    )
+
+    assert app.fastapi.state.queue_class is factory

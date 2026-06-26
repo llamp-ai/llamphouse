@@ -142,9 +142,9 @@ async def overview(req: Request):
 
     return JSONResponse({
         "assistants": len(assistants),
-        "threads": thread_count,
-        "runs": run_count,
-        "messages": message_count,
+        "threads": await db.count_threads(),
+        "runs": await db.count_runs(),
+        "messages": await db.count_messages(),
     })
 
 
@@ -356,9 +356,7 @@ async def get_run(req: Request, thread_id: str, run_id: str):
 @router.get("/api/threads/{thread_id}/runs/{run_id}/steps")
 async def list_run_steps(req: Request, thread_id: str, run_id: str, limit: int = 100, order: str = "asc"):
     db = req.app.state.data_store
-    result = db.list_run_steps(thread_id, run_id, limit=limit, order=order, after=None, before=None)
-    if hasattr(result, "__await__"):
-        result = await result
+    result = await db.list_run_steps(thread_id, run_id, limit=limit, order=order, after=None, before=None)
     if not result:
         return JSONResponse({"data": [], "total": 0})
     return JSONResponse({"data": _serialize_list(result.data), "total": len(result.data)})

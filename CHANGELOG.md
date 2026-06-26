@@ -65,6 +65,26 @@
 
 - `DashboardAdapter` and its API routes / static files. Dashboard functionality is now served exclusively via the Compass adapter.
 
+## [1.2.4] - 02/06/2026
+
+### Added
+
+- Added core data-store contract methods for run lookup, operational listing, and aggregate counts.
+- Added data-store contract coverage for run `stream`, `provider_config`, lifecycle timestamps, `usage`, and operational APIs.
+- Added Compass compare integration coverage for loading runs by run id across data-store backends.
+
+### Changed
+
+- Standardized run storage behavior across `InMemoryDataStore` and `PostgresDataStore`.
+- Updated Compass and Dashboard routes to use public data-store APIs instead of in-memory private structures.
+- Squashed `provider_config` into the existing `runs.stream` migration for a clean migration chain.
+
+### Fixed
+
+- Fixed Postgres-backed runs missing persisted `stream` data.
+- Fixed run status updates so lifecycle timestamps and `usage` are persisted consistently.
+- Fixed `LLAMPHouse` initialization with callable event queue factories such as `RedisEventQueueFactory`.
+
 ## [1.2.3] - 11/05/2026
 
 ### Added

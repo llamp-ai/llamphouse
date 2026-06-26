@@ -150,6 +150,7 @@ class Run(Base):
     truncation_strategy = Column(JSONType)
     tool_choice = Column(JSONType)
     parallel_tool_calls = Column(Boolean, nullable=False, server_default="false")
+    stream = Column(Boolean, nullable=False, server_default="false")
     response_format = Column(JSONType, nullable=False, server_default='"auto"')
     thread_id = Column(String, ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
     assistant_id = Column(String, nullable=False)
@@ -162,6 +163,7 @@ class Run(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     reasoning_effort = Column(String, nullable=False, server_default='medium')
     config_values = Column(JSONType)
+    provider_config = Column(JSONType)
     
     thread = relationship("Thread", back_populates="runs")
     run_steps = relationship("RunStep", back_populates="run")
@@ -187,9 +189,11 @@ class Run(Base):
             "truncation_strategy": self.truncation_strategy,
             "tool_choice": self.tool_choice,
             "parallel_tool_calls": self.parallel_tool_calls,
+            "stream": self.stream,
             "response_format": self.response_format,
             "reasoning_effort": self.reasoning_effort,
             "config_values": self.config_values,
+            "provider_config": self.provider_config,
             "thread_id": self.thread_id,
             "assistant_id": self.assistant_id,
             "expires_at": round(float(self.expires_at), 3) if self.expires_at else None,

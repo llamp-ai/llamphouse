@@ -604,6 +604,23 @@ class Context:
                                 if chunk:
                                     total_chars += len(chunk)
                                     yield chunk
+
+                    elif evt_name == event_type.MESSAGE_COMPLETED:
+                        try:
+                            evt_data = json.loads(evt.data)
+                        except Exception:
+                            continue
+                        for block in evt_data.get("content", []):
+                            if block.get("type") == "text":
+                                text_val = block.get("text", "")
+                                chunk = (
+                                    text_val.get("value", "")
+                                    if isinstance(text_val, dict)
+                                    else str(text_val)
+                                )
+                                if chunk:
+                                    total_chars += len(chunk)
+                                    yield chunk
             else:
                 # Non-streaming fallback: yield entire result as one chunk
                 text = await self._poll_for_result(child_thread_id, run)
@@ -626,6 +643,10 @@ class Context:
     def send_chunk(self, text: str) -> None:
         """Send a text chunk to the client as a MESSAGE_DELTA event.
 
+        Emits ``thread.message.created`` and ``thread.message.in_progress``
+        before the first delta so that OpenAI-SDK consumers can set their
+        message snapshot (required by ``accumulate_event``).
+
         This is a convenience helper for use inside a
         ``call_agent()`` loop::
 
@@ -635,10 +656,38 @@ class Context:
         :param text: The text fragment to send.
         """
         from .streaming.event import Event
+        from datetime import datetime
+
+        if self._send_chunk_message_id is None:
+            self._send_chunk_message_id = str(uuid.uuid4())
+            now_ts = int(datetime.now().timestamp())
+            msg_payload = {
+                "id": self._send_chunk_message_id,
+                "object": "thread.message",
+                "created_at": now_ts,
+                "thread_id": self.thread_id,
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [],
+                "assistant_id": self.assistant_id,
+                "run_id": self.run_id,
+                "attachments": [],
+                "metadata": {},
+            }
+            self._send_event(Event(
+                event=event_type.MESSAGE_CREATED,
+                data=json.dumps(msg_payload),
+            ))
+            self._send_event(Event(
+                event=event_type.MESSAGE_IN_PROGRESS,
+                data=json.dumps(msg_payload),
+            ))
 
         self._send_event(Event(
             event=event_type.MESSAGE_DELTA,
             data=json.dumps({
+                "id": self._send_chunk_message_id,
+                "object": "thread.message.delta",
                 "delta": {
                     "content": [{
                         "type": "text",
