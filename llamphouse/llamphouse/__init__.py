@@ -24,6 +24,7 @@ from .core.queue import BaseQueue, InMemoryQueue, RedisQueue
 from .core.workers import AsyncWorker, DistributedWorker
 from .core.types.message import TextPart, ImagePart, FilePart, DataPart
 from .core.triggers import BaseTrigger, TriggerInfo, WebhookTrigger
+from .core.health import HealthCheckResult, HealthCheckStatus, HealthCheckable
 from .core.tracing import (
     BaseTracingStore,
     InMemoryTracingStore,
@@ -66,4 +67,7 @@ __all__ = [
     "BaseTrigger",
     "TriggerInfo",
     "WebhookTrigger",
+    "HealthCheckResult",
+    "HealthCheckStatus",
+    "HealthCheckable",
 ]

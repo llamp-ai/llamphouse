@@ -63,7 +63,8 @@ If you add custom markers (e.g., postgres, e2e, optional), register them in pyte
 ## Postgres contract tests
 
 - Set DATABASE_URL to a valid Postgres connection string.
-- Postgres tests are skipped automatically when `DATABASE_URL` is missing or not Postgres.
+- Postgres tests are skipped automatically when `DATABASE_URL` is missing, not Postgres, or the database is not reachable with a lightweight `SELECT 1`.
+- If the database connection succeeds, schema/query failures are treated as real test failures rather than skips.
 
 ## Integration server
 

@@ -19,6 +19,8 @@ through `llamphouse.yaml`.
 - The difference between a **definition** (the class) and an
   **agent** (a running instance with specific settings)
 - How an agent reads its deployment config via `self.settings`
+- How to declare a webhook trigger for one deployment
+- How to choose a data store from YAML
 - How to target a specific agent from a client
 
 ## Prerequisites
@@ -119,12 +121,25 @@ agents:          # ← running instances with their own config
     config:
       persona: formal butler
       greeting: "Good day, esteemed visitor."
+    triggers:
+      - webhook:
+          path: /triggers/greeter-formal
+          idempotency:
+            key: id
+          thread_metadata:
+            tenant_id: tenant.id
+          run_metadata:
+            event_type: type
+            event_id: id
 
   - name: greeter-casual
     definition: greeting-agent
     config:
       persona: laid-back surfer
       greeting: "Hey there! What's up, dude?"
+
+data_store:
+  in_memory:
 ```
 
 When you run `llamphouse up`, the CLI:
@@ -134,6 +149,12 @@ When you run `llamphouse up`, the CLI:
 3. Creates **two separate instances** — `greeter-formal` and `greeter-casual`
    — and sets `agent.settings` on each from its `config` block.
 4. Starts a LLAMPHouse server with both instances registered.
+
+The `greeter-formal` deployment also exposes `POST /triggers/greeter-formal`.
+Mapped payload fields are copied into thread/run metadata when present; missing
+fields are ignored and the webhook still accepts the event. `idempotency.key`
+uses a JSON body dot-path to dedupe normal webhook retries for the same
+deployment and trigger path.
 
 ### `agents.py`
 

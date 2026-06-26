@@ -12,13 +12,21 @@
 - **WebhookTrigger example** (`examples/11_WebhookTrigger`) — end-to-end demonstration of triggering an agent run from an external HTTP POST.
 - **PlannerAgent example** (`examples/12_PlannerAgent`) — multi-node planner/executor/synthesizer agent with tracing wired in.
 - **`llamphouse.yaml` config** — declarative server config loaded by `llamphouse.cli.config.loader` and validated by Pydantic models in `llamphouse.cli.config.schema`. CLI now reads it on startup.
+- **Strict `llamphouse.yaml` validation** — unknown fields now fail fast, `${ENV_VAR}` references are resolved before validation, and missing environment variables produce user-friendly errors.
+- **YAML-configured data stores** — `data_store` can now be configured from `llamphouse.yaml`, including `postgres.database_url`.
+- **YAML-configured webhook triggers** — deployment-level `triggers` can now define `WebhookTrigger` routes from `llamphouse.yaml`.
+- **`llamphouse check` Health Check** — new preflight command for validating `llamphouse.yaml` without starting the server. It checks schema, component imports, entrypoints, route conflicts, data-store connectivity, tracing-store connectivity, and exits non-zero on failure for CI.
+- **Health check output modes** — `llamphouse check` supports `--format text|json`, `--verbose`, and `--timeout` for external dependency checks.
 - **CLI reorganisation** — moved entrypoints into the `llamphouse.cli` package.
 - **Internal span exporter from tracing store** — tracing setup can wire the configured tracing store as a span exporter without external OTLP plumbing.
 - **MkDocs landing page hook** — `hooks/landing_page.py` generates a custom `site/index.html` after each build.
 - **Examples sync hook** — `hooks/sync_examples.py` keeps `docs/examples.md` in sync with the `examples/` directory, including a structured table and progression guide.
 - **LLAMPHouseYAML example** (`examples/13_LLAMPHouseYAML`) — declarative server setup driven by `llamphouse.yaml`.
-- Database migration `timestamps_integer_to_float` — moves timestamp columns from `Integer` to `Float` for millisecond precision.
+- **WebhookTrigger idempotency / dedupe** — webhook triggers can opt into idempotency by mapping a request payload field as the idempotency key. Duplicate requests return the original run instead of enqueueing a second run.
+- **WebhookTrigger metadata mapping** — webhook request payload fields can be mapped into thread metadata and run metadata. Internal webhook metadata is stored under reserved `__webhook_*` run metadata keys.
+- Database migration for runs now combines `stream`, `provider_config`, and float timestamp columns into the 1.3.0 migration chain.
 - **Data-store list / count contract extended** — `BaseDataStore` now declares `list_threads`, `list_all_runs`, `get_run_any_thread`, `list_runs_by_parent_ids`, `get_first_run_assistant_ids`, `count_threads`, `count_runs`, and `count_messages`. Both `InMemoryDataStore` and `PostgresDataStore` implement them. These were previously missing or in-memory-only, which silently returned empty results on Postgres in Compass for Threads, Runs, the flow tree, and the home-page stats.
+- **Run persistence contract coverage** — data-store contract tests now cover run stream values, `provider_config`, lifecycle timestamps, usage, and operational listing APIs across supported backends.
 - **Server-side pagination on Compass list endpoints** — `/api/threads` and `/api/runs` now accept `limit` / `order` / `after` / `before` cursor params and return `{ data, first_id, last_id, has_more, total }`. Threads and Runs views render Prev / Next page controls; the cursor stack and active filters live in the URL so Back from a detail page restores the exact same state.
 - **Server-side filtering** — shared `_filters` helper translates a Compass filter condition into either a SQLAlchemy clause or a Python predicate. Each list endpoint declares a filterable-field allowlist (`Thread`: `id`, `agent_id`, `created_at`, `metadata`; `Run`: `id`, `agent_id`, `thread_id`, `status`, `created_at`). `agent_id` on threads is resolved via a Postgres `EXISTS` subquery.
 - **Reusable Compass `FilterBuilder`** — draft / applied state with explicit Apply, Reset, and Clear buttons; "N active" / "unsaved changes" indicators; quick-add chips per field. Views are unaffected until Apply is pressed.
@@ -42,10 +50,11 @@
 - Logging during startup now surfaces more detailed information about the application state.
 - **Ignite banner reorganised** into `Adapters` / `Triggers` / `Agents` / `Infrastructure` / `Optional features` sections; webhook trigger routes are listed inline (`▸ WebhookTrigger    /triggers/report → report-agent`).
 - **Route-conflict warnings on boot** — duplicate webhook trigger paths, or trigger paths that fall under a non-root adapter prefix, now log a warning at startup.
+- **Health checks use the runtime environment path** — `llamphouse check` loads `.env` from the config directory first, then falls back to the current working directory.
 - **Compass flow rendering optimised** — edge geometry (`path`, `midX`, `midY`, colour, dash, marker) is pre-computed once inside `flowLayout` and bound directly in the template instead of being recomputed per-edge per-render. Roughly `O(E·N) → O(E + N)` per re-render.
 - **Run-detail I/O resolver tolerates missing `run_id`** — assistant messages without a stamped `run_id` now match the run's `started_at..completed_at` window. Messages route also re-introduces `run_id` / `assistant_id` as explicit `null` (the prior `exclude_none=True` serialiser was stripping them entirely).
 - **`PostgresDataStore.close()` is bounded** — `engine.dispose()` is wrapped in `asyncio.wait_for(..., timeout=5.0)` so a hung asyncpg socket can't block server shutdown for the OS TCP timeout.
-- **Compass adapter no longer relies on missing methods.** All `hasattr(db, "…")` branches that masked data-store API gaps (`list_threads`, `list_all_runs`, `count_threads/runs/messages`, `get_run_by_run_id`, `list_runs_all`) are gone, replaced by abstract methods on `BaseDataStore`. The only `hasattr` left is the legitimate backend dispatch in the dashboard SQL endpoint.
+- **Compass adapter no longer relies on missing methods.** All `hasattr(db, "…")` branches that masked data-store API gaps (`list_threads`, `list_all_runs`, `count_threads/runs/messages`, `get_run_any_thread`, `list_runs_all`) are gone, replaced by abstract methods on `BaseDataStore`. The only `hasattr` left is the legitimate backend dispatch in the dashboard SQL endpoint.
 
 ### Fixed
 
@@ -54,6 +63,9 @@
 - Compass Runs tab no longer renders empty against `PostgresDataStore` (missing `list_all_runs`).
 - Compass agent-flow view no longer silently truncates the tree when a parent run is older than the recent-runs window (the BFS used to bail out at the first missing ancestor).
 - Compass Run Detail Input/Output panel no longer appears empty for messages produced by `context.insert_message(...)` that weren't stamped with a `run_id`.
+- Postgres-backed runs now persist and round-trip `stream`, `provider_config`, lifecycle timestamps, and usage consistently.
+- LLAMPHouse initialization now works with callable event queue factories such as `RedisEventQueueFactory`.
+- `llamphouse check` now returns a non-zero process exit code when any Health Check fails.
 - `SAWarning: garbage collector is trying to clean up non-checked-in connection` on Compass thread listings, caused by an N+1 burst of sessions for per-thread agent enrichment (replaced with a single `SELECT DISTINCT ON (thread_id) thread_id, assistant_id` query via the new `get_first_run_assistant_ids`).
 - `SyntaxWarning: invalid escape sequence '\s'` in `PostgresDataStore` docstring.
 

@@ -24,6 +24,7 @@ from typing import Optional
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from .base_tracing_store import BaseTracingStore
+from ...health import HealthCheckResult
 from ._utils import span_to_dict, span_to_trace_row
 
 logger = logging.getLogger("llamphouse.tracing.postgres")
@@ -140,11 +141,12 @@ def _row_to_span_dict(row) -> dict:
 class PostgresSpanExporter(SpanExporter):
     """Synchronous span exporter that writes to ``llamphouse_traces``."""
 
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, ensure_table: bool = True) -> None:
         self._url = _normalize_url(database_url)
         self._lock = threading.Lock()
         self._table_ready = False
-        self._ensure_table()
+        if ensure_table:
+            self._ensure_table()
 
     def _connect(self):
         import psycopg2
@@ -230,14 +232,33 @@ class PostgresTracingStore(BaseTracingStore):
         formats — the async prefix is stripped automatically.
     """
 
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, ensure_table: bool = True) -> None:
         self._url = _normalize_url(database_url)
-        self._exporter = PostgresSpanExporter(database_url)
+        self._exporter = PostgresSpanExporter(database_url, ensure_table=ensure_table)
 
     # ── BaseTracingStore ──────────────────────────────────────────────────
 
     def get_span_exporter(self) -> SpanExporter:
         return self._exporter
+
+    async def health_check(self) -> HealthCheckResult:
+        def _ping():
+            import psycopg2
+            conn = psycopg2.connect(self._url)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+            finally:
+                conn.close()
+
+        await asyncio.to_thread(_ping)
+        return HealthCheckResult.pass_(
+            "tracing.postgres",
+            "tracing",
+            "Connected",
+            backend="postgres",
+            operation="select 1",
+        )
 
     async def get_trace(self, run_id: str) -> list[dict]:
         def _query():

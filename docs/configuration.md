@@ -66,8 +66,70 @@ data_store = InMemoryDataStore()
 
 # Postgres
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
-data_store = PostgresDataStore()  # uses DATABASE_URL env var
+data_store = PostgresDataStore(database_url="postgresql+asyncpg://...")
 ```
+
+## YAML configuration
+
+`llamphouse up` can build the runtime from `llamphouse.yaml`.
+
+```yaml
+version: "0.1"
+
+definitions:
+  - name: report-agent
+    entrypoint: agents.py:ReportAgent
+
+agents:
+  - name: report-worker
+    definition: report-agent
+    triggers:
+      - webhook:
+          path: /triggers/report
+          secret_env: WEBHOOK_SECRET
+          idempotency:
+            key: id
+          thread_metadata:
+            tenant_id: tenant.id
+          run_metadata:
+            event_type: type
+            event_id: id
+
+data_store:
+  postgres:
+    database_url: ${DATABASE_URL}
+    pool_size: 5
+
+tracing:
+  in_memory:
+```
+
+String values in `llamphouse.yaml` can reference environment variables with
+`${ENV_VAR}`. Missing environment variables fail config loading before the
+server starts.
+
+Validate a config without starting the server:
+
+```bash
+llamphouse check --config llamphouse.yaml
+llamphouse check --config llamphouse.yaml --format json
+```
+
+`llamphouse check` loads `.env` from the config directory before falling back
+to the current working directory. It validates schema, entrypoints, framework
+component configuration, route conflicts, and lightweight external dependency
+pings. It does not run agents, start workers, create tracing tables, run
+migrations, or audit database structure.
+
+Webhook trigger metadata mappings copy values from the JSON payload into
+thread or run metadata. Missing payload paths are ignored and the webhook still
+returns `202 Accepted`; the full payload remains available on
+`run.metadata["__trigger__"]["data"]`.
+
+Webhook idempotency is opt-in. `idempotency.key` is a JSON body dot-path; when
+the same Agent Deployment receives the same key on the same webhook path,
+LLAMPHouse returns the original `run_id` and `thread_id` with `deduped: true`
+instead of creating another run.
 
 ## Queue backends
 

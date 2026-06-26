@@ -7,7 +7,9 @@ from pydantic import ValidationError
 from llamphouse.cli.config.loader import build_app_from_config, load_config
 from llamphouse.core.adapters.a2a import A2AAdapter
 from llamphouse.core.adapters.compass import CompassAdapter
+from llamphouse.core.data_stores import PostgresDataStore
 from llamphouse.core.tracing.stores import InMemoryTracingStore
+from llamphouse.core.triggers import WebhookTrigger
 from llamphouse.core.workers import AsyncWorker
 
 
@@ -223,6 +225,148 @@ tracing:
     assert isinstance(app.worker, AsyncWorker)
     assert app.worker.time_out == 60
     assert isinstance(app.fastapi.state.tracing_store, InMemoryTracingStore)
+
+
+def test_build_app_from_config_instantiates_explicit_data_store(tmp_path):
+    project = _copy_project(tmp_path)
+    app = _build_app(
+        project,
+        """
+version: "0.1"
+definitions:
+  - name: responder
+    entrypoint: agents.py:ConfigurableAgent
+agents:
+  - name: support-agent
+    definition: responder
+adapters: []
+data_store:
+  postgres:
+    database_url: postgresql+asyncpg://user:pass@localhost/llamphouse
+tracing:
+  in_memory:
+""",
+    )
+
+    assert isinstance(app.fastapi.state.data_store, PostgresDataStore)
+
+
+def test_load_config_expands_env_placeholders_for_data_store_database_url(tmp_path, monkeypatch):
+    project = _copy_project(tmp_path)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://user:pass@localhost/llamphouse",
+    )
+    config_path = _write_yaml(
+        project,
+        """
+version: "0.1"
+definitions:
+  - name: responder
+    entrypoint: agents.py:ConfigurableAgent
+agents:
+  - name: support-agent
+    definition: responder
+data_store:
+  postgres:
+    database_url: ${DATABASE_URL}
+""",
+    )
+
+    config = load_config(config_path)
+
+    assert config.data_store == {
+        "postgres": {
+            "database_url": "postgresql+asyncpg://user:pass@localhost/llamphouse",
+        }
+    }
+
+
+def test_load_config_reports_missing_env_placeholder(tmp_path, monkeypatch):
+    project = _copy_project(tmp_path)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    config_path = _write_yaml(
+        project,
+        """
+version: "0.1"
+definitions:
+  - name: responder
+    entrypoint: agents.py:ConfigurableAgent
+agents:
+  - name: support-agent
+    definition: responder
+data_store:
+  postgres:
+    database_url: ${DATABASE_URL}
+""",
+    )
+
+    with pytest.raises(ValueError, match="DATABASE_URL.*data_store.postgres.database_url"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_unknown_top_level_fields(tmp_path):
+    project = _copy_project(tmp_path)
+    config_path = _write_yaml(
+        project,
+        """
+version: "0.1"
+definitions: []
+agents: []
+unknown_section: {}
+""",
+    )
+
+    with pytest.raises(ValidationError, match="unknown_section"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_unknown_nested_fields(tmp_path):
+    project = _copy_project(tmp_path)
+    config_path = _write_yaml(
+        project,
+        """
+version: "0.1"
+definitions:
+  - name: responder
+    entrypoint: agents.py:ConfigurableAgent
+agents:
+  - name: support-agent
+    definition: responder
+    typo_field: true
+""",
+    )
+
+    with pytest.raises(ValidationError, match="typo_field"):
+        load_config(config_path)
+
+
+def test_build_app_from_config_attaches_yaml_webhook_trigger_to_agent(tmp_path):
+    project = _copy_project(tmp_path)
+    app = _build_app(
+        project,
+        """
+version: "0.1"
+definitions:
+  - name: responder
+    entrypoint: agents.py:ConfigurableAgent
+agents:
+  - name: support-agent
+    definition: responder
+    triggers:
+      - webhook:
+          path: /triggers/support
+          secret_env: SUPPORT_WEBHOOK_SECRET
+adapters: []
+tracing:
+  in_memory:
+""",
+    )
+
+    trigger = app.agents[0].triggers[0]
+    assert isinstance(trigger, WebhookTrigger)
+    assert trigger.path == "triggers/support"
+    assert trigger.secret_env == "SUPPORT_WEBHOOK_SECRET"
 
 
 def test_load_config_reads_utf8_yaml(tmp_path):

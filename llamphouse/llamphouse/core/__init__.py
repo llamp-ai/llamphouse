@@ -3,6 +3,7 @@ from .assistant import Agent, Assistant
 from .context import Context
 from .adapters.a2a.types import AgentSkill
 from .triggers import BaseTrigger, TriggerInfo, WebhookTrigger
+from .health import HealthCheckResult, HealthCheckStatus, HealthCheckable
 
 __all__ = [
     "LLAMPHouse",
@@ -13,4 +14,7 @@ __all__ = [
     "BaseTrigger",
     "TriggerInfo",
     "WebhookTrigger",
+    "HealthCheckResult",
+    "HealthCheckStatus",
+    "HealthCheckable",
 ]

@@ -9,6 +9,9 @@ import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 from openai import OpenAI
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from llamphouse.core import LLAMPHouse, Agent, Context
 from llamphouse.core.auth import KeyAuth
@@ -60,14 +63,65 @@ def _is_postgres_url(url: Optional[str]) -> bool:
     """Helper: validate DATABASE_URL points to Postgres for postgres-marked tests."""
     if not url:
         return False
-    return url.startswith("postgresql://") or url.startswith("postgres://")
+    return (
+        url.startswith("postgresql://")
+        or url.startswith("postgres://")
+        or url.startswith("postgresql+asyncpg://")
+    )
+
+
+def _postgres_async_url(url: str) -> str:
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    if url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url[len("postgresql://"):]
+    if url.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url[len("postgres://"):]
+    return url
+
+
+_POSTGRES_READINESS: dict[str, tuple[bool, str]] = {}
+
+
+async def _ping_postgres(url: str) -> None:
+    engine = create_async_engine(
+        _postgres_async_url(url),
+        poolclass=NullPool,
+        connect_args={"timeout": 2},
+    )
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    finally:
+        await engine.dispose()
+
+
+def _postgres_ready(url: Optional[str]) -> tuple[bool, str]:
+    if not _is_postgres_url(url):
+        return False, "postgres tests require DATABASE_URL=postgresql://..."
+
+    assert url is not None
+    cached = _POSTGRES_READINESS.get(url)
+    if cached is not None:
+        return cached
+
+    try:
+        asyncio.run(_ping_postgres(url))
+    except Exception as exc:
+        result = False, f"postgres tests skipped: DATABASE_URL is set but database is not reachable ({exc})"
+    else:
+        result = True, ""
+
+    _POSTGRES_READINESS[url] = result
+    return result
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
     """Pytest hook: skip postgres/e2e tests when required env vars are missing."""
     if item.get_closest_marker("postgres"):
-        if not _is_postgres_url(os.getenv("DATABASE_URL")):
-            pytest.skip("postgres tests require DATABASE_URL=postgresql://...")
+        ready, reason = _postgres_ready(os.getenv("DATABASE_URL"))
+        if not ready:
+            pytest.skip(reason)
 
     if item.get_closest_marker("e2e"):
         if os.getenv("E2E") not in {"1", "true", "True", "TRUE", "yes", "YES"}:
@@ -266,13 +320,14 @@ def data_store_params():
     ]
 
     db_url = os.getenv("DATABASE_URL")
-    if _is_postgres_url(db_url):
+    postgres_ready, _reason = _postgres_ready(db_url)
+    if postgres_ready and db_url is not None:
         try:
             from llamphouse.core.data_stores.postgres_store import PostgresDataStore
         except Exception:
             PostgresDataStore = None
         if PostgresDataStore is not None:
-            async_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+            async_url = _postgres_async_url(db_url)
             backends.append(
                 DataStoreBackend(
                     name="postgres",

@@ -5,6 +5,8 @@ from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse.core.queue.in_memory_queue import InMemoryQueue
 from llamphouse.core.triggers import WebhookTrigger
 from llamphouse.core.types.config import StringParam
+from llamphouse.core.types.run import RunCreateRequest
+from llamphouse.core.types.thread import CreateThreadRequest
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -114,6 +116,62 @@ async def test_webhook_trigger_wraps_non_object_json_payload(webhook_app, webhoo
     assert run.metadata["__trigger__"]["data"] == {"payload": ["rpt_1", "rpt_2"]}
 
 
+async def test_webhook_trigger_maps_payload_fields_to_thread_and_run_metadata():
+    class MetadataMappedWebhookAgent(Agent):
+        triggers = [
+            WebhookTrigger(
+                path="/triggers/mapped-report",
+                thread_metadata={
+                    "tenant_id": "tenant.id",
+                    "missing_thread": "tenant.missing",
+                },
+                run_metadata={
+                    "event_type": "type",
+                    "event_id": "id",
+                    "missing_run": "does.not.exist",
+                },
+            )
+        ]
+
+        async def run(self, context: Context):
+            await context.insert_message("mapped-ok")
+
+    app = LLAMPHouse(
+        agents=[MetadataMappedWebhookAgent(id="mapped-report-agent")],
+        adapters=[],
+        data_store=InMemoryDataStore(),
+        run_queue=InMemoryQueue(),
+        tracing_store=None,
+    )
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app.fastapi)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/triggers/mapped-report",
+            json={
+                "id": "evt_123",
+                "type": "report.created",
+                "tenant": {"id": "tenant_456"},
+            },
+        )
+
+    assert response.status_code == 202
+    payload = response.json()
+
+    thread = await app.fastapi.state.data_store.get_thread_by_id(payload["thread_id"])
+    run = await app.fastapi.state.data_store.get_run_by_id(
+        payload["thread_id"],
+        payload["run_id"],
+    )
+
+    assert thread.metadata == {"tenant_id": "tenant_456"}
+    assert run.metadata["event_type"] == "report.created"
+    assert run.metadata["event_id"] == "evt_123"
+    assert "missing_run" not in run.metadata
+    assert run.metadata["__trigger__"]["data"]["tenant"]["id"] == "tenant_456"
+
+
 async def test_webhook_trigger_requires_bearer_auth_when_secret_is_configured(
     monkeypatch,
     webhook_client,
@@ -136,3 +194,269 @@ async def test_webhook_trigger_requires_bearer_auth_when_secret_is_configured(
         json={"ok": True},
     )
     assert valid.status_code == 202
+
+
+async def test_webhook_trigger_fails_closed_when_secret_env_is_missing(
+    monkeypatch,
+    webhook_client,
+):
+    monkeypatch.delenv("WEBHOOK_SECRET", raising=False)
+
+    response = await webhook_client.post(
+        "/triggers/secure-report",
+        headers={"Authorization": "Bearer anything"},
+        json={"ok": True},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Webhook secret is not configured"
+
+
+async def test_webhook_trigger_rejects_missing_idempotency_key():
+    class IdempotentWebhookAgent(Agent):
+        triggers = [
+            WebhookTrigger(
+                path="/triggers/idempotent-report",
+                idempotency={"key": "id"},
+            )
+        ]
+
+        async def run(self, context: Context):
+            await context.insert_message("idempotent-ok")
+
+    app = LLAMPHouse(
+        agents=[IdempotentWebhookAgent(id="idempotent-report-agent")],
+        adapters=[],
+        data_store=InMemoryDataStore(),
+        run_queue=InMemoryQueue(),
+        tracing_store=None,
+    )
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app.fastapi)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/triggers/idempotent-report",
+            json={"type": "report.created"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Webhook idempotency key is missing"
+
+
+async def test_webhook_trigger_rejects_non_scalar_idempotency_key():
+    class IdempotentWebhookAgent(Agent):
+        triggers = [
+            WebhookTrigger(
+                path="/triggers/idempotent-report",
+                idempotency={"key": "id"},
+            )
+        ]
+
+        async def run(self, context: Context):
+            await context.insert_message("idempotent-ok")
+
+    app = LLAMPHouse(
+        agents=[IdempotentWebhookAgent(id="idempotent-report-agent")],
+        adapters=[],
+        data_store=InMemoryDataStore(),
+        run_queue=InMemoryQueue(),
+        tracing_store=None,
+    )
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app.fastapi)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/triggers/idempotent-report",
+            json={"id": {"nested": "evt_123"}},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Webhook idempotency key must be a scalar value"
+
+
+async def test_webhook_trigger_records_idempotency_metadata_on_new_request():
+    class IdempotentWebhookAgent(Agent):
+        triggers = [
+            WebhookTrigger(
+                path="/triggers/idempotent-report",
+                idempotency={"key": "id"},
+            )
+        ]
+
+        async def run(self, context: Context):
+            await context.insert_message("idempotent-ok")
+
+    app = LLAMPHouse(
+        agents=[IdempotentWebhookAgent(id="idempotent-report-agent")],
+        adapters=[],
+        data_store=InMemoryDataStore(),
+        run_queue=InMemoryQueue(),
+        tracing_store=None,
+    )
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app.fastapi)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/triggers/idempotent-report",
+            json={"id": "evt_123", "type": "report.created"},
+        )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["deduped"] is False
+
+    run = await app.fastapi.state.data_store.get_run_by_id(
+        payload["thread_id"],
+        payload["run_id"],
+    )
+    assert run.metadata["__webhook_idempotency_key"] == "evt_123"
+    assert run.metadata["__webhook_trigger_path"] == "/triggers/idempotent-report"
+    assert run.metadata["__webhook_agent_id"] == "idempotent-report-agent"
+
+
+async def test_webhook_trigger_dedupes_retried_idempotent_request():
+    class IdempotentWebhookAgent(Agent):
+        triggers = [
+            WebhookTrigger(
+                path="/triggers/idempotent-report",
+                idempotency={"key": "id"},
+            )
+        ]
+
+        async def run(self, context: Context):
+            await context.insert_message("idempotent-ok")
+
+    app = LLAMPHouse(
+        agents=[IdempotentWebhookAgent(id="idempotent-report-agent")],
+        adapters=[],
+        data_store=InMemoryDataStore(),
+        run_queue=InMemoryQueue(),
+        tracing_store=None,
+    )
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app.fastapi)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/triggers/idempotent-report",
+            json={"id": "evt_123", "type": "report.created"},
+        )
+        second = await client.post(
+            "/triggers/idempotent-report",
+            json={"id": "evt_123", "type": "report.created"},
+        )
+
+    first_payload = first.json()
+    second_payload = second.json()
+    assert first.status_code == 202
+    assert second.status_code == 200
+    assert first_payload["deduped"] is False
+    assert second_payload["deduped"] is True
+    assert second_payload["run_id"] == first_payload["run_id"]
+    assert second_payload["thread_id"] == first_payload["thread_id"]
+
+    queued = await app.fastapi.state.run_queue.dequeue(
+        assistant_ids=["idempotent-report-agent"],
+        timeout=0,
+    )
+    assert queued is not None
+    assert queued[1].run_id == first_payload["run_id"]
+    duplicate_queued = await app.fastapi.state.run_queue.dequeue(
+        assistant_ids=["idempotent-report-agent"],
+        timeout=0,
+    )
+    assert duplicate_queued is None
+
+
+async def test_webhook_trigger_fails_closed_when_idempotency_lookup_fails():
+    class BrokenLookupDataStore(InMemoryDataStore):
+        async def list_all_runs(self, *args, **kwargs):
+            raise RuntimeError("lookup unavailable")
+
+    class IdempotentWebhookAgent(Agent):
+        triggers = [
+            WebhookTrigger(
+                path="/triggers/idempotent-report",
+                idempotency={"key": "id"},
+            )
+        ]
+
+        async def run(self, context: Context):
+            await context.insert_message("idempotent-ok")
+
+    app = LLAMPHouse(
+        agents=[IdempotentWebhookAgent(id="idempotent-report-agent")],
+        adapters=[],
+        data_store=BrokenLookupDataStore(),
+        run_queue=InMemoryQueue(),
+        tracing_store=None,
+    )
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app.fastapi)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/triggers/idempotent-report",
+            json={"id": "evt_123"},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Webhook idempotency lookup failed"
+
+
+async def test_webhook_trigger_returns_oldest_run_when_multiple_duplicates_exist():
+    class IdempotentWebhookAgent(Agent):
+        triggers = [
+            WebhookTrigger(
+                path="/triggers/idempotent-report",
+                idempotency={"key": "id"},
+            )
+        ]
+
+        async def run(self, context: Context):
+            await context.insert_message("idempotent-ok")
+
+    agent = IdempotentWebhookAgent(id="idempotent-report-agent")
+    data_store = InMemoryDataStore()
+    app = LLAMPHouse(
+        agents=[agent],
+        adapters=[],
+        data_store=data_store,
+        run_queue=InMemoryQueue(),
+        tracing_store=None,
+    )
+
+    metadata = {
+        "__webhook_idempotency_key": "evt_123",
+        "__webhook_trigger_path": "/triggers/idempotent-report",
+        "__webhook_agent_id": "idempotent-report-agent",
+    }
+    first_thread = await data_store.insert_thread(CreateThreadRequest())
+    first_run = await data_store.insert_run(
+        first_thread.id,
+        RunCreateRequest(assistant_id=agent.id, metadata=metadata),
+        agent,
+    )
+    second_thread = await data_store.insert_thread(CreateThreadRequest())
+    await data_store.insert_run(
+        second_thread.id,
+        RunCreateRequest(assistant_id=agent.id, metadata=metadata),
+        agent,
+    )
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app.fastapi)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/triggers/idempotent-report",
+            json={"id": "evt_123"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["deduped"] is True
+    assert payload["run_id"] == first_run.id
+    assert payload["thread_id"] == first_thread.id

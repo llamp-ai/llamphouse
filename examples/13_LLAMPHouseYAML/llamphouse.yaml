@@ -32,6 +32,17 @@ agents:
       timeout: 30
       concurrency: 5
 
+    triggers:
+      - webhook:
+          path: /triggers/greeter-formal
+          idempotency:
+            key: id
+          thread_metadata:
+            tenant_id: tenant.id
+          run_metadata:
+            event_type: type
+            event_id: id
+
   - name: greeter-casual
     definition: greeting-agent
 
@@ -50,7 +61,7 @@ agents:
 # Omit this section to use the defaults (assistant_api + compass).
 # Each entry maps an adapter name to its constructor kwargs (can be empty).
 #
-# Available: assistant_api, a2a, compass, dashboard
+# Available: assistant_api, a2a, compass
 
 adapters:
   - a2a:
@@ -70,14 +81,31 @@ workers:
       time_out: 60
 
 # ---------------------
+# Data store
+# ---------------------
+# Controls where threads, runs, messages, and run steps are stored.
+# Omit this section to use the in-memory store.
+#
+# Available: in_memory (no extra config), postgres (requires database_url)
+
+data_store:
+  in_memory:
+  # postgres:
+  #   database_url: ${DATABASE_URL}
+
+# ---------------------
 # Tracing store
 # ---------------------
 # Controls where traces are stored / queried (used by the Compass dashboard).
 # Omit this section to use env-var auto-detection (TRACING_STORE / CLICKHOUSE_URL),
 # which defaults to in_memory when no vars are set.
 #
-# Available: in_memory (no extra config), postgres (requires DATABASE_URL or db_url),
-#            clickhouse (requires CLICKHOUSE_URL or url)
+# Available: in_memory (no extra config), postgres (requires database_url),
+#            clickhouse (requires clickhouse_url)
 
 tracing:
   in_memory:
+  # postgres:
+  #   database_url: ${DATABASE_URL}
+  # clickhouse:
+  #   clickhouse_url: ${CLICKHOUSE_URL}

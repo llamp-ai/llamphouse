@@ -17,6 +17,7 @@ from typing import Optional
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from .base_tracing_store import BaseTracingStore
+from ...health import HealthCheckResult
 from ._utils import span_to_dict, span_to_trace_row
 
 
@@ -60,6 +61,14 @@ class InMemoryTracingStore(BaseTracingStore):
 
     def get_span_exporter(self) -> SpanExporter:
         return self._exporter
+
+    async def health_check(self) -> HealthCheckResult:
+        return HealthCheckResult.pass_(
+            "tracing.in_memory",
+            "tracing",
+            "No external dependency",
+            backend="in_memory",
+        )
 
     async def get_trace(self, run_id: str) -> list[dict]:
         """Return all spans for traces that contain *run_id*."""

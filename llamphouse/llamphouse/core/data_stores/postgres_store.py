@@ -6,13 +6,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, List, Literal, Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
 from opentelemetry.trace import Status, StatusCode
 
 from .retention import RetentionPolicy, PurgeStats
 from .base_data_store import BaseDataStore
+from ..health import HealthCheckResult
 from ..tracing import get_tracer, span_context
 from ..database.models import Message, Run, Thread, RunStep
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
@@ -97,6 +98,17 @@ class PostgresDataStore(BaseDataStore):
             self._engine,
             class_=AsyncSession,
             expire_on_commit=False,
+        )
+
+    async def health_check(self) -> HealthCheckResult:
+        async with self._engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return HealthCheckResult.pass_(
+            "data_store.postgres",
+            "data_store",
+            "Connected",
+            backend="postgres",
+            operation="select 1",
         )
 
     @classmethod
@@ -1303,38 +1315,6 @@ class PostgresDataStore(BaseDataStore):
                     logger.exception("list_runs() failed")
                     return None
 
-    async def list_threads(self, limit: int = 50, order: Literal["desc", "asc"] = "desc") -> ListResponse | None:
-        """List all threads across all sessions (used by Compass dashboard)."""
-        async with self._session_factory() as session:
-            try:
-                stmt = select(Thread)
-                if order == "asc":
-                    stmt = stmt.order_by(Thread.created_at.asc(), Thread.id.asc())
-                else:
-                    stmt = stmt.order_by(Thread.created_at.desc(), Thread.id.desc())
-                result = await session.execute(stmt.limit(limit + 1))
-                rows = result.scalars().all()
-                has_more = len(rows) > limit
-                rows = rows[:limit]
-                threads = [
-                    ThreadObject(
-                        id=row.id,
-                        created_at=row.created_at,
-                        tool_resources=row.tool_resources,
-                        metadata=row.meta or {},
-                    )
-                    for row in rows
-                ]
-                return ListResponse(
-                    data=threads,
-                    first_id=threads[0].id if threads else None,
-                    last_id=threads[-1].id if threads else None,
-                    has_more=has_more,
-                )
-            except Exception:
-                logger.exception("list_threads() failed")
-                return None
-
     async def list_runs_all(self, limit: int = 200, order: Literal["desc", "asc"] = "desc") -> ListResponse | None:
         """List runs across all threads (used by Compass dashboard)."""
         async with self._session_factory() as session:
@@ -1902,7 +1882,7 @@ class PostgresDataStore(BaseDataStore):
                     elif status == run_status.CANCELLED:
                         run.cancelled_at = now_ts
                     elif status == run_status.EXPIRED:
-                        run.expired_at = now_ts
+                        run.expires_at = now_ts
 
                     # ── Usage ──────────────────────────────────────────
                     if usage:

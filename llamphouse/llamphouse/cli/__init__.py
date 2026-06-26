@@ -211,6 +211,25 @@ agents:
       retries: 2
       concurrency: 5
 
+    # Optional deployment-specific triggers
+    # triggers:
+    #   - webhook:
+    #       path: /triggers/hello
+    #       secret_env: WEBHOOK_SECRET
+    #       thread_metadata:
+    #         tenant_id: tenant.id
+    #       run_metadata:
+    #         event_type: type
+    #         event_id: id
+
+# ---------------------
+# Data store
+# ---------------------
+# data_store:
+#   in_memory:
+#   # postgres:
+#   #   database_url: postgresql+asyncpg://user:pass@localhost/llamphouse
+
 # ---------------------
 # Global settings
 # ---------------------
@@ -306,6 +325,17 @@ def _cmd_compass(args: argparse.Namespace) -> None:
 
 # ── CLI entry point ─────────────────────────────────────────────────────────────
 
+def _cmd_check(args: argparse.Namespace) -> int:
+    from .check import run_check
+
+    return run_check(
+        args.config,
+        output_format=args.format,
+        verbose=args.verbose,
+        timeout=args.timeout,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="llamphouse",
@@ -338,6 +368,35 @@ def main() -> None:
         help="WebSocket protocol implementation (default: auto)",
     )
     up_parser.set_defaults(func=_cmd_up)
+
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Run preflight Health Checks for a llamphouse.yaml config file",
+    )
+    check_parser.add_argument(
+        "--config",
+        default=_DEFAULT_CONFIG,
+        metavar="FILE",
+        help=f"Path to the config file (default: {_DEFAULT_CONFIG})",
+    )
+    check_parser.add_argument(
+        "--format",
+        default="text",
+        choices=["text", "json"],
+        help="Output format (default: text)",
+    )
+    check_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show check details in text output",
+    )
+    check_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="External health check timeout in seconds (default: 5)",
+    )
+    check_parser.set_defaults(func=_cmd_check)
 
     # ── init ─────────────────────────────────────────────────────────────────
     init_parser = subparsers.add_parser(
@@ -429,7 +488,9 @@ def main() -> None:
     compass_parser.set_defaults(func=_cmd_compass)
 
     args = parser.parse_args()
-    args.func(args)
+    exit_code = args.func(args)
+    if isinstance(exit_code, int):
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from opentelemetry.trace import Status, StatusCode
 from .base_data_store import BaseDataStore
 from .retention import RetentionPolicy, PurgeStats
+from ..health import HealthCheckResult
 from ..tracing import get_tracer, span_context
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..types.assistant import AgentObject
@@ -43,6 +44,14 @@ class InMemoryDataStore(BaseDataStore):
         self._messages: dict[str, list[MessageObject]] = {}
         self._run_steps: dict[str, list[RunStepObject]] = {}
         self._last_created_at: Optional[datetime] = None
+
+    async def health_check(self) -> HealthCheckResult:
+        return HealthCheckResult.pass_(
+            "data_store.in_memory",
+            "data_store",
+            "No external dependency",
+            backend="in_memory",
+        )
 
     def _next_created_at(self) -> datetime:
         now = datetime.now(timezone.utc)
@@ -1447,17 +1456,6 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
-
-    async def list_threads(self, limit: int = 50, order: str = "desc") -> ListResponse | None:
-        threads = list(self._threads.values())
-        threads.sort(key=lambda t: (t.created_at, t.id), reverse=(order == "desc"))
-        limited = threads[:limit]
-        return ListResponse(
-            data=limited,
-            first_id=limited[0].id if limited else None,
-            last_id=limited[-1].id if limited else None,
-            has_more=len(threads) > limit,
-        )
 
     async def list_runs_all(self, limit: int = 200, order: str = "desc") -> ListResponse | None:
         runs = [run for thread_runs in self._runs.values() for run in thread_runs]

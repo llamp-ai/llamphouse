@@ -7,7 +7,8 @@ Responsibilities
 2. Resolve secrets (env look-up today; pluggable providers in the future).
 3. Dynamically load agent entrypoints (class, async function, or factory).
 4. Instantiate one ``Agent`` per deployment and inject ``agent.settings``.
-5. Return a ready-to-run ``LLAMPHouse`` instance.
+5. Attach deployment triggers and instantiate runtime infrastructure.
+6. Return a ready-to-run ``LLAMPHouse`` instance.
 
 Entrypoint formats
 ------------------
@@ -28,6 +29,7 @@ import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -37,11 +39,16 @@ import yaml
 from ...core.assistant import Agent
 from ...core.context import Context
 from ...core.adapters import AssistantAPIAdapter, A2AAdapter, CompassAdapter
+from ...core.data_stores import InMemoryDataStore, PostgresDataStore
+from ...core.triggers import WebhookTrigger
 from ...core.workers import AsyncWorker
 from ...core.tracing.stores import InMemoryTracingStore, PostgresTracingStore, ClickHouseTracingStore
+from .components import instantiate_from_registry, parse_component_entry
 from .schema import DeploymentConfig, LLAMPHouseConfig
 
 logger = logging.getLogger("llamphouse.config")
+
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 # ── Component registries ──────────────────────────────────────────────────────
@@ -66,6 +73,16 @@ TRACING_STORE_REGISTRY: Dict[str, type] = {
     "clickhouse": ClickHouseTracingStore,
 }
 
+DATA_STORE_REGISTRY: Dict[str, type] = {
+    "in_memory": InMemoryDataStore,
+    "memory": InMemoryDataStore,
+    "postgres": PostgresDataStore,
+}
+
+TRIGGER_REGISTRY: Dict[str, type] = {
+    "webhook": WebhookTrigger,
+}
+
 
 def _instantiate_from_registry(
     registry: Dict[str, type],
@@ -84,25 +101,7 @@ def _instantiate_from_registry(
     kwargs   : constructor keyword arguments from the YAML
     kind     : human-readable label ("adapter" or "worker") for error messages
     """
-    cls = registry.get(name)
-    if cls is None:
-        available = sorted(registry)
-        raise ValueError(
-            f"Unknown {kind} '{name}'. "
-            f"Available {kind}s: {available}."
-        )
-
-    sig = inspect.signature(cls.__init__)
-    valid_params = {k for k in sig.parameters if k != "self"}
-    invalid = set(kwargs) - valid_params
-    if invalid:
-        raise ValueError(
-            f"{kind.capitalize()} '{name}' does not accept argument(s) "
-            f"{sorted(invalid)}. "
-            f"Valid parameters: {sorted(valid_params)}."
-        )
-
-    return cls(**kwargs)
+    return instantiate_from_registry(registry, name, kwargs, kind)
 
 
 def _parse_component_entry(entry: Any, kind: str) -> tuple[str, Dict[str, Any]]:
@@ -111,16 +110,40 @@ def _parse_component_entry(entry: Any, kind: str) -> tuple[str, Dict[str, Any]]:
 
     Returns ``(name, kwargs_dict)``.
     """
-    if not isinstance(entry, dict) or len(entry) != 1:
-        raise ValueError(
-            f"Each {kind} entry must be a single-key mapping "
-            f"(e.g. ``- compass:``), got {entry!r}."
-        )
-    name, raw_kwargs = next(iter(entry.items()))
-    return name, raw_kwargs or {}
+    parsed = parse_component_entry(entry, kind)
+    assert parsed is not None
+    return parsed
 
 
 # ── YAML loading ─────────────────────────────────────────────────────────────
+
+
+def _expand_env_refs(value: Any, path: str = "") -> Any:
+    """Recursively expand ``${ENV_VAR}`` references in YAML values."""
+    if isinstance(value, dict):
+        return {
+            key: _expand_env_refs(child, f"{path}.{key}" if path else str(key))
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _expand_env_refs(child, f"{path}[{index}]")
+            for index, child in enumerate(value)
+        ]
+    if not isinstance(value, str):
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        env_name = match.group(1)
+        env_value = os.environ.get(env_name)
+        if env_value is None:
+            location = path or "<root>"
+            raise ValueError(
+                f"Environment variable '{env_name}' referenced at '{location}' is not set."
+            )
+        return env_value
+
+    return _ENV_REF_RE.sub(replace, value)
 
 
 def load_config(config_path: str | Path) -> LLAMPHouseConfig:
@@ -135,6 +158,7 @@ def load_config(config_path: str | Path) -> LLAMPHouseConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"'{config_path}' must contain a YAML mapping at the top level.")
 
+    raw = _expand_env_refs(raw)
     return LLAMPHouseConfig.model_validate(raw)
 
 
@@ -365,6 +389,12 @@ def build_app_from_config(
         )
         entrypoint_obj = _load_entrypoint(agent_def.entrypoint, config_dir)
         agent = _make_agent(entrypoint_obj, deployment)
+        if deployment.triggers is not None:
+            agent.triggers = []
+            for entry in deployment.triggers:
+                name, kwargs = _parse_component_entry(entry, "trigger")
+                trigger = _instantiate_from_registry(TRIGGER_REGISTRY, name, kwargs, "trigger")
+                agent.triggers.append(trigger)
         agents.append(agent)
 
     project_name = config.project.name if config.project else "LLAMPHouse"
@@ -405,4 +435,18 @@ def build_app_from_config(
         tracing_store = _instantiate_from_registry(TRACING_STORE_REGISTRY, name, kwargs, "tracing_store")
         logger.info("Tracing store '%s' configured from YAML.", name)
 
-    return LLAMPHouse(agents=agents, adapters=adapters, worker=worker, tracing_store=tracing_store)
+    # โ”€โ”€ 8. Build data store โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€โ”€
+    # None -> LLAMPHouse uses its default InMemoryDataStore.
+    data_store = None
+    if config.data_store is not None:
+        name, kwargs = _parse_component_entry(config.data_store, "data_store")
+        data_store = _instantiate_from_registry(DATA_STORE_REGISTRY, name, kwargs, "data_store")
+        logger.info("Data store '%s' configured from YAML.", name)
+
+    return LLAMPHouse(
+        agents=agents,
+        adapters=adapters,
+        worker=worker,
+        tracing_store=tracing_store,
+        data_store=data_store,
+    )

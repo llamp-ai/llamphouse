@@ -17,6 +17,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
+from ...health import HealthCheckResult
+
 
 class BaseTracingStore(ABC):
     """Abstract base for all tracing stores."""
@@ -28,6 +30,13 @@ class BaseTracingStore(ABC):
         ClickHouse via the OTel Collector).
         """
         return None
+
+    async def health_check(self) -> HealthCheckResult:
+        return HealthCheckResult.pass_(
+            "tracing",
+            "tracing",
+            "No external dependency",
+        )
 
     @abstractmethod
     async def get_trace(self, run_id: str) -> list[dict]:

@@ -20,6 +20,7 @@ import logging
 from typing import Optional
 
 from .base_tracing_store import BaseTracingStore
+from ...health import HealthCheckResult
 
 logger = logging.getLogger("llamphouse.tracing.clickhouse")
 
@@ -40,6 +41,23 @@ class ClickHouseTracingStore(BaseTracingStore):
     # No span exporter — ClickHouse is fed by the OTel Collector.
     def get_span_exporter(self):
         return None
+
+    async def health_check(self) -> HealthCheckResult:
+        try:
+            import httpx
+        except ImportError as exc:
+            raise RuntimeError("httpx is required for ClickHouseTracingStore") from exc
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(self._url, content="SELECT 1 FORMAT JSON")
+            resp.raise_for_status()
+        return HealthCheckResult.pass_(
+            "tracing.clickhouse",
+            "tracing",
+            "Connected",
+            backend="clickhouse",
+            operation="select 1",
+        )
 
     # ── Helpers ───────────────────────────────────────────────────────────
 

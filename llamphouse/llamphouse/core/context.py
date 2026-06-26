@@ -100,6 +100,8 @@ class Context:
         self._queue_class = queue_class
         self._assistants = assistants or []
         self.last_call_thread_id: Optional[str] = None
+        self._send_chunk_message_id: Optional[str] = None
+        self._pending_event_futures: list[Any] = []
         # Accumulated token usage across all streaming calls in this run
         self._run_usage: Dict[str, int] = {}
         # Populated when this run was started by a trigger; None for human runs.
@@ -284,17 +286,31 @@ class Context:
     def _send_event(self, event):
         if not self.__queue:
             return
-        if self.__loop:
-            asyncio.run_coroutine_threadsafe(self.__queue.add(event), self.__loop)
-            return
-        
         try: 
             loop = asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(self.__queue.add(event))
             return
-        
-        loop.create_task(self.__queue.add(event))
+
+        if self.__loop and loop is self.__loop:
+            self._pending_event_futures.append(loop.create_task(self.__queue.add(event)))
+            return
+
+        if self.__loop:
+            self._pending_event_futures.append(
+                asyncio.run_coroutine_threadsafe(self.__queue.add(event), self.__loop)
+            )
+            return
+
+        self._pending_event_futures.append(loop.create_task(self.__queue.add(event)))
+
+    async def flush_events(self) -> None:
+        pending, self._pending_event_futures = self._pending_event_futures, []
+        for item in pending:
+            if isinstance(item, asyncio.Future):
+                await item
+            else:
+                await asyncio.wrap_future(item)
 
     def send_completion_event(self, event):
         pass
