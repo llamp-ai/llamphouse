@@ -111,11 +111,11 @@ class StreamingEmitter(BaseEventHandler):
         self.send_event_message_delta(msg_id, event.text)
 
     def _on_text_snapshot(self, event: TextSnapshot) -> None:
-        msg_id = self._ensure_message_started(event.message_id)
-
         full_text = event.full_text or ""
         if not full_text:
             return
+
+        msg_id = self._ensure_message_started(event.message_id)
         
         if full_text.startswith(self.message_text):
             delta = full_text[len(self.message_text) :]

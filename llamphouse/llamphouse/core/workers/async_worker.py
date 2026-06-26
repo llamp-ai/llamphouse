@@ -186,6 +186,13 @@ class AsyncWorker(BaseWorker):
                     if thread_id and run_id:
                         await data_store.update_run_status(thread_id, run_id, run_status.COMPLETED)
                     if output_queue:
+                        # Yield once so any create_task'd send_chunk events
+                        # that were scheduled during assistant.run() can be
+                        # enqueued before we emit the terminal RUN_COMPLETED
+                        # event.  Without this, in-memory post-run operations
+                        # complete synchronously and the terminal event arrives
+                        # before the streaming deltas.
+                        await asyncio.sleep(0)
                         run_object = await data_store.get_run_by_id(thread_id, run_id)
                         if run_object:
                             await output_queue.add(run_object.to_event(event_type.RUN_COMPLETED))

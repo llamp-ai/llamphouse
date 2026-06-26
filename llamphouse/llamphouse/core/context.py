@@ -95,9 +95,9 @@ class Context:
         self.pending_tool_calls: List[Dict[str, str]] = []
         # Runtime refs — set by the worker so call_agent() can bypass HTTP
         self._run_queue = run_queue
-        self._event_queues = event_queues or {}
+        self._event_queues = event_queues if event_queues is not None else {}
         self._queue_class = queue_class
-        self._assistants = assistants or []
+        self._assistants = assistants if assistants is not None else []
         self.last_call_thread_id: Optional[str] = None
         self._send_chunk_message_id: Optional[str] = None
 
@@ -271,6 +271,17 @@ class Context:
         if not self.__queue:
             return
         if self.__loop:
+            # run_coroutine_threadsafe is for cross-thread calls.  When we are
+            # already running inside the target event loop (async worker case),
+            # use create_task so the event is enqueued in the same iteration
+            # and not delayed behind RUN_COMPLETED via the self-pipe mechanism.
+            try:
+                current_loop = asyncio.get_running_loop()
+                if current_loop is self.__loop:
+                    current_loop.create_task(self.__queue.add(event))
+                    return
+            except RuntimeError:
+                pass
             asyncio.run_coroutine_threadsafe(self.__queue.add(event), self.__loop)
             return
         
