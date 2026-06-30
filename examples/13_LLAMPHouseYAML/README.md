@@ -126,6 +126,10 @@ agents:          # ← running instances with their own config
           path: /triggers/greeter-formal
           idempotency:
             key: id
+          thread:
+            id: thread_id
+          message:
+            text: message
           thread_metadata:
             tenant_id: tenant.id
           run_metadata:
@@ -142,6 +146,14 @@ data_store:
   in_memory:
 ```
 
+To persist threads, messages, runs, and webhook idempotency claims in Postgres,
+set `DATABASE_URL` in the environment and switch the data store block to:
+
+```yaml
+data_store:
+  postgres:
+```
+
 When you run `llamphouse up`, the CLI:
 
 1. Parses and validates `llamphouse.yaml`.
@@ -151,10 +163,29 @@ When you run `llamphouse up`, the CLI:
 4. Starts a LLAMPHouse server with both instances registered.
 
 The `greeter-formal` deployment also exposes `POST /triggers/greeter-formal`.
+For the config above, callers send a JSON body like:
+
+```json
+{
+  "id": "evt_001",
+  "message": "Hello from webhook",
+  "tenant": { "id": "tenant_123" },
+  "type": "demo.greeting"
+}
+```
+
+`idempotency.key: id` reads `payload.id` as the external event id used to
+dedupe normal retries for the same deployment and trigger path. `message.text:
+message` inserts `payload.message` as an inbound user message before the run is
+created. `thread.id: thread_id` is optional in the payload; when omitted,
+LLAMPHouse creates a new thread. When provided, it must refer to an existing
+thread.
+
 Mapped payload fields are copied into thread/run metadata when present; missing
-fields are ignored and the webhook still accepts the event. `idempotency.key`
-uses a JSON body dot-path to dedupe normal webhook retries for the same
-deployment and trigger path.
+metadata fields are ignored and the webhook still accepts the event. Re-sending
+the same payload with the same `id` returns the original run/thread/message ids
+with `deduped: true`. Reusing the same `id` with a different message returns
+`409 Conflict`.
 
 ### `agents.py`
 

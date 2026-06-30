@@ -23,6 +23,7 @@ from .config.loader import (
     load_config,
 )
 from .config.components import (
+    apply_component_env_defaults,
     instantiate_from_registry,
     parse_component_entry,
     validate_registry_entry,
@@ -197,6 +198,7 @@ async def _check_data_store(config, timeout: float) -> HealthCheckResult:
             backend="in_memory",
         )
     try:
+        kwargs = apply_component_env_defaults(name, kwargs, "data_store")
         component = instantiate_from_registry(DATA_STORE_REGISTRY, name, kwargs, "data_store")
         result = await _run_component_health_check(component, timeout)
     except Exception as exc:

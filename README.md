@@ -300,7 +300,7 @@ LLAMPHouse(
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` | _(none)_ |
+| `DATABASE_URL` | Postgres connection string used by `data_store.postgres`, tracing Postgres, and direct `PostgresDataStore` setup | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
@@ -364,7 +364,7 @@ The [examples/](examples/) directory contains runnable samples for every feature
 | [08_ConfigStore](examples/08_ConfigStore/) | Runtime-tunable agent config |
 | [09_CustomAuth](examples/09_CustomAuth/) | Custom authentication |
 | [10_DistributedWorker](examples/10_DistributedWorker/) | Redis-backed distributed workers |
-| [11_WebhookSignal](examples/11_WebhookSignal/) | Webhook signal integration |
+| [11_WebhookTrigger](examples/11_WebhookTrigger/) | Webhook trigger integration |
 | [12_PlannerAgent](examples/12_PlannerAgent/) | Planner/executor agent pattern |
 
 Each example includes a `server.py`, `client.py`, and `README.md` with instructions.

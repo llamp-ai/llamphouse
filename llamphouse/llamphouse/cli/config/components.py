@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 from typing import Any
 
 
@@ -67,3 +68,23 @@ def instantiate_from_registry(
 
     cls = registry[name]
     return cls(**kwargs)
+
+
+def apply_component_env_defaults(
+    name: str,
+    kwargs: dict[str, Any],
+    kind: str,
+) -> dict[str, Any]:
+    if kind == "data_store" and name == "postgres":
+        if kwargs:
+            raise ValueError(
+                "data_store.postgres reads DATABASE_URL from the environment; "
+                "remove data_store.postgres.database_url."
+            )
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            raise ValueError(
+                "data_store.postgres requires DATABASE_URL."
+            )
+        return {**kwargs, "database_url": database_url}
+    return kwargs

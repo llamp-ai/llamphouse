@@ -227,11 +227,20 @@ tracing:
     assert isinstance(app.fastapi.state.tracing_store, InMemoryTracingStore)
 
 
-def test_build_app_from_config_instantiates_explicit_data_store(tmp_path):
+def test_build_app_from_config_rejects_explicit_postgres_data_store_database_url(
+    tmp_path,
+    monkeypatch,
+):
     project = _copy_project(tmp_path)
-    app = _build_app(
-        project,
-        """
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://user:pass@localhost/llamphouse",
+    )
+
+    with pytest.raises(ValueError, match="remove data_store.postgres.database_url"):
+        _build_app(
+            project,
+            """
 version: "0.1"
 definitions:
   - name: responder
@@ -246,12 +255,67 @@ data_store:
 tracing:
   in_memory:
 """,
+        )
+
+
+def test_build_app_from_config_uses_database_url_env_for_postgres_data_store(
+    tmp_path,
+    monkeypatch,
+):
+    project = _copy_project(tmp_path)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://user:pass@localhost/llamphouse",
+    )
+    app = _build_app(
+        project,
+        """
+version: "0.1"
+definitions:
+  - name: responder
+    entrypoint: agents.py:ConfigurableAgent
+agents:
+  - name: support-agent
+    definition: responder
+adapters: []
+data_store:
+  postgres:
+tracing:
+  in_memory:
+""",
     )
 
     assert isinstance(app.fastapi.state.data_store, PostgresDataStore)
 
 
-def test_load_config_expands_env_placeholders_for_data_store_database_url(tmp_path, monkeypatch):
+def test_build_app_from_config_requires_database_url_for_postgres_data_store(
+    tmp_path,
+    monkeypatch,
+):
+    project = _copy_project(tmp_path)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with pytest.raises(ValueError, match="data_store.postgres.*DATABASE_URL"):
+        _build_app(
+            project,
+            """
+version: "0.1"
+definitions:
+  - name: responder
+    entrypoint: agents.py:ConfigurableAgent
+agents:
+  - name: support-agent
+    definition: responder
+adapters: []
+data_store:
+  postgres:
+tracing:
+  in_memory:
+""",
+        )
+
+
+def test_load_config_expands_env_placeholders(tmp_path, monkeypatch):
     project = _copy_project(tmp_path)
     monkeypatch.setenv(
         "DATABASE_URL",
@@ -267,18 +331,15 @@ definitions:
 agents:
   - name: support-agent
     definition: responder
-data_store:
-  postgres:
-    database_url: ${DATABASE_URL}
+    config:
+      database_url: ${DATABASE_URL}
 """,
     )
 
     config = load_config(config_path)
 
-    assert config.data_store == {
-        "postgres": {
-            "database_url": "postgresql+asyncpg://user:pass@localhost/llamphouse",
-        }
+    assert config.agents[0].config == {
+        "database_url": "postgresql+asyncpg://user:pass@localhost/llamphouse",
     }
 
 
@@ -295,13 +356,12 @@ definitions:
 agents:
   - name: support-agent
     definition: responder
-data_store:
-  postgres:
-    database_url: ${DATABASE_URL}
+    config:
+      database_url: ${DATABASE_URL}
 """,
     )
 
-    with pytest.raises(ValueError, match="DATABASE_URL.*data_store.postgres.database_url"):
+    with pytest.raises(ValueError, match="DATABASE_URL.*agents\\[0\\].config.database_url"):
         load_config(config_path)
 
 
@@ -357,6 +417,10 @@ agents:
       - webhook:
           path: /triggers/support
           secret_env: SUPPORT_WEBHOOK_SECRET
+          thread:
+            id: thread_id
+          message:
+            text: message
 adapters: []
 tracing:
   in_memory:
@@ -367,6 +431,8 @@ tracing:
     assert isinstance(trigger, WebhookTrigger)
     assert trigger.path == "triggers/support"
     assert trigger.secret_env == "SUPPORT_WEBHOOK_SECRET"
+    assert trigger.thread == {"id": "thread_id"}
+    assert trigger.message == {"text": "message"}
 
 
 def test_load_config_reads_utf8_yaml(tmp_path):

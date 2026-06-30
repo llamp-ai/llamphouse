@@ -19,6 +19,7 @@ from .streaming.emitter import StreamingEmitter
 from .streaming.adapters.base_stream_adapter import BaseStreamAdapter
 from .streaming.adapters.openai_chat_completions import OpenAIChatCompletionAdapter
 from .streaming.event_queue.base_event_queue import BaseEventQueue
+from .streaming.llm_usage_metadata import apply_stream_metadata, apply_stream_usage
 from .data_stores.base_data_store import BaseDataStore
 from .triggers.base import TriggerInfo
 from .streaming.stream_events import (
@@ -810,20 +811,8 @@ class Context:
                     elif isinstance(evt, StreamFinished):
                         span.add_event("stream.finished", {"reason": evt.reason})
                         span.set_attribute("gen_ai.response.finish_reason", evt.reason)
-
-                        if evt.usage:
-                            prompt = evt.usage.get("prompt_tokens")
-                            completion = evt.usage.get("completion_tokens")
-                            total = evt.usage.get("total_tokens")
-                            if prompt is not None:
-                                span.set_attribute("gen_ai.usage.input_tokens", int(prompt))
-                            if completion is not None:
-                                span.set_attribute("gen_ai.usage.output_tokens", int(completion))
-                            if total is not None:
-                                span.set_attribute("gen_ai.usage.total_tokens", int(total))
-                            self._run_usage["prompt_tokens"] = self._run_usage.get("prompt_tokens", 0) + (prompt or 0)
-                            self._run_usage["completion_tokens"] = self._run_usage.get("completion_tokens", 0) + (completion or 0)
-                            self._run_usage["total_tokens"] = self._run_usage.get("total_tokens", 0) + (total or 0)
+                        apply_stream_usage(span, self._run_usage, evt.usage)
+                        apply_stream_metadata(span, evt.metadata)
 
                 span.set_attribute("output.value", json.dumps({"text": _clip(emitter.content)}, ensure_ascii=True))
                 span.set_attribute("gen_ai.response.status", "completed")
@@ -911,21 +900,8 @@ class Context:
                     elif isinstance(evt, StreamFinished):
                         span.add_event("stream.finished", {"reason": evt.reason})
                         span.set_attribute("gen_ai.response.finish_reason", evt.reason)
-
-                        if evt.usage:
-                            prompt = evt.usage.get("prompt_tokens")
-                            completion = evt.usage.get("completion_tokens")
-                            total = evt.usage.get("total_tokens")
-                            if prompt is not None:
-                                span.set_attribute("gen_ai.usage.input_tokens", int(prompt))
-                            if completion is not None:
-                                span.set_attribute("gen_ai.usage.output_tokens", int(completion))
-                            if total is not None:
-                                span.set_attribute("gen_ai.usage.total_tokens", int(total))
-                            # Accumulate across all streaming calls in this run
-                            self._run_usage["prompt_tokens"] = self._run_usage.get("prompt_tokens", 0) + (prompt or 0)
-                            self._run_usage["completion_tokens"] = self._run_usage.get("completion_tokens", 0) + (completion or 0)
-                            self._run_usage["total_tokens"] = self._run_usage.get("total_tokens", 0) + (total or 0)
+                        apply_stream_usage(span, self._run_usage, evt.usage)
+                        apply_stream_metadata(span, evt.metadata)
                 # The emitter already pushed RUN_STEP_CREATED/COMPLETED
                 # events into the queue during streaming, so we persist
                 # without event_queue to avoid duplicate SSE events.

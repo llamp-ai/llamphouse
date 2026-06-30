@@ -220,3 +220,7 @@ def sync(verbose: bool = False) -> None:
 def on_pre_build(config, **kwargs):
     """Regenerate docs/examples.md before MkDocs reads the docs directory."""
     sync(verbose=True)
+
+
+if __name__ == "__main__":
+    sync(verbose=True)

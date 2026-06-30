@@ -13,16 +13,18 @@
 - **PlannerAgent example** (`examples/12_PlannerAgent`) — multi-node planner/executor/synthesizer agent with tracing wired in.
 - **`llamphouse.yaml` config** — declarative server config loaded by `llamphouse.cli.config.loader` and validated by Pydantic models in `llamphouse.cli.config.schema`. CLI now reads it on startup.
 - **Strict `llamphouse.yaml` validation** — unknown fields now fail fast, `${ENV_VAR}` references are resolved before validation, and missing environment variables produce user-friendly errors.
-- **YAML-configured data stores** — `data_store` can now be configured from `llamphouse.yaml`, including `postgres.database_url`.
+- **YAML-configured data stores** — `data_store` can now be configured from `llamphouse.yaml`; `data_store.postgres` reads `DATABASE_URL` from the environment.
 - **YAML-configured webhook triggers** — deployment-level `triggers` can now define `WebhookTrigger` routes from `llamphouse.yaml`.
 - **`llamphouse check` Health Check** — new preflight command for validating `llamphouse.yaml` without starting the server. It checks schema, component imports, entrypoints, route conflicts, data-store connectivity, tracing-store connectivity, and exits non-zero on failure for CI.
 - **Health check output modes** — `llamphouse check` supports `--format text|json`, `--verbose`, and `--timeout` for external dependency checks.
 - **CLI reorganisation** — moved entrypoints into the `llamphouse.cli` package.
 - **Internal span exporter from tracing store** — tracing setup can wire the configured tracing store as a span exporter without external OTLP plumbing.
+- **LLM usage metadata on streaming spans** — streaming adapters now forward provider response ids, actual response models, and provider-supplied token breakdowns to span attributes for observability and downstream cost analysis without calculating cost in LLAMPHouse.
 - **MkDocs landing page hook** — `hooks/landing_page.py` generates a custom `site/index.html` after each build.
 - **Examples sync hook** — `hooks/sync_examples.py` keeps `docs/examples.md` in sync with the `examples/` directory, including a structured table and progression guide.
 - **LLAMPHouseYAML example** (`examples/13_LLAMPHouseYAML`) — declarative server setup driven by `llamphouse.yaml`.
-- **WebhookTrigger idempotency / dedupe** — webhook triggers can opt into idempotency by mapping a request payload field as the idempotency key. Duplicate requests return the original run instead of enqueueing a second run.
+- **WebhookTrigger idempotency / dedupe** — webhook triggers can opt into atomic inbound command idempotency by mapping a request payload field as the idempotency key. Duplicate requests with the same semantic fingerprint replay the original response without inserting another user message or enqueueing another run; the same key with a different fingerprint returns `409 Conflict`.
+- **WebhookTrigger inbound messages and thread selection** — webhook triggers can map a JSON payload field into an inbound user message and can continue an existing thread from a mapped `thread_id`, falling back to a new thread when no thread id is provided.
 - **WebhookTrigger metadata mapping** — webhook request payload fields can be mapped into thread metadata and run metadata. Internal webhook metadata is stored under reserved `__webhook_*` run metadata keys.
 - Database migration for runs now combines `stream`, `provider_config`, and float timestamp columns into the 1.3.0 migration chain.
 - **Data-store list / count contract extended** — `BaseDataStore` now declares `list_threads`, `list_all_runs`, `get_run_any_thread`, `list_runs_by_parent_ids`, `get_first_run_assistant_ids`, `count_threads`, `count_runs`, and `count_messages`. Both `InMemoryDataStore` and `PostgresDataStore` implement them. These were previously missing or in-memory-only, which silently returned empty results on Postgres in Compass for Threads, Runs, the flow tree, and the home-page stats.
@@ -54,7 +56,7 @@
 - **Compass flow rendering optimised** — edge geometry (`path`, `midX`, `midY`, colour, dash, marker) is pre-computed once inside `flowLayout` and bound directly in the template instead of being recomputed per-edge per-render. Roughly `O(E·N) → O(E + N)` per re-render.
 - **Run-detail I/O resolver tolerates missing `run_id`** — assistant messages without a stamped `run_id` now match the run's `started_at..completed_at` window. Messages route also re-introduces `run_id` / `assistant_id` as explicit `null` (the prior `exclude_none=True` serialiser was stripping them entirely).
 - **`PostgresDataStore.close()` is bounded** — `engine.dispose()` is wrapped in `asyncio.wait_for(..., timeout=5.0)` so a hung asyncpg socket can't block server shutdown for the OS TCP timeout.
-- **Compass adapter no longer relies on missing methods.** All `hasattr(db, "…")` branches that masked data-store API gaps (`list_threads`, `list_all_runs`, `count_threads/runs/messages`, `get_run_any_thread`, `list_runs_all`) are gone, replaced by abstract methods on `BaseDataStore`. The only `hasattr` left is the legitimate backend dispatch in the dashboard SQL endpoint.
+- **Compass adapter no longer relies on missing methods.** All `hasattr(db, "…")` branches that masked data-store API gaps (`list_threads`, `list_all_runs`, `count_threads/runs/messages`, `get_run_any_thread`) are gone, replaced by abstract methods on `BaseDataStore`. The only `hasattr` left is the legitimate backend dispatch in the dashboard SQL endpoint.
 
 ### Fixed
 

@@ -89,6 +89,10 @@ agents:
           secret_env: WEBHOOK_SECRET
           idempotency:
             key: id
+          thread:
+            id: thread_id
+          message:
+            text: message
           thread_metadata:
             tenant_id: tenant.id
           run_metadata:
@@ -97,8 +101,7 @@ agents:
 
 data_store:
   postgres:
-    database_url: ${DATABASE_URL}
-    pool_size: 5
+    # Uses DATABASE_URL from the environment
 
 tracing:
   in_memory:
@@ -126,10 +129,20 @@ thread or run metadata. Missing payload paths are ignored and the webhook still
 returns `202 Accepted`; the full payload remains available on
 `run.metadata["__trigger__"]["data"]`.
 
-Webhook idempotency is opt-in. `idempotency.key` is a JSON body dot-path; when
-the same Agent Deployment receives the same key on the same webhook path,
-LLAMPHouse returns the original `run_id` and `thread_id` with `deduped: true`
-instead of creating another run.
+Webhook message mapping is opt-in. When `message.text` is configured, the
+resolved JSON body value must be a non-empty string and LLAMPHouse inserts it as
+an inbound user message before creating the run. When `thread.id` is configured,
+a missing payload field creates a new thread; a provided thread id must refer to
+an existing thread.
+
+Webhook idempotency is opt-in. `idempotency.key` is a JSON body dot-path. When
+configured, LLAMPHouse atomically deduplicates inbound webhook commands for the
+same Agent Deployment, webhook path, and key. A retry with the same semantic
+fingerprint returns the original `run_id`, `thread_id`, and `message_id` with
+`deduped: true` and `thread_created: false`. New webhook commands return
+`202 Accepted`; duplicate same-fingerprint requests return `200 OK`; the same
+key with a different semantic fingerprint returns `409 Conflict`. Run dispatch
+still uses the configured run queue and is not a transactional outbox guarantee.
 
 ## Queue backends
 
@@ -166,7 +179,7 @@ Authorization: Bearer my-secret-key
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` | _(none)_ |
+| `DATABASE_URL` | Postgres connection string used by `data_store.postgres`, tracing Postgres, and direct `PostgresDataStore` setup | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |

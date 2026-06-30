@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import AsyncIterator, Iterator, Optional, Dict
+from typing import Any, AsyncIterator, Iterator, Optional, Dict
 
 from .base_stream_adapter import BaseStreamAdapter
 from ..stream_events import (
@@ -13,7 +13,6 @@ from ..stream_events import (
 )
 
 class OpenAIChatCompletionAdapter(BaseStreamAdapter):
-
     def iter_events(self, stream) -> Iterator[CanonicalStreamEvent]:
         yield StreamStarted()
         try: 
@@ -48,6 +47,10 @@ class OpenAIChatCompletionAdapter(BaseStreamAdapter):
                 val = getattr(usage, key, None)
                 if isinstance(val, int):
                     usage_dict[key] = val
+            if not usage_dict:
+                usage_dict = None
+
+        metadata = self._extract_metadata(chunk, usage)
 
         out: list[CanonicalStreamEvent] = []
 
@@ -59,7 +62,7 @@ class OpenAIChatCompletionAdapter(BaseStreamAdapter):
                     reason = "tool_calls"
                 if reason not in ("stop", "tool_calls", "length", "content_filter"):
                     reason = "unknown"
-                out.append(StreamFinished(reason=reason, usage=usage_dict))
+                out.append(StreamFinished(reason=reason, usage=usage_dict, metadata=metadata))
                 continue
 
             delta = getattr(choice, "delta", None)
@@ -91,3 +94,38 @@ class OpenAIChatCompletionAdapter(BaseStreamAdapter):
                 out.append(TextDelta(text=content, message_id=message_id, index=0))
 
         return out
+
+    def _extract_metadata(self, chunk: Any, usage: Any) -> Optional[Dict[str, Any]]:
+        metadata: Dict[str, Any] = {}
+
+        response_id = getattr(chunk, "id", None)
+        if isinstance(response_id, str) and response_id:
+            metadata["response_id"] = response_id
+
+        response_model = getattr(chunk, "model", None)
+        if isinstance(response_model, str) and response_model:
+            metadata["response_model"] = response_model
+
+        token_details: Dict[str, int] = {}
+        if usage is not None:
+            prompt_details = getattr(usage, "prompt_tokens_details", None)
+            completion_details = getattr(usage, "completion_tokens_details", None)
+
+            cached_tokens = getattr(prompt_details, "cached_tokens", None) if prompt_details else None
+            reasoning_tokens = getattr(completion_details, "reasoning_tokens", None) if completion_details else None
+            input_audio_tokens = getattr(prompt_details, "audio_tokens", None) if prompt_details else None
+            output_audio_tokens = getattr(completion_details, "audio_tokens", None) if completion_details else None
+
+            for key, value in (
+                ("cached_tokens", cached_tokens),
+                ("reasoning_tokens", reasoning_tokens),
+                ("input_audio_tokens", input_audio_tokens),
+                ("output_audio_tokens", output_audio_tokens),
+            ):
+                if isinstance(value, int) and not isinstance(value, bool):
+                    token_details[key] = value
+
+        if token_details:
+            metadata["token_details"] = token_details
+
+        return metadata or None

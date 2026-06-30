@@ -43,7 +43,11 @@ from ...core.data_stores import InMemoryDataStore, PostgresDataStore
 from ...core.triggers import WebhookTrigger
 from ...core.workers import AsyncWorker
 from ...core.tracing.stores import InMemoryTracingStore, PostgresTracingStore, ClickHouseTracingStore
-from .components import instantiate_from_registry, parse_component_entry
+from .components import (
+    apply_component_env_defaults,
+    instantiate_from_registry,
+    parse_component_entry,
+)
 from .schema import DeploymentConfig, LLAMPHouseConfig
 
 logger = logging.getLogger("llamphouse.config")
@@ -440,6 +444,7 @@ def build_app_from_config(
     data_store = None
     if config.data_store is not None:
         name, kwargs = _parse_component_entry(config.data_store, "data_store")
+        kwargs = apply_component_env_defaults(name, kwargs, "data_store")
         data_store = _instantiate_from_registry(DATA_STORE_REGISTRY, name, kwargs, "data_store")
         logger.info("Data store '%s' configured from YAML.", name)
 

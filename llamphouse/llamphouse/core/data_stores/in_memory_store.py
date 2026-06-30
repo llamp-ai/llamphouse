@@ -1,4 +1,5 @@
 from typing import Optional, List
+import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
 from opentelemetry.trace import Status, StatusCode
@@ -11,6 +12,12 @@ from ..types.assistant import AgentObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
 from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRequest
+from ..types.webhook import (
+    WebhookCommand,
+    WebhookCommandConflict,
+    WebhookCommandResult,
+    WebhookThreadNotFound,
+)
 from ..types.enum import message_status, event_type, run_status, run_step_status
 from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, StepDetails, RunStepObject
@@ -44,6 +51,8 @@ class InMemoryDataStore(BaseDataStore):
         self._messages: dict[str, list[MessageObject]] = {}
         self._run_steps: dict[str, list[RunStepObject]] = {}
         self._last_created_at: Optional[datetime] = None
+        self._webhook_command_lock = asyncio.Lock()
+        self._webhook_idempotency_claims: dict[tuple[str, str], dict] = {}
 
     async def health_check(self) -> HealthCheckResult:
         return HealthCheckResult.pass_(
@@ -758,6 +767,101 @@ class InMemoryDataStore(BaseDataStore):
         "created_at":   (lambda r: getattr(r, "created_at", None),   "date"),
     }
 
+    async def execute_webhook_command(self, command: WebhookCommand) -> WebhookCommandResult:
+        async with self._webhook_command_lock:
+            claim_key = None
+            if command.idempotency_key is not None:
+                claim_key = (command.scope, command.idempotency_key)
+                existing = self._webhook_idempotency_claims.get(claim_key)
+                if existing is not None:
+                    if existing["fingerprint"] != command.fingerprint:
+                        raise WebhookCommandConflict(
+                            "Webhook idempotency key was reused for a different command."
+                        )
+                    response = dict(existing["response_json"])
+                    response["deduped"] = True
+                    response["thread_created"] = False
+                    return WebhookCommandResult(
+                        run_id=response["run_id"],
+                        thread_id=response["thread_id"],
+                        message_id=response.get("message_id"),
+                        deduped=True,
+                        thread_created=False,
+                        response_json=response,
+                    )
+
+            assistant = next((agent for agent in self.agents if agent.id == command.agent_id), None)
+            if assistant is None:
+                raise ValueError(f"Agent '{command.agent_id}' not found")
+
+            thread_created = False
+            if command.thread_id is not None:
+                thread = self._threads.get(command.thread_id)
+                if thread is None:
+                    raise WebhookThreadNotFound(
+                        f"Thread '{command.thread_id}' was not found."
+                    )
+            else:
+                thread = await self.insert_thread(
+                    CreateThreadRequest(metadata=command.thread_metadata)
+                )
+                thread_created = True
+                if thread is None:
+                    raise RuntimeError("Webhook thread creation failed.")
+
+            message_id = None
+            if command.message_text is not None:
+                message = await self.insert_message(
+                    thread.id,
+                    CreateMessageRequest(role="user", content=command.message_text),
+                )
+                if message is None:
+                    raise RuntimeError("Webhook user message insertion failed.")
+                message_id = message.id
+
+            run = await self.insert_run(
+                thread.id,
+                RunCreateRequest(
+                    assistant_id=command.agent_id,
+                    metadata=command.run_metadata,
+                    config_values=command.run_config_values or None,
+                ),
+                assistant,
+            )
+            if run is None:
+                raise RuntimeError("Webhook run creation failed.")
+
+            response_json = {
+                "run_id": run.id,
+                "thread_id": thread.id,
+                "message_id": message_id,
+                "deduped": False,
+                "thread_created": thread_created,
+            }
+            if claim_key is not None:
+                now = self._next_created_at()
+                self._webhook_idempotency_claims[claim_key] = {
+                    "fingerprint": command.fingerprint,
+                    "agent_id": command.agent_id,
+                    "trigger_path": command.trigger_path,
+                    "thread_id": thread.id,
+                    "message_id": message_id,
+                    "run_id": run.id,
+                    "response_json": response_json,
+                    "created_at": now,
+                    "updated_at": now,
+                    "expires_at": None,
+                }
+
+            return WebhookCommandResult(
+                run_id=run.id,
+                thread_id=thread.id,
+                message_id=message_id,
+                deduped=False,
+                thread_created=thread_created,
+                response_json=response_json,
+            )
+
     async def list_all_runs(
         self,
         limit: int = 50,
@@ -1456,17 +1560,6 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
-
-    async def list_runs_all(self, limit: int = 200, order: str = "desc") -> ListResponse | None:
-        runs = [run for thread_runs in self._runs.values() for run in thread_runs]
-        runs.sort(key=lambda r: (r.created_at, r.id), reverse=(order == "desc"))
-        limited = runs[:limit]
-        return ListResponse(
-            data=limited,
-            first_id=limited[0].id if limited else None,
-            last_id=limited[-1].id if limited else None,
-            has_more=len(runs) > limit,
-        )
 
     async def count_threads(self) -> int:
         return len(self._threads)

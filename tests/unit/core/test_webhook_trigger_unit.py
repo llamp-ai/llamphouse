@@ -27,6 +27,22 @@ def test_webhook_trigger_rejects_unknown_idempotency_options():
         )
 
 
+def test_webhook_trigger_rejects_invalid_thread_options():
+    with pytest.raises(ValueError, match="Unsupported thread option"):
+        WebhookTrigger(
+            path="/triggers/report",
+            thread={"scope": "global"},
+        )
+
+
+def test_webhook_trigger_rejects_invalid_message_options():
+    with pytest.raises(ValueError, match="message.text"):
+        WebhookTrigger(
+            path="/triggers/report",
+            message={"text": ""},
+        )
+
+
 def test_webhook_trigger_rejects_empty_path():
     with pytest.raises(ValueError, match="path must be a non-empty string"):
         WebhookTrigger(path="")

@@ -228,7 +228,6 @@ agents:
 # data_store:
 #   in_memory:
 #   # postgres:
-#   #   database_url: postgresql+asyncpg://user:pass@localhost/llamphouse
 
 # ---------------------
 # Global settings

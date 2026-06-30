@@ -131,7 +131,11 @@ project:
     assert os.environ["DATABASE_URL"] == "postgresql://config-dir"
 
 
-def test_check_command_runs_external_data_store_health_check(tmp_path, monkeypatch, capsys):
+def test_check_command_rejects_explicit_postgres_data_store_database_url(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
     class FakePostgresDataStore:
         def __init__(self, database_url):
             self.database_url = database_url
@@ -145,6 +149,7 @@ def test_check_command_runs_external_data_store_health_check(tmp_path, monkeypat
                 operation="select 1",
             )
 
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/db")
     monkeypatch.setitem(check_module.DATA_STORE_REGISTRY, "postgres", FakePostgresDataStore)
     config_path = tmp_path / "llamphouse.yaml"
     config_path.write_text(
@@ -160,13 +165,96 @@ data_store:
     exit_code = cli._cmd_check(_args(config_path, fmt="json"))
 
     payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert {
+        "name": "data_store.postgres",
+        "module": "data_store",
+        "status": "fail",
+        "message": (
+            "Health check failed: data_store.postgres reads DATABASE_URL "
+            "from the environment; remove data_store.postgres.database_url."
+        ),
+        "details": {"backend": "postgres"},
+    } in payload["checks"]
+
+
+def test_check_command_uses_database_url_env_for_postgres_data_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    seen = {}
+
+    class FakePostgresDataStore:
+        def __init__(self, database_url):
+            seen["database_url"] = database_url
+
+        async def health_check(self):
+            return HealthCheckResult.pass_(
+                "data_store.postgres",
+                "data_store",
+                "Connected",
+                backend="postgres",
+                operation="select 1",
+            )
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/db")
+    monkeypatch.setitem(check_module.DATA_STORE_REGISTRY, "postgres", FakePostgresDataStore)
+    config_path = tmp_path / "llamphouse.yaml"
+    config_path.write_text(
+        """
+version: "0.1"
+data_store:
+  postgres:
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = cli._cmd_check(_args(config_path, fmt="json"))
+
+    payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
+    assert seen["database_url"] == "postgresql://user:pass@localhost/db"
     assert {
         "name": "data_store.postgres",
         "module": "data_store",
         "status": "pass",
         "message": "Connected",
         "details": {"backend": "postgres", "operation": "select 1"},
+    } in payload["checks"]
+
+
+def test_check_command_reports_missing_database_url_env_for_postgres_data_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    cwd = tmp_path / "cwd"
+    project = tmp_path / "project"
+    cwd.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    config_path = project / "llamphouse.yaml"
+    config_path.write_text(
+        """
+version: "0.1"
+data_store:
+  postgres:
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = cli._cmd_check(_args(config_path, fmt="json"))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert {
+        "name": "data_store.postgres",
+        "module": "data_store",
+        "status": "fail",
+        "message": "Health check failed: data_store.postgres requires DATABASE_URL.",
+        "details": {"backend": "postgres"},
     } in payload["checks"]
 
 

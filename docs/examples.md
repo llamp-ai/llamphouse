@@ -17,7 +17,7 @@ Each example includes an `agents.py` (or `server.py`), `client.py`, and `README.
 | [08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore) | Demonstrates the config store feature with A2A streaming — define |  |
 | [09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth) | Demonstrates how to implement a custom authenticator on your LLAMPHouse server with A2A streaming. |  |
 | [10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker) | Compares the two worker modes in llamphouse using the A2A streaming protocol: |  |
-| [11_WebhookSignal](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookSignal) | Trigger an agent via an HTTP POST instead of a human chat message. | `WebhookSignal`, `secret_env` |
+| [11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger) | Trigger an agent via an HTTP POST instead of a human chat message. | `WebhookTrigger`, `secret_env` |
 | [12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent) | A generic ReAct-style Planner-Executor agent that you can drop into any project by providing a list of tools and a re… |  |
 | [13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML) | The config-driven way to run LLAMPHouse — no server.py required. | `server.py`, `The difference between a de…` |
 
@@ -55,7 +55,7 @@ If you're new to LLAMPHouse, we recommend working through the examples in this o
 8. **[08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore)** — Config Store Example
 9. **[09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth)** — Custom Authenticator Example
 10. **[10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker)** — AsyncWorker vs DistributedWorker
-11. **[11_WebhookSignal](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookSignal)** — Webhook Signal
+11. **[11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger)** — Webhook Trigger
 12. **[12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent)** — Planner Agent
 13. **[13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML)** — 📄 LLAMPHouse YAML
 
