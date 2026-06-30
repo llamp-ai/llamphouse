@@ -7,7 +7,8 @@ from sqlalchemy import (
     DateTime,
     Float,
     Boolean,
-    Enum
+    Enum,
+    UniqueConstraint,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -267,3 +268,23 @@ class RunStep(Base):
     
     def to_event(self, event: str) -> Event:
         return Event(event=event, data=str(self))
+
+
+class WebhookIdempotencyClaim(Base):
+    __tablename__ = "webhook_idempotency_claims"
+    __table_args__ = (
+        UniqueConstraint("scope", "key", name="uq_webhook_idempotency_scope_key"),
+    )
+
+    scope = Column(String, primary_key=True)
+    key = Column(String, primary_key=True)
+    fingerprint = Column(String, nullable=False)
+    agent_id = Column(String, nullable=False)
+    trigger_path = Column(String, nullable=False)
+    thread_id = Column(String)
+    message_id = Column(String)
+    run_id = Column(String)
+    response_json = Column(JSONType)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True))

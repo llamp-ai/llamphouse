@@ -32,6 +32,74 @@ This plan formalises the missing pieces and renames the existing ones so each co
 **Rename**: `BaseSignal` → `BaseTrigger`, `WebhookSignal` → `WebhookTrigger`, `SignalInfo` → `TriggerInfo`, `context.signal` → `context.trigger`.
 Provide a deprecation shim re-exporting the old names for one minor version.
 
+### 2.1 1.3.0 inbound webhook scope
+
+`WebhookTrigger` is the only webhook concept intended for the 1.3.0 release. It is an inbound trigger: an external system sends `POST /triggers/...`, LLAMPHouse records the inbound payload, selects or creates a thread, optionally inserts an inbound user message, creates a run for the owning Agent Deployment, and enqueues that run.
+
+`WebhookSubscriber` is a later outbound concept. It is not required for 1.3.0. A subscriber sends a webhook after LLAMPHouse emits a lifecycle event such as `run.completed`; it belongs to the post-1.3.0 event bus work in this plan.
+
+Inbound webhook idempotency is optional for `WebhookTrigger`, but when configured in 1.3.0 it is atomic command idempotency for inbound webhook calls only. LLAMPHouse claims `(scope, key)` before thread creation, user message insertion, or run creation. A duplicate request with the same semantic fingerprint returns the stored run and thread identifiers without inserting another user message. A duplicate request with the same key but a different semantic fingerprint returns `409 Conflict`.
+
+The inbound webhook semantic fingerprint is computed only from resolved fields used by the command: resolved thread id, resolved inbound user message text, mapped thread metadata, and mapped run metadata. It does not include the raw payload, idempotency key, Agent Deployment id, or trigger path; the deployment and path are part of `scope`, and the configured idempotency value is the `key`.
+
+Mapped thread and run metadata values may be any JSON-serializable value, including objects and arrays. Fingerprinting uses a canonical JSON representation with sorted object keys, compact separators, UTF-8 encoding, and non-finite numbers rejected. Object key order is ignored, array order is preserved, explicit `null` is preserved, and missing mapped fields are omitted unless the mapping configuration supplies an explicit default. Non-JSON-serializable values and non-finite numbers are rejected.
+
+The 1.3.0 implementation should expose one high-level store/service contract for executing an inbound webhook command atomically, rather than exposing separate idempotency claim/update methods for `WebhookTrigger` to compose. The contract represents the full command, for example `execute_webhook_command(command) -> WebhookCommandResult`.
+
+That contract owns the transaction boundary. It atomically validates or claims `(scope, key)` when idempotency is configured, returns the stored result for a duplicate with the same fingerprint, rejects a duplicate with a different fingerprint, resolves or creates the thread, inserts the inbound user message when configured, creates the run, persists the idempotency result, and commits those effects together. `PostgresDataStore` should implement this with a transaction and `UNIQUE(scope, key)`; `InMemoryDataStore` should protect the same critical section with an in-process lock.
+
+`WebhookTrigger` should remain responsible for HTTP concerns and command preparation only: verifying the secret, resolving mappings from the payload, validating required fields, computing the semantic fingerprint, building the `WebhookCommand`, calling `execute_webhook_command(...)`, and enqueueing the returned run through the existing run queue after the command commits.
+
+The 1.3.0 `WebhookCommand` should only include fields with agreed behavior: `scope`, `idempotency_key`, `fingerprint`, `agent_id`, `trigger_path`, `thread_id`, `thread_metadata`, `message_text`, `run_metadata`, and `run_config_values`. It should not include `message_metadata`. The inbound user message inserted by a webhook is represented by role and content only in 1.3.0; conversation metadata belongs in `thread_metadata`, and event/run metadata belongs in `run_metadata`. If provenance is needed for 1.3.0, store it in run metadata, such as webhook trigger path, external event id, or idempotency key. A separate message metadata surface can be added later without breaking the 1.3.0 command contract.
+
+The idempotency `scope` should be a deterministic SHA-256 hash of canonical structured data, not string concatenation:
+
+```json
+{
+  "type": "webhook",
+  "agent_id": "<agent_id>",
+  "trigger_path": "<normalized_trigger_path>"
+}
+```
+
+This avoids delimiter ambiguity, keeps the `UNIQUE(scope, key)` index short and predictable, remains deterministic across retries and processes, and leaves room for future scope types. Store the raw components separately for debugging and query.
+
+The 1.3.0 table shape should be:
+
+```text
+webhook_idempotency_claims
+  scope TEXT NOT NULL
+  key TEXT NOT NULL
+  fingerprint TEXT NOT NULL
+  agent_id TEXT NOT NULL
+  trigger_path TEXT NOT NULL
+  thread_id TEXT NOT NULL
+  message_id TEXT NULL
+  run_id TEXT NOT NULL
+  response_json JSON NOT NULL
+  created_at TIMESTAMP NOT NULL
+  updated_at TIMESTAMP NOT NULL
+  expires_at TIMESTAMP NULL
+
+UNIQUE(scope, key)
+```
+
+Do not store the raw payload by default. Store replayable response data in `response_json`; keep `expires_at` for later cleanup without requiring cleanup in 1.3.0. This design is scale-aware but not scale-complete for 1.3.0: it covers deterministic hashed scope, `UNIQUE(scope, key)`, canonical fingerprinting, response replay, the future cleanup hook, and the high-level `execute_webhook_command(...)` contract. It still excludes durable run-dispatch outbox, lifecycle event bus, outbound subscribers, and distributed rate limiting.
+
+`response_json` stores the public response shape that the webhook endpoint can replay directly, not an internal-only payload. The original successful command stores fields such as `run_id`, `thread_id`, `message_id`, `deduped: false`, and `thread_created`. On a duplicate request with the same fingerprint, load `response_json`, override only `deduped` to `true` and `thread_created` to `false`, and return it. Do not recompute identifiers from related tables unless the stored response is unavailable.
+
+The webhook endpoint status code matrix for 1.3.0 is:
+
+- New webhook command accepted and enqueued through the existing run queue behavior: `202 Accepted`.
+- Duplicate with the same fingerprint: `200 OK` with replayed `response_json`, overriding `deduped: true` and `thread_created: false`.
+- Duplicate with the same `(scope, key)` but a different fingerprint: `409 Conflict`.
+- Invalid payload or invalid config-derived required input: `400 Bad Request`.
+- Well-formed thread id that does not exist: `404 Not Found`.
+- Server-side webhook secret misconfiguration: `503 Service Unavailable`.
+- Missing or invalid auth/signature: keep the existing `401 Unauthorized` / `403 Forbidden` behavior.
+
+Run dispatch remains the existing behavior in 1.3.0. This release does not guarantee durable `run_queue` enqueue through a transactional outbox, and it does not include the lifecycle event bus, outbound webhook delivery, or `WebhookSubscriber`. Outbound subscriber idempotency is separate future work: event delivery will be at-least-once, and subscribers will receive a stable `event_id` / `Idempotency-Key` so receivers can dedupe delivery retries.
+
 ---
 
 ## 3. User-facing surface

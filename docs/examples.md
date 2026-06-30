@@ -7,19 +7,19 @@ Each example includes an `agents.py` (or `server.py`), `client.py`, and `README.
 
 | Example | Description | Key features |
 |---|---|---|
-| [01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld) | Minimal agent — no LLM needed | Agent basics, `insert_message()` |
-| [02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat) | OpenAI-powered conversational agent | LLM integration, conversation history |
-| [03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming) | Real-time token streaming with SSE | `process_stream()`, stream adapters |
-| [04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall) | Function calling with tool schemas | Tool schemas, `pending_tool_calls` |
-| [05_OrchestratorAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_OrchestratorAgent) | Multi-agent orchestration | `call_agent()`, streaming |
-| [06_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_AgentHandover) | Multi-agent handover | `handover_to_agent()` |
-| [07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing) | OpenTelemetry distributed tracing | OTel setup, trace propagation |
-| [08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore) | Runtime-tunable agent config | Config params, Compass UI |
-| [09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth) | Custom authentication | `BaseAuth`, streaming |
-| [10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker) | Redis-backed distributed workers | Redis queue, split-mode, Postgres |
-| [11_WebhookSignal](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookSignal) | Webhook signal integration | Signals, external callbacks |
-| [12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent) | Planner/executor agent pattern | Planning, tool use |
-| [13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML) | Config-driven runtime — no server.py required | YAML config, CLI |
+| [01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld) | The simplest possible LLAMPHouse agent — no API keys, no LLM, just a | `Agent`, `A2AAdapter` |
+| [02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat) | A LLAMPHouse agent that holds a real conversation using OpenAI's Chat | `run()`, `forward the conversation hi…` |
+| [03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming) | A LLAMPHouse agent that streams its response token-by-token to the | `AsyncOpenAI`, `context.process_stream()` |
+| [04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall) | This example demonstrates a minimal tool-calling loop inside a custom Agent running on a LLAMPHouse server, exposed v… |  |
+| [05_OrchestratorAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_OrchestratorAgent) | Demonstrates a central orchestrator that checks every sub-agent’s output |  |
+| [06_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_AgentHandover) | Demonstrates how one agent can hand over a user request to a specialised agent at runtime, with both agents running o… |  |
+| [07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing) | End-to-end OpenTelemetry tracing with an A2A client and server. The client creates a root span and injects W3C tracep… |  |
+| [08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore) | Demonstrates the config store feature with A2A streaming — define |  |
+| [09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth) | Demonstrates how to implement a custom authenticator on your LLAMPHouse server with A2A streaming. |  |
+| [10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker) | Compares the two worker modes in llamphouse using the A2A streaming protocol: |  |
+| [11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger) | Trigger an agent via an HTTP POST instead of a human chat message. | `WebhookTrigger`, `secret_env` |
+| [12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent) | A generic ReAct-style Planner-Executor agent that you can drop into any project by providing a list of tools and a re… |  |
+| [13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML) | The config-driven way to run LLAMPHouse — no server.py required. | `server.py`, `The difference between a de…` |
 
 ## Running an example
 
@@ -55,7 +55,7 @@ If you're new to LLAMPHouse, we recommend working through the examples in this o
 8. **[08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore)** — Config Store Example
 9. **[09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth)** — Custom Authenticator Example
 10. **[10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker)** — AsyncWorker vs DistributedWorker
-11. **[11_WebhookSignal](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookSignal)** — Webhook Signal
+11. **[11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger)** — Webhook Trigger
 12. **[12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent)** — Planner Agent
 13. **[13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML)** — 📄 LLAMPHouse YAML
 

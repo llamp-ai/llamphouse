@@ -233,6 +233,79 @@ async def test_run_crud(data_store):
         await _cleanup_thread(data_store, thread_id)
 
 
+async def test_run_persistence_fields_round_trip(data_store):
+    """Covers run stream, provider_config, lifecycle timestamps, and usage."""
+    thread_id = _uid("thread")
+    assistant = _assistant(_uid("asst"))
+    run_id = _uid("run")
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+
+        created = await data_store.insert_run(
+            thread_id,
+            RunCreateRequest(
+                assistant_id=assistant.id,
+                metadata={"run_id": run_id},
+                stream=True,
+                provider_config={
+                    "provider": "compatible-openai",
+                    "request": {"model": "vendor/model", "temperature": 0.2},
+                },
+            ),
+            assistant,
+        )
+        assert created is not None
+        assert created.stream is True
+        assert created.provider_config == {
+            "provider": "compatible-openai",
+            "request": {"model": "vendor/model", "temperature": 0.2},
+        }
+
+        in_progress = await data_store.update_run_status(
+            thread_id,
+            run_id,
+            run_status.IN_PROGRESS,
+        )
+        assert in_progress is not None
+        assert in_progress.started_at is not None
+
+        completed = await data_store.update_run_status(
+            thread_id,
+            run_id,
+            run_status.COMPLETED,
+            usage={
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+            },
+        )
+        assert completed is not None
+        assert completed.completed_at is not None
+        assert completed.usage is not None
+        assert completed.usage.prompt_tokens == 11
+        assert completed.usage.completion_tokens == 7
+        assert completed.usage.total_tokens == 18
+
+        fetched = await data_store.get_run_by_id(thread_id, run_id)
+        assert fetched is not None
+        assert fetched.stream is True
+        assert fetched.provider_config == created.provider_config
+        assert fetched.started_at is not None
+        assert fetched.completed_at is not None
+        assert fetched.usage is not None
+        assert fetched.usage.total_tokens == 18
+
+        listed = await data_store.list_runs(thread_id, limit=10, order="desc", after=None, before=None)
+        assert listed is not None
+        listed_run = next(run for run in listed.data if run.id == run_id)
+        assert listed_run.stream is True
+        assert listed_run.provider_config == created.provider_config
+        assert listed_run.usage is not None
+        assert listed_run.usage.total_tokens == 18
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
 async def test_message_metadata_preserved_on_insert(data_store):
     """Metadata passed to insert_message must be retrievable via list_messages and get_message_by_id."""
     thread_id = _uid("thread")

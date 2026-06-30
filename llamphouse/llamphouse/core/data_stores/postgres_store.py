@@ -6,7 +6,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, List, Literal, Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
 from opentelemetry.trace import Status, StatusCode
@@ -14,7 +15,7 @@ from opentelemetry.trace import Status, StatusCode
 from .retention import RetentionPolicy, PurgeStats
 from .base_data_store import BaseDataStore
 from ..tracing import get_tracer, span_context
-from ..database.models import Message, Run, Thread, RunStep
+from ..database.models import Message, Run, Thread, RunStep, WebhookIdempotencyClaim
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..types.assistant import AgentObject, AssistantObject
 from ..types.enum import event_type, message_status, run_status, run_step_status
@@ -23,6 +24,12 @@ from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRe
 from ..types.run_step import CreateRunStepRequest, RunStepObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
+from ..types.webhook import (
+    WebhookCommand,
+    WebhookCommandConflict,
+    WebhookCommandResult,
+    WebhookThreadNotFound,
+)
 from .. import telemetry as _telemetry
 
 store_tracer = get_tracer("llamphouse.data_store")
@@ -84,6 +91,10 @@ class PostgresDataStore(BaseDataStore):
         "postgresql://": "postgresql+asyncpg://",
         "postgres://": "postgresql+asyncpg://",
     }
+    _WEBHOOK_IDEMPOTENCY_CONSTRAINTS = {
+        "uq_webhook_idempotency_scope_key",
+        "webhook_idempotency_claims_pkey",
+    }
 
     def __init__(self, database_url: str, pool_size: int = 5, max_overflow: int = 0):
         database_url = self._ensure_async_url(database_url)
@@ -108,6 +119,114 @@ class PostgresDataStore(BaseDataStore):
                 logger.info("Auto-converted database URL to asyncpg driver")
                 break
         return url
+
+    @classmethod
+    def _is_webhook_idempotency_conflict(cls, exc: IntegrityError) -> bool:
+        candidates = [
+            exc.orig,
+            getattr(exc.orig, "__cause__", None),
+            getattr(exc.orig, "__context__", None),
+        ]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            constraint_name = getattr(candidate, "constraint_name", None)
+            diag = getattr(candidate, "diag", None)
+            if constraint_name is None and diag is not None:
+                constraint_name = getattr(diag, "constraint_name", None)
+            if constraint_name in cls._WEBHOOK_IDEMPOTENCY_CONSTRAINTS:
+                return True
+
+        message = str(exc)
+        return any(
+            constraint_name in message
+            for constraint_name in cls._WEBHOOK_IDEMPOTENCY_CONSTRAINTS
+        ) and (
+            "23505" in message
+            or "UniqueViolation" in message
+            or "duplicate key" in message
+        )
+
+    def _make_thread_row(
+        self,
+        thread: CreateThreadRequest,
+        *,
+        thread_id: str | None = None,
+    ) -> Thread:
+        metadata = thread.metadata or {}
+        row_id = thread_id or metadata.get("thread_id", str(uuid.uuid4()))
+        return Thread(
+            id=row_id,
+            name=row_id,
+            tool_resources=_to_jsonable(thread.tool_resources),
+            meta=_to_jsonable(metadata),
+        )
+
+    @staticmethod
+    def _thread_object_from_row(thread: Thread) -> ThreadObject:
+        return ThreadObject(
+            id=thread.id,
+            created_at=thread.created_at,
+            tool_resources=thread.tool_resources,
+            metadata=thread.meta or {},
+        )
+
+    def _make_message_row(
+        self,
+        thread_id: str,
+        message: CreateMessageRequest,
+        *,
+        status: str = message_status.COMPLETED,
+        message_id: str | None = None,
+    ) -> Message:
+        metadata = message.metadata if message.metadata else {}
+        row_id = message_id or metadata.get("message_id", str(uuid.uuid4()))
+        return Message(
+            id=row_id,
+            role=message.role,
+            content=[_to_jsonable(part) for part in message.get_parts()],
+            attachments=_to_jsonable(message.attachments),
+            meta=_to_jsonable(metadata),
+            thread_id=thread_id,
+            status=status,
+            completed_at=round(datetime.now(timezone.utc).timestamp(), 3)
+            if status == message_status.COMPLETED
+            else None,
+        )
+
+    def _make_run_row(
+        self,
+        thread_id: str,
+        run: RunCreateRequest,
+        assistant: AgentObject,
+        *,
+        run_id: str | None = None,
+    ) -> Run:
+        metadata = run.metadata or {}
+        row_id = run_id or metadata.get("run_id", str(uuid.uuid4()))
+        return Run(
+            id=row_id,
+            thread_id=thread_id,
+            assistant_id=run.assistant_id,
+            model=run.model or getattr(assistant, "model", "") or "",
+            instructions=(run.instructions or getattr(assistant, "instructions", "") or "")
+            + (run.additional_instructions or ""),
+            tools=_to_jsonable(run.tools or getattr(assistant, "tools", []) or []),
+            meta=_to_jsonable(metadata),
+            temperature=run.temperature or getattr(assistant, "temperature", None),
+            top_p=run.top_p or getattr(assistant, "top_p", None),
+            max_prompt_tokens=run.max_prompt_tokens,
+            max_completion_tokens=run.max_completion_tokens,
+            truncation_strategy=_to_jsonable(run.truncation_strategy),
+            tool_choice=_to_jsonable(run.tool_choice),
+            parallel_tool_calls=run.parallel_tool_calls,
+            stream=bool(run.stream),
+            response_format=_to_jsonable(run.response_format),
+            reasoning_effort=run.reasoning_effort or getattr(assistant, "reasoning_effort", None),
+            config_values=_to_jsonable(run.config_values),
+            provider_config=_to_jsonable(run.provider_config),
+            status=run_status.QUEUED,
+        )
 
     # ------------------------------------------------------------------
     # Messages
@@ -745,23 +864,12 @@ class PostgresDataStore(BaseDataStore):
                         return None
 
                     req = thread
-
-                    new_thread = Thread(
-                        id=thread_id,
-                        name=thread_id,
-                        tool_resources=_to_jsonable(thread.tool_resources),
-                        meta=_to_jsonable(metadata),
-                    )
+                    new_thread = self._make_thread_row(thread, thread_id=thread_id)
                     session.add(new_thread)
                     await session.commit()
                     await session.refresh(new_thread)
 
-                    thread_obj = ThreadObject(
-                        id=new_thread.id,
-                        created_at=new_thread.created_at,
-                        tool_resources=new_thread.tool_resources,
-                        metadata=new_thread.meta or {},
-                    )
+                    thread_obj = self._thread_object_from_row(new_thread)
 
                     for msg in req.messages or []:
                         msg_obj = await self._insert_message_in_session(session, thread_id, msg)
@@ -1025,32 +1133,7 @@ class PostgresDataStore(BaseDataStore):
                         span.set_attribute("output.value", _json_dump({"run_id": None, "status": None}))
                         return None
 
-                    metadata = run.metadata or {}
-                    run_id = metadata.get("run_id", str(uuid.uuid4()))
-
-                    new_run = Run(
-                        id=run_id,
-                        thread_id=thread_id,
-                        assistant_id=run.assistant_id,
-                        model=run.model or getattr(assistant, 'model', '') or '',
-                        instructions=(run.instructions or getattr(assistant, 'instructions', '') or '') + (run.additional_instructions or ''),
-                        tools=_to_jsonable(run.tools or getattr(assistant, 'tools', []) or []),
-                        meta=_to_jsonable(metadata),
-                        temperature=run.temperature or getattr(assistant, 'temperature', None),
-                        top_p=run.top_p or getattr(assistant, 'top_p', None),
-                        max_prompt_tokens=run.max_prompt_tokens,
-                        max_completion_tokens=run.max_completion_tokens,
-                        truncation_strategy=_to_jsonable(run.truncation_strategy),
-                        tool_choice=_to_jsonable(run.tool_choice),
-                        parallel_tool_calls=run.parallel_tool_calls,
-                        stream=bool(run.stream),
-                        response_format=_to_jsonable(run.response_format),
-                        reasoning_effort=run.reasoning_effort or getattr(assistant, 'reasoning_effort', None),
-                        config_values=_to_jsonable(run.config_values),
-                        provider_config=_to_jsonable(run.provider_config),
-                        status=run_status.QUEUED,
-                    )
-
+                    new_run = self._make_run_row(thread_id, run, assistant)
                     session.add(new_run)
                     await session.commit()
                     await session.refresh(new_run)
@@ -1113,6 +1196,207 @@ class PostgresDataStore(BaseDataStore):
         "status":       (Run.status,        "string"),
         "created_at":   (Run.created_at,    "date"),
     }
+
+    @staticmethod
+    def _webhook_result_from_response(
+        response_json: dict,
+        *,
+        deduped: bool,
+        thread_created: bool,
+    ) -> WebhookCommandResult:
+        response = dict(response_json)
+        response["deduped"] = deduped
+        response["thread_created"] = thread_created
+        return WebhookCommandResult(
+            run_id=response["run_id"],
+            thread_id=response["thread_id"],
+            message_id=response.get("message_id"),
+            deduped=deduped,
+            thread_created=thread_created,
+            response_json=response,
+        )
+
+    async def _load_webhook_command_replay(
+        self,
+        session: AsyncSession,
+        command: WebhookCommand,
+    ) -> WebhookCommandResult | None:
+        if command.idempotency_key is None:
+            return None
+        result = await session.execute(
+            select(WebhookIdempotencyClaim).where(
+                WebhookIdempotencyClaim.scope == command.scope,
+                WebhookIdempotencyClaim.key == command.idempotency_key,
+            )
+        )
+        claim = result.scalars().first()
+        if claim is None:
+            return None
+        if claim.fingerprint != command.fingerprint:
+            raise WebhookCommandConflict(
+                "Webhook idempotency key was reused for a different command."
+            )
+        if not claim.response_json:
+            raise RuntimeError("Webhook idempotency claim is not complete.")
+        return self._webhook_result_from_response(
+            claim.response_json,
+            deduped=True,
+            thread_created=False,
+        )
+
+    async def _load_webhook_command_replay_after_conflict(
+        self,
+        command: WebhookCommand,
+    ) -> WebhookCommandResult:
+        async with self._session_factory() as retry_session:
+            existing = await self._load_webhook_command_replay(retry_session, command)
+            if existing is None:
+                raise RuntimeError("Webhook idempotency claim conflict could not be replayed.")
+            return existing
+
+    async def _insert_webhook_idempotency_claim(
+        self,
+        session: AsyncSession,
+        command: WebhookCommand,
+    ) -> WebhookIdempotencyClaim | None:
+        if command.idempotency_key is None:
+            return None
+        claim = WebhookIdempotencyClaim(
+            scope=command.scope,
+            key=command.idempotency_key,
+            fingerprint=command.fingerprint or "",
+            agent_id=command.agent_id,
+            trigger_path=command.trigger_path,
+            thread_id=None,
+            message_id=None,
+            run_id=None,
+            response_json=None,
+            expires_at=None,
+        )
+        session.add(claim)
+        await session.flush()
+        return claim
+
+    async def _resolve_webhook_thread(
+        self,
+        session: AsyncSession,
+        command: WebhookCommand,
+    ) -> tuple[Thread, bool]:
+        if command.thread_id is not None:
+            result = await session.execute(
+                select(Thread).where(Thread.id == command.thread_id)
+            )
+            thread = result.scalars().first()
+            if thread is None:
+                raise WebhookThreadNotFound(
+                    f"Thread '{command.thread_id}' was not found."
+                )
+            return thread, False
+
+        thread = self._make_thread_row(
+            CreateThreadRequest(metadata=command.thread_metadata),
+            thread_id=str(uuid.uuid4()),
+        )
+        session.add(thread)
+        return thread, True
+
+    def _insert_webhook_user_message(
+        self,
+        session: AsyncSession,
+        thread_id: str,
+        command: WebhookCommand,
+    ) -> str | None:
+        if command.message_text is None:
+            return None
+        message = self._make_message_row(
+            thread_id,
+            CreateMessageRequest(
+                role="user",
+                content=command.message_text,
+            ),
+        )
+        session.add(message)
+        return message.id
+
+    def _insert_webhook_run(
+        self,
+        session: AsyncSession,
+        thread_id: str,
+        command: WebhookCommand,
+        assistant: AgentObject,
+    ) -> Run:
+        run = self._make_run_row(
+            thread_id,
+            RunCreateRequest(
+                assistant_id=command.agent_id,
+                metadata=command.run_metadata,
+                config_values=command.run_config_values or None,
+            ),
+            assistant,
+        )
+        session.add(run)
+        return run
+
+    @staticmethod
+    def _complete_webhook_idempotency_claim(
+        claim: WebhookIdempotencyClaim | None,
+        *,
+        thread_id: str,
+        message_id: str | None,
+        run_id: str,
+        response_json: dict,
+    ) -> None:
+        if claim is None:
+            return
+        claim.thread_id = thread_id
+        claim.message_id = message_id
+        claim.run_id = run_id
+        claim.response_json = _to_jsonable(response_json)
+
+    async def execute_webhook_command(self, command: WebhookCommand) -> WebhookCommandResult:
+        def _assistant() -> AgentObject:
+            assistant = next((agent for agent in self.agents if agent.id == command.agent_id), None)
+            if assistant is None:
+                raise ValueError(f"Agent '{command.agent_id}' not found")
+            return assistant
+
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    existing = await self._load_webhook_command_replay(session, command)
+                    if existing is not None:
+                        return existing
+
+                    assistant = _assistant()
+                    claim = await self._insert_webhook_idempotency_claim(session, command)
+                    thread, thread_created = await self._resolve_webhook_thread(session, command)
+                    message_id = self._insert_webhook_user_message(session, thread.id, command)
+                    run = self._insert_webhook_run(session, thread.id, command, assistant)
+
+                    response_json = {
+                        "run_id": run.id,
+                        "thread_id": thread.id,
+                        "message_id": message_id,
+                        "deduped": False,
+                        "thread_created": thread_created,
+                    }
+                    self._complete_webhook_idempotency_claim(
+                        claim,
+                        thread_id=thread.id,
+                        message_id=message_id,
+                        run_id=run.id,
+                        response_json=response_json,
+                    )
+
+                return self._webhook_result_from_response(
+                    response_json,
+                    deduped=False,
+                    thread_created=thread_created,
+                )
+        except IntegrityError as exc:
+            if not self._is_webhook_idempotency_conflict(exc):
+                raise
+            return await self._load_webhook_command_replay_after_conflict(command)
 
     async def list_all_runs(
         self,
@@ -1362,38 +1646,6 @@ class PostgresDataStore(BaseDataStore):
                     logger.exception("list_runs() failed")
                     return None
 
-    async def list_threads(self, limit: int = 50, order: Literal["desc", "asc"] = "desc") -> ListResponse | None:
-        """List all threads across all sessions (used by Compass dashboard)."""
-        async with self._session_factory() as session:
-            try:
-                stmt = select(Thread)
-                if order == "asc":
-                    stmt = stmt.order_by(Thread.created_at.asc(), Thread.id.asc())
-                else:
-                    stmt = stmt.order_by(Thread.created_at.desc(), Thread.id.desc())
-                result = await session.execute(stmt.limit(limit + 1))
-                rows = result.scalars().all()
-                has_more = len(rows) > limit
-                rows = rows[:limit]
-                threads = [
-                    ThreadObject(
-                        id=row.id,
-                        created_at=row.created_at,
-                        tool_resources=row.tool_resources,
-                        metadata=row.meta or {},
-                    )
-                    for row in rows
-                ]
-                return ListResponse(
-                    data=threads,
-                    first_id=threads[0].id if threads else None,
-                    last_id=threads[-1].id if threads else None,
-                    has_more=has_more,
-                )
-            except Exception:
-                logger.exception("list_threads() failed")
-                return None
-
     async def list_runs_all(self, limit: int = 200, order: Literal["desc", "asc"] = "desc") -> ListResponse | None:
         """List runs across all threads (used by Compass dashboard)."""
         async with self._session_factory() as session:
@@ -1417,36 +1669,6 @@ class PostgresDataStore(BaseDataStore):
             except Exception:
                 logger.exception("list_runs_all() failed")
                 return None
-
-    async def count_threads(self) -> int:
-        """Return total thread count (used by Compass overview)."""
-        async with self._session_factory() as session:
-            try:
-                result = await session.execute(select(func.count()).select_from(Thread))
-                return result.scalar_one()
-            except Exception:
-                logger.exception("count_threads() failed")
-                return 0
-
-    async def count_runs(self) -> int:
-        """Return total run count across all threads (used by Compass overview)."""
-        async with self._session_factory() as session:
-            try:
-                result = await session.execute(select(func.count()).select_from(Run))
-                return result.scalar_one()
-            except Exception:
-                logger.exception("count_runs() failed")
-                return 0
-
-    async def count_messages(self) -> int:
-        """Return total message count across all threads (used by Compass overview)."""
-        async with self._session_factory() as session:
-            try:
-                result = await session.execute(select(func.count()).select_from(Message))
-                return result.scalar_one()
-            except Exception:
-                logger.exception("count_messages() failed")
-                return 0
 
     async def update_run(self, thread_id: str, run_id: str, modifications: ModifyRunRequest) -> RunObject | None:
         with span_context(

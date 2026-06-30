@@ -8,6 +8,7 @@ from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRe
 from ..types.enum.message_status import COMPLETED as MESSAGE_COMPLETED
 from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, RunStepObject
+from ..types.webhook import WebhookCommand, WebhookCommandResult
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 
 if TYPE_CHECKING:
@@ -107,6 +108,15 @@ class BaseDataStore(ABC):
     async def insert_run(self, thread_id: str, run: RunCreateRequest, assistant: AgentObject, event_queue: BaseEventQueue = None) -> RunObject | None:
         """Insert a new run associated with a thread."""
         pass
+
+    async def execute_webhook_command(self, command: WebhookCommand) -> WebhookCommandResult:
+        """Atomically execute an inbound webhook command.
+
+        Stores that support webhook idempotency should override this method
+        with a single transaction or critical section covering idempotency
+        claim, thread/message/run creation, and response persistence.
+        """
+        raise NotImplementedError("execute_webhook_command is not implemented by this data store.")
 
     @abstractmethod
     async def list_runs(self, thread_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
@@ -217,31 +227,6 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
         """Update status/output/error of a run step."""
-        pass
-
-    @abstractmethod
-    async def list_threads(self, limit: int = 50, order: str = "desc") -> ListResponse | None:
-        """List threads across the store for operational views."""
-        pass
-
-    @abstractmethod
-    async def list_runs_all(self, limit: int = 200, order: str = "desc") -> ListResponse | None:
-        """List runs across all threads for operational views."""
-        pass
-
-    @abstractmethod
-    async def count_threads(self) -> int:
-        """Return total thread count."""
-        pass
-
-    @abstractmethod
-    async def count_runs(self) -> int:
-        """Return total run count across all threads."""
-        pass
-
-    @abstractmethod
-    async def count_messages(self) -> int:
-        """Return total message count across all threads."""
         pass
 
     @abstractmethod

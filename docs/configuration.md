@@ -66,8 +66,83 @@ data_store = InMemoryDataStore()
 
 # Postgres
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
-data_store = PostgresDataStore()  # uses DATABASE_URL env var
+data_store = PostgresDataStore(database_url="postgresql+asyncpg://...")
 ```
+
+## YAML configuration
+
+`llamphouse up` can build the runtime from `llamphouse.yaml`.
+
+```yaml
+version: "0.1"
+
+definitions:
+  - name: report-agent
+    entrypoint: agents.py:ReportAgent
+
+agents:
+  - name: report-worker
+    definition: report-agent
+    triggers:
+      - webhook:
+          path: /triggers/report
+          secret_env: WEBHOOK_SECRET
+          idempotency:
+            key: id
+          thread:
+            id: thread_id
+          message:
+            text: message
+          thread_metadata:
+            tenant_id: tenant.id
+          run_metadata:
+            event_type: type
+            event_id: id
+
+data_store:
+  postgres:
+    # Uses DATABASE_URL from the environment
+
+tracing:
+  in_memory:
+```
+
+String values in `llamphouse.yaml` can reference environment variables with
+`${ENV_VAR}`. Missing environment variables fail config loading before the
+server starts.
+
+Validate a config without starting the server:
+
+```bash
+llamphouse check --config llamphouse.yaml
+llamphouse check --config llamphouse.yaml --format json
+```
+
+`llamphouse check` loads `.env` from the config directory before falling back
+to the current working directory. It validates schema, entrypoints, framework
+component configuration, route conflicts, and lightweight external dependency
+pings. It does not run agents, start workers, create tracing tables, run
+migrations, or audit database structure.
+
+Webhook trigger metadata mappings copy values from the JSON payload into
+thread or run metadata. Missing payload paths are ignored and the webhook still
+returns `202 Accepted`; the full payload remains available on
+`run.metadata["__trigger__"]["data"]`.
+
+Webhook message mapping is opt-in. When `message.text` is configured, the
+resolved JSON body value must be a non-empty string and LLAMPHouse inserts it as
+an inbound user message before creating the run. When `thread.id` is configured,
+a missing payload field creates a new thread; a provided thread id must refer to
+an existing thread.
+
+Webhook idempotency is opt-in. `idempotency.key` is a JSON body dot-path. When
+configured, LLAMPHouse atomically deduplicates inbound webhook commands for the
+same Agent Deployment, webhook path, and key. A retry with the same semantic
+fingerprint returns the original `run_id`, `thread_id`, and `message_id` with
+`deduped: true` and `thread_created: false`. New webhook commands return
+`202 Accepted`; duplicate same-fingerprint requests return `200 OK`; the same
+key with a different semantic fingerprint returns `409 Conflict`. Run dispatch
+still uses the configured run queue and is not a transactional outbox guarantee.
 
 ## Queue backends
 
@@ -104,7 +179,7 @@ Authorization: Bearer my-secret-key
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` | _(none)_ |
+| `DATABASE_URL` | Postgres connection string used by `data_store.postgres`, tracing Postgres, and direct `PostgresDataStore` setup | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
