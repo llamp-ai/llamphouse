@@ -76,15 +76,10 @@ def apply_component_env_defaults(
     kind: str,
 ) -> dict[str, Any]:
     if kind == "data_store" and name == "postgres":
-        if kwargs:
-            raise ValueError(
-                "data_store.postgres reads DATABASE_URL from the environment; "
-                "remove data_store.postgres.database_url."
-            )
-        database_url = os.getenv("DATABASE_URL")
+        database_url = kwargs.get("database_url") or os.getenv("DATABASE_URL")
         if not database_url:
             raise ValueError(
-                "data_store.postgres requires DATABASE_URL."
+                "data_store.postgres requires database_url or DATABASE_URL."
             )
         return {**kwargs, "database_url": database_url}
     return kwargs

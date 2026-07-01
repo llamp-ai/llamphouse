@@ -147,11 +147,20 @@ data_store:
 ```
 
 To persist threads, messages, runs, and webhook idempotency claims in Postgres,
-set `DATABASE_URL` in the environment and switch the data store block to:
+switch the data store block to:
 
 ```yaml
 data_store:
   postgres:
+```
+
+This reads `DATABASE_URL` from the environment. You can also override the
+connection string directly in YAML:
+
+```yaml
+data_store:
+  postgres:
+    database_url: ${DATABASE_URL}
 ```
 
 When you run `llamphouse up`, the CLI:

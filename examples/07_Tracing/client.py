@@ -10,11 +10,15 @@ import os
 from uuid import uuid4
 
 import httpx
-from a2a.client import A2ACardResolver, A2AClient
+from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.types import (
-    MessageSendParams,
-    SendStreamingMessageRequest,
+    Message,
+    Part,
+    Role,
+    SendMessageConfiguration,
+    SendMessageRequest,
     TaskArtifactUpdateEvent,
+    TaskState,
     TaskStatusUpdateEvent,
 )
 from opentelemetry import propagate, trace
@@ -67,7 +71,10 @@ async def main():
             print(f"  Streaming:   {card.capabilities.streaming}")
             print()
 
-            client = A2AClient(httpx_client=httpx_client, agent_card=card)
+            factory = ClientFactory(
+                ClientConfig(httpx_client=httpx_client, streaming=True)
+            )
+            client = factory.create(card)
 
             # ── 2. Stream a question ─────────────────────────────────────
             question = (
@@ -81,36 +88,50 @@ async def main():
 
             chunks: list[str] = []
 
-            async for chunk in client.send_message_streaming(
-                SendStreamingMessageRequest(
-                    id=str(uuid4()),
-                    params=MessageSendParams(
-                        message={
-                            "role": "user",
-                            "parts": [{"kind": "text", "text": question}],
-                            "messageId": uuid4().hex,
-                        }
-                    ),
-                )
-            ):
-                result = chunk.root.result
+            message = Message(
+                message_id=uuid4().hex,
+                role=Role.ROLE_USER,
+                parts=[Part(text=question)],
+            )
+            request = SendMessageRequest(
+                message=message,
+                configuration=SendMessageConfiguration(
+                    accepted_output_modes=["text"],
+                ),
+            )
+
+            async for event in client.send_message(request):
+                payload = event.WhichOneof("payload")
+                if payload == "artifact_update":
+                    result = event.artifact_update
+                elif payload == "status_update":
+                    result = event.status_update
+                else:
+                    continue
+
                 if isinstance(result, TaskArtifactUpdateEvent):
                     for part in result.artifact.parts:
-                        if hasattr(part.root, "text") and part.root.text:
-                            chunks.append(part.root.text)
-                            print(part.root.text, end="", flush=True)
+                        if part.text:
+                            chunks.append(part.text)
+                            print(part.text, end="", flush=True)
                 elif isinstance(result, TaskStatusUpdateEvent):
-                    if (
-                        result.final
-                        and result.status.state.value != "completed"
-                    ):
+                    state = TaskState.Name(result.status.state).removeprefix(
+                        "TASK_STATE_"
+                    ).lower()
+                    if state in {
+                        "failed",
+                        "canceled",
+                        "input_required",
+                        "rejected",
+                        "auth_required",
+                    }:
                         msg = ""
                         if result.status.message and result.status.message.parts:
                             for p in result.status.message.parts:
-                                if hasattr(p.root, "text"):
-                                    msg += p.root.text
+                                if p.text:
+                                    msg += p.text
                         print(
-                            f"\n  [status: {result.status.state.value}] {msg}",
+                            f"\n  [status: {state}] {msg}",
                             flush=True,
                         )
 

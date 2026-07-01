@@ -101,7 +101,8 @@ agents:
 
 data_store:
   postgres:
-    # Uses DATABASE_URL from the environment
+    # database_url is optional; defaults to DATABASE_URL from the environment
+    # database_url: ${DATABASE_URL}
 
 tracing:
   in_memory:
@@ -179,7 +180,7 @@ Authorization: Bearer my-secret-key
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string used by `data_store.postgres`, tracing Postgres, and direct `PostgresDataStore` setup | _(none)_ |
+| `DATABASE_URL` | Default Postgres connection string used by `data_store.postgres`, tracing Postgres, and direct `PostgresDataStore` setup when a URL is not provided explicitly | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |

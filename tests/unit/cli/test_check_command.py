@@ -131,14 +131,16 @@ project:
     assert os.environ["DATABASE_URL"] == "postgresql://config-dir"
 
 
-def test_check_command_rejects_explicit_postgres_data_store_database_url(
+def test_check_command_uses_explicit_postgres_data_store_database_url(
     tmp_path,
     monkeypatch,
     capsys,
 ):
+    seen = {}
+
     class FakePostgresDataStore:
         def __init__(self, database_url):
-            self.database_url = database_url
+            seen["database_url"] = database_url
 
         async def health_check(self):
             return HealthCheckResult.pass_(
@@ -149,7 +151,7 @@ def test_check_command_rejects_explicit_postgres_data_store_database_url(
                 operation="select 1",
             )
 
-    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/db")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/from-env")
     monkeypatch.setitem(check_module.DATA_STORE_REGISTRY, "postgres", FakePostgresDataStore)
     config_path = tmp_path / "llamphouse.yaml"
     config_path.write_text(
@@ -157,7 +159,7 @@ def test_check_command_rejects_explicit_postgres_data_store_database_url(
 version: "0.1"
 data_store:
   postgres:
-    database_url: postgresql://user:pass@localhost/db
+    database_url: postgresql://user:pass@localhost/from-yaml
 """,
         encoding="utf-8",
     )
@@ -165,16 +167,14 @@ data_store:
     exit_code = cli._cmd_check(_args(config_path, fmt="json"))
 
     payload = json.loads(capsys.readouterr().out)
-    assert exit_code == 1
+    assert exit_code == 0
+    assert seen["database_url"] == "postgresql://user:pass@localhost/from-yaml"
     assert {
         "name": "data_store.postgres",
         "module": "data_store",
-        "status": "fail",
-        "message": (
-            "Health check failed: data_store.postgres reads DATABASE_URL "
-            "from the environment; remove data_store.postgres.database_url."
-        ),
-        "details": {"backend": "postgres"},
+        "status": "pass",
+        "message": "Connected",
+        "details": {"backend": "postgres", "operation": "select 1"},
     } in payload["checks"]
 
 
@@ -253,7 +253,7 @@ data_store:
         "name": "data_store.postgres",
         "module": "data_store",
         "status": "fail",
-        "message": "Health check failed: data_store.postgres requires DATABASE_URL.",
+        "message": "Health check failed: data_store.postgres requires database_url or DATABASE_URL.",
         "details": {"backend": "postgres"},
     } in payload["checks"]
 
