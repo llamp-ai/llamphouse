@@ -15,20 +15,17 @@ End-to-end OpenTelemetry tracing with an A2A client and server. The client creat
    ```bash
    cd llamphouse/examples/08_Tracing
    ```
-
 2. Install dependencies:
 
    ```bash
    pip install -r requirements.txt
    ```
-
 3. Create your `.env` from the sample:
 
    ```bash
    cp .env.sample .env
    # Add your OPENAI_API_KEY
    ```
-
 4. Start ClickHouse and the OTel Collector (from the repo root):
 
    ```bash
@@ -38,12 +35,12 @@ End-to-end OpenTelemetry tracing with an A2A client and server. The client creat
 
 ## How It Works
 
-| Component | What happens |
-|-----------|-------------|
-| **Client** | Creates a root span, injects `traceparent` into httpx headers, then uses the `a2a-sdk` to stream a question via `message/stream`. |
-| **Server** | Mounts `A2AAdapter`, extracts incoming trace context, and creates child spans for every operation (queue, worker, streaming, data-store). |
-| **Collector** | Receives OTLP spans on port 4318 and writes them to ClickHouse. |
-| **Compass** | Reads from ClickHouse and displays traces at `http://127.0.0.1:8000/compass/`. |
+| Component           | What happens                                                                                                                               |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Client**    | Creates a root span, injects`traceparent` into httpx headers, then uses the `a2a-sdk` to stream a question via `message/stream`.     |
+| **Server**    | Mounts`A2AAdapter`, extracts incoming trace context, and creates child spans for every operation (queue, worker, streaming, data-store). |
+| **Collector** | Receives OTLP spans on port 4318 and writes them to ClickHouse.                                                                            |
+| **Compass**   | Reads from ClickHouse and displays traces at`http://127.0.0.1:8000/compass/`.                                                            |
 
 ## Exclude Spans (Optional)
 
@@ -68,13 +65,11 @@ llamphouse = LLAMPHouse(
    ```bash
    python server.py
    ```
-
 2. In a second terminal, run the client:
 
    ```bash
    python client.py
    ```
-
 3. Open Compass to view the trace:
 
    ```

@@ -90,11 +90,12 @@ workers:
 # Controls where threads, runs, messages, and run steps are stored.
 # Omit this section to use the in-memory store.
 #
-# Available: in_memory (no extra config), postgres (uses DATABASE_URL)
+# Available: in_memory (no extra config), postgres (database_url or DATABASE_URL)
 
 data_store:
   in_memory:
   # postgres:
+  #   database_url: ${DATABASE_URL}
 
 # ---------------------
 # Tracing store

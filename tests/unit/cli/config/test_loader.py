@@ -227,20 +227,19 @@ tracing:
     assert isinstance(app.fastapi.state.tracing_store, InMemoryTracingStore)
 
 
-def test_build_app_from_config_rejects_explicit_postgres_data_store_database_url(
+def test_build_app_from_config_uses_explicit_postgres_data_store_database_url(
     tmp_path,
     monkeypatch,
 ):
     project = _copy_project(tmp_path)
     monkeypatch.setenv(
         "DATABASE_URL",
-        "postgresql+asyncpg://user:pass@localhost/llamphouse",
+        "postgresql+asyncpg://user:pass@localhost/from-env",
     )
 
-    with pytest.raises(ValueError, match="remove data_store.postgres.database_url"):
-        _build_app(
-            project,
-            """
+    app = _build_app(
+        project,
+        """
 version: "0.1"
 definitions:
   - name: responder
@@ -251,11 +250,15 @@ agents:
 adapters: []
 data_store:
   postgres:
-    database_url: postgresql+asyncpg://user:pass@localhost/llamphouse
+    database_url: postgresql+asyncpg://user:pass@localhost/from-yaml
 tracing:
   in_memory:
 """,
-        )
+    )
+
+    data_store = app.fastapi.state.data_store
+    assert isinstance(data_store, PostgresDataStore)
+    assert "from-yaml" in str(data_store._engine.url)
 
 
 def test_build_app_from_config_uses_database_url_env_for_postgres_data_store(
@@ -295,7 +298,7 @@ def test_build_app_from_config_requires_database_url_for_postgres_data_store(
     project = _copy_project(tmp_path)
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    with pytest.raises(ValueError, match="data_store.postgres.*DATABASE_URL"):
+    with pytest.raises(ValueError, match="data_store.postgres.*database_url.*DATABASE_URL"):
         _build_app(
             project,
             """
