@@ -106,7 +106,7 @@ async def test_retention_purge_dry_run_and_delete(data_store):
         dry_policy = RetentionPolicy(
             ttl_days=1,
             dry_run=True,
-            batch_size=1,
+            batch_size=None,
             now_fn=lambda: now_future,
         )
 
@@ -119,12 +119,12 @@ async def test_retention_purge_dry_run_and_delete(data_store):
         assert await data_store.get_thread_by_id(thread_id) is not None
         assert await data_store.get_message_by_id(thread_id, message_id) is not None
         assert await data_store.get_run_by_id(thread_id, run_id) is not None
-        assert data_store.get_run_step_by_id(thread_id, run_id, step_id) is not None
+        assert await data_store.get_run_step_by_id(thread_id, run_id, step_id) is not None
 
         delete_policy = RetentionPolicy(
             ttl_days=1,
             dry_run=False,
-            batch_size=1,
+            batch_size=None,
             now_fn=lambda: now_future,            
         )
         stats = await data_store.purge_expired(delete_policy)
@@ -136,7 +136,7 @@ async def test_retention_purge_dry_run_and_delete(data_store):
         assert await data_store.get_thread_by_id(thread_id) is None
         assert await data_store.get_message_by_id(thread_id, message_id) is None
         assert await data_store.get_run_by_id(thread_id, run_id) is None
-        assert data_store.get_run_step_by_id(thread_id, run_id, step_id) is None
+        assert await data_store.get_run_step_by_id(thread_id, run_id, step_id) is None
 
     finally:
         await _cleanup_thread(data_store, thread_id)

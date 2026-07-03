@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from llamphouse.core.types.enum import event_type as event_types
@@ -56,6 +58,33 @@ async def test_sse_run_stream_emits_run_events(async_client, assistant_id):
     assert "thread.run.queued" in event_names
     assert "thread.run.completed" in event_names or "thread.run.in_progress" in event_names
     assert event_types.DONE in event_names
+
+
+@pytest.mark.asyncio
+async def test_sse_run_stream_persists_stream_flag(async_client, llamphouse_app, assistant_id):
+    """Creating a streamed run must persist stream=True for workers that reload the run."""
+    thread = await _create_thread(async_client)
+
+    async with async_client.stream(
+        "POST",
+        f"/threads/{thread['id']}/runs",
+        json={"assistant_id": assistant_id, "stream": True},
+    ) as resp:
+        assert resp.status_code == 200
+        events = await _collect_sse_events(resp)
+
+    created = next(data for name, data in events if name == "thread.run.created")
+    run_id = json.loads(created)["id"]
+
+    db = llamphouse_app.fastapi.state.data_store
+    run = await db.get_run_by_id(thread["id"], run_id)
+    assert run is not None
+    assert run.stream is True
+
+    listed = await db.list_runs(thread["id"], limit=10, order="desc", after=None, before=None)
+    assert listed is not None
+    listed_run = next(r for r in listed.data if r.id == run_id)
+    assert listed_run.stream is True
 
 
 @pytest.mark.asyncio

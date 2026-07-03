@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.2.4] - 3/07/2026
+
+### Added
+
+- Added core data-store contract methods for run lookup, operational listing, and aggregate counts.
+- Added data-store contract coverage for run `stream`, `provider_config`, lifecycle timestamps, `usage`, and operational APIs.
+- Added Compass compare integration coverage for loading runs by run id across data-store backends.
+- Added Postgres connection pool starvation contract tests covering pool exhaustion, concurrent request handling, and connection cleanup.
+- Added unit tests for `AsyncWorker` and `DistributedWorker` covering happy path (sync/async agents), streaming event sequences, assistant/run not found, timeout, generic exceptions, queue errors, and concurrency/semaphore behaviour (52 tests).
+- Added unit tests for the streaming layer: `StreamingEmitter` wire format and full pipeline, A2A SSE route event shapes, and the `_INTERNAL_TO_OPENAI_EVENT` mapping (83 tests across 3 files).
+
+### Changed
+
+- Standardized run storage behavior across `InMemoryDataStore` and `PostgresDataStore`.
+- Updated Compass and Dashboard routes to use public data-store APIs instead of in-memory private structures.
+- Squashed `provider_config` into the existing `runs.stream` migration for a clean migration chain.
+
+### Fixed
+
+- Fixed Postgres-backed runs missing persisted `stream` data.
+- Fixed run status updates so lifecycle timestamps and `usage` are persisted consistently.
+- Fixed `LLAMPHouse` initialization with callable event queue factories such as `RedisEventQueueFactory`.
+- Fixed `StreamingEmitter._on_text_snapshot` to guard against empty `full_text` before calling `_ensure_message_started()`, preventing spurious empty message delta events during streaming.
+
+### Removed
+
+- Removed dead `core/_utils` module (`get_max_db_connections`); the function was no longer called anywhere after the pool-size validation was dropped in 1.2.1.
+
 
 
 ## [1.2.3] - 11/05/2026

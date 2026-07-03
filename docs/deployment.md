@@ -42,11 +42,12 @@ services:
 For production, use Postgres instead of the in-memory store:
 
 ```python
+import os
 from llamphouse.core.data_stores.postgres_store import PostgresDataStore
 
 app = LLAMPHouse(
     agents=[...],
-    data_store=PostgresDataStore(),  # reads DATABASE_URL
+    data_store=PostgresDataStore(os.environ["DATABASE_URL"]),
 )
 ```
 
@@ -79,40 +80,51 @@ alembic downgrade base
 For multi-process deployments, use Redis for the run queue and event queues:
 
 ```python
-from llamphouse.core.queues.redis_queue import RedisQueue
-from llamphouse.core.streaming.event_queue.redis_event_queue import RedisEventQueue
+import os
+from llamphouse.core.queue.redis_queue import RedisQueue
+from llamphouse.core.streaming.event_queue.redis_event_queue import RedisEventQueueFactory
 
 app = LLAMPHouse(
     agents=[...],
-    run_queue=RedisQueue(),               # reads REDIS_URL
-    event_queue_class=RedisEventQueue,    # reads REDIS_URL
+    run_queue=RedisQueue(os.environ["REDIS_URL"]),
+    event_queue_class=RedisEventQueueFactory(os.environ["REDIS_URL"]),
 )
 ```
 
 ## Distributed workers
 
-For high-throughput deployments, separate the API server from worker processes. The API server handles HTTP requests, while workers pull runs from the shared queue and execute agent logic.
+For high-throughput deployments, separate the API server from worker processes. The API server handles HTTP requests, while workers pull runs from the shared queue and execute agent logic. Use Postgres for shared run state and Redis for run/event queues.
 
 ```python
-# api.py — API server only (no worker)
+# api.py - API server only
+import os
+from llamphouse.core import LLAMPHouse
+from llamphouse.core.queue.redis_queue import RedisQueue
+from llamphouse.core.data_stores.postgres_store import PostgresDataStore
+from llamphouse.core.streaming.event_queue.redis_event_queue import RedisEventQueueFactory
+
 app = LLAMPHouse(
     agents=[...],
-    data_store=PostgresDataStore(),
-    run_queue=RedisQueue(),
-    event_queue_class=RedisEventQueue,
+    data_store=PostgresDataStore(os.environ["DATABASE_URL"]),
+    run_queue=RedisQueue(os.environ["REDIS_URL"]),
+    event_queue_class=RedisEventQueueFactory(os.environ["REDIS_URL"]),
 )
-# Start with: python -m llamphouse --no-workers api.py
+# Start with: llamphouse serve api:app --no-workers
 
-# worker.py — Worker process
-from llamphouse.core.worker import Worker
+# worker.py - Worker process
+import asyncio
+import os
+from llamphouse.core.queue.redis_queue import RedisQueue
+from llamphouse.core.data_stores.postgres_store import PostgresDataStore
+from llamphouse.core.workers.distributed_worker import DistributedWorker
 
-worker = Worker(
+worker = DistributedWorker(
+    redis_url=os.environ["REDIS_URL"],
     agents=[...],
-    data_store=PostgresDataStore(),
-    run_queue=RedisQueue(),
-    event_queue_class=RedisEventQueue,
+    data_store=PostgresDataStore(os.environ["DATABASE_URL"]),
+    run_queue=RedisQueue(os.environ["REDIS_URL"]),
 )
-worker.start()
+asyncio.run(worker.run_forever())
 ```
 
 Scale by running multiple worker processes:
@@ -127,7 +139,7 @@ python worker.py
 python worker.py
 ```
 
-See the `docker/docker-compose.prod.yml` for a production split-mode setup and [example 14_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_DistributedWorker) for a complete implementation.
+See the `docker/docker-compose.prod.yml` for a production split-mode setup and [example 10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker) for a complete implementation.
 
 ## Production checklist
 

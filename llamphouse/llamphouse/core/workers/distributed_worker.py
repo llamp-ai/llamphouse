@@ -36,7 +36,7 @@ from ..types.enum import run_status, event_type
 from .base_worker import BaseWorker
 from ..assistant import Agent, Assistant
 from ..context import Context
-from ..streaming.event_queue.redis_event_queue import RedisEventQueue
+from ..streaming.event_queue.redis_event_queue import RedisEventQueue, RedisEventQueueFactory
 from ..streaming.event import DoneEvent, ErrorEvent
 from ..data_stores.base_data_store import BaseDataStore
 from ..queue.base_queue import BaseQueue
@@ -248,7 +248,7 @@ class DistributedWorker(BaseWorker):
                         loop=asyncio.get_running_loop(),
                         traceparent=carrier,
                         run_queue=self.run_queue,
-                        queue_class=RedisEventQueue,
+                        queue_class=RedisEventQueueFactory(self.redis_url),
                         assistants=self.assistants,
                     )
 
