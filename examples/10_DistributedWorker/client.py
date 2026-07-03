@@ -158,12 +158,13 @@ async def async_main():
             print(f"  DistributedWorker : {distributed_wall:.2f}s  ({args.runs / distributed_wall:.1f} runs/s)")
         if async_wall and distributed_wall:
             ratio = async_wall / distributed_wall
-            if ratio > 1:
-                print(f"\n  ⚡ DistributedWorker was {ratio:.1f}x faster")
-            elif ratio < 1:
-                print(f"\n  ℹ️  AsyncWorker was {1/ratio:.1f}x faster (expected for small workloads)")
+            faster = max(ratio, 1 / ratio)
+            if faster < 1.10:
+                print(f"\n  ≈  Both performed similarly ({faster:.2f}x difference)")
+            elif ratio > 1:
+                print(f"\n  ⚡ DistributedWorker was {ratio:.2f}x faster")
             else:
-                print(f"\n  ≈  Both performed similarly")
+                print(f"\n  ℹ️  AsyncWorker was {1/ratio:.2f}x faster (expected for small workloads)")
             print()
             print("  Note: For async I/O tasks like this, both perform similarly.")
             print("  The DistributedWorker shines when you need to:")

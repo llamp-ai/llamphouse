@@ -313,12 +313,12 @@ async def test_run_steps_and_tool_outputs(data_store):
         await asyncio.sleep(0.001)
         await data_store.insert_run_step(thread_id, run.id, step2)
 
-        listed = data_store.list_run_steps(thread_id, run.id, limit=1, order="desc", after=None, before=None)
+        listed = await data_store.list_run_steps(thread_id, run.id, limit=1, order="desc", after=None, before=None)
         assert listed is not None
         assert len(listed.data) == 1
         assert listed.has_more is True
 
-        fetch = data_store.get_run_step_by_id(thread_id, run.id, step1_id)
+        fetch = await data_store.get_run_step_by_id(thread_id, run.id, step1_id)
         assert fetch is not None
         assert fetch.status == run_step_status.COMPLETED
 
@@ -341,9 +341,123 @@ async def test_run_steps_and_tool_outputs(data_store):
         assert run_after.status == run_status.IN_PROGRESS
         assert run_after.required_action is None
 
-        step2_fetch = data_store.get_run_step_by_id(thread_id, run.id, step2_id)
+        step2_fetch = await data_store.get_run_step_by_id(thread_id, run.id, step2_id)
         assert step2_fetch is not None
         tool_call = _unwrap_tool_call(step2_fetch.step_details.tool_calls[0])
         assert tool_call.function.output == "ok"
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
+async def test_run_stream_and_provider_config_round_trip(data_store):
+    """Run fields must preserve the same shape across data store backends."""
+    thread_id = _uid("thread")
+    assistant = _assistant(_uid("asst"))
+    provider_config = {"reasoning": {"effort": "low"}, "timeout": 30}
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+
+        run = await data_store.insert_run(
+            thread_id,
+            RunCreateRequest(
+                assistant_id=assistant.id,
+                metadata={"run_id": _uid("run")},
+                provider_config=provider_config,
+                stream=True,
+            ),
+            assistant,
+        )
+        assert run is not None
+        assert run.stream is True
+        assert run.provider_config == provider_config
+
+        fetched = await data_store.get_run_by_id(thread_id, run.id)
+        assert fetched is not None
+        assert fetched.stream is True
+        assert fetched.provider_config == provider_config
+
+        listed = await data_store.list_runs(thread_id, limit=10, order="desc", after=None, before=None)
+        assert listed is not None
+        listed_run = next(r for r in listed.data if r.id == run.id)
+        assert listed_run.stream is True
+        assert listed_run.provider_config == provider_config
+
+        non_stream_run = await data_store.insert_run(
+            thread_id,
+            RunCreateRequest(
+                assistant_id=assistant.id,
+                metadata={"run_id": _uid("run")},
+            ),
+            assistant,
+        )
+        assert non_stream_run is not None
+        assert non_stream_run.stream is False
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
+async def test_run_lifecycle_timestamps_round_trip(data_store):
+    """Run status helper should persist lifecycle timestamps consistently."""
+    thread_id = _uid("thread")
+    assistant = _assistant(_uid("asst"))
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+        run = await data_store.insert_run(thread_id, _run(_uid("run"), assistant.id), assistant)
+        assert run is not None
+
+        started = await data_store.update_run_status(thread_id, run.id, run_status.IN_PROGRESS)
+        assert started is not None
+        assert started.started_at is not None
+
+        completed = await data_store.update_run_status(
+            thread_id,
+            run.id,
+            run_status.COMPLETED,
+            usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        )
+        assert completed is not None
+        assert completed.completed_at is not None
+        assert completed.usage.total_tokens == 5
+
+        expired = await data_store.update_run_status(thread_id, run.id, run_status.EXPIRED)
+        assert expired is not None
+        assert expired.expires_at is not None
+
+        fetched = await data_store.get_run_by_id(thread_id, run.id)
+        assert fetched is not None
+        assert fetched.started_at is not None
+        assert fetched.completed_at is not None
+        assert fetched.expires_at is not None
+        assert fetched.usage.total_tokens == 5
+    finally:
+        await _cleanup_thread(data_store, thread_id)
+
+
+async def test_operational_run_lookup_and_counts(data_store):
+    """Operational read methods must behave the same across data store backends."""
+    thread_id = _uid("thread")
+    assistant = _assistant(_uid("asst"))
+    try:
+        await data_store.insert_thread(_thread(thread_id))
+        run = await data_store.insert_run(thread_id, _run(_uid("run"), assistant.id), assistant)
+        await data_store.insert_message(thread_id, _message(_uid("msg"), "hello"))
+        assert run is not None
+
+        fetched = await data_store.get_run_by_run_id(run.id)
+        assert fetched is not None
+        assert fetched.id == run.id
+        assert fetched.thread_id == thread_id
+
+        threads = await data_store.list_threads(limit=1, order="desc")
+        assert threads is not None
+        assert len(threads.data) == 1
+
+        runs = await data_store.list_runs_all(limit=1, order="desc")
+        assert runs is not None
+        assert len(runs.data) == 1
+
+        assert await data_store.count_threads() >= 1
+        assert await data_store.count_runs() >= 1
+        assert await data_store.count_messages() >= 1
     finally:
         await _cleanup_thread(data_store, thread_id)

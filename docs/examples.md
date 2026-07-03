@@ -10,16 +10,14 @@ The [examples/](https://github.com/llamp-ai/llamphouse/tree/main/examples) direc
 | [02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat) | OpenAI-powered conversational agent | LLM integration, conversation history |
 | [03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming) | Real-time token streaming with SSE | `process_stream()`, stream adapters |
 | [04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall) | Function calling with tool schemas | Tool schemas, `pending_tool_calls` |
-| [06_GeminiStreaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_GeminiStreaming) | Streaming with Google Gemini | Gemini adapter, multi-provider |
-| [08_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_Tracing) | OpenTelemetry distributed tracing | OTel setup, trace propagation |
-| [09_A2A](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_A2A) | A2A protocol agent | A2A adapter, agent cards |
-| [10_A2A_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_A2A_ToolCall) | A2A with tool calls | A2A + function calling |
-| [11_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_AgentHandover) | Multi-agent handover | `handover_to_agent()` |
-| [12_CentralOrchestrator](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_CentralOrchestrator) | Central orchestrator pattern | `call_agent()`, multi-agent |
-| [13_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_ConfigStore) | Runtime-tunable agent config | Config params, Compass UI |
-| [14_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_DistributedWorker) | Separate API and worker processes | Redis queues, split-mode |
-| [15_A2A_AIFoundry](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_A2A_AIFoundry) | A2A with Azure AI Foundry | Azure integration |
-| [LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/LangGraph) | LangGraph integration | Framework integration |
+| [05_OrchestratorAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_OrchestratorAgent) | Multi-agent orchestration | `call_agent()`, streaming |
+| [06_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_AgentHandover) | Multi-agent handover | `handover_to_agent()` |
+| [07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing) | OpenTelemetry distributed tracing | OTel setup, trace propagation |
+| [08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore) | Runtime-tunable agent config | Config params, Compass UI |
+| [09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth) | Custom authentication | `BaseAuth`, streaming |
+| [10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker) | Redis-backed distributed workers | Redis queue, split-mode, Postgres |
+| [11_WebhookSignal](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookSignal) | Webhook signal integration | Signals, external callbacks |
+| [12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent) | Planner/executor agent pattern | Planning, tool use |
 
 ## Running an example
 

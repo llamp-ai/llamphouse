@@ -1,4 +1,4 @@
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 
 # Initialize tracing before anything else so the real TracerProvider
 # is always in place — any instrumentor called later (e.g.

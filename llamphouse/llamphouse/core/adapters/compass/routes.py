@@ -58,30 +58,11 @@ async def overview(req: Request):
     db = req.app.state.data_store
     assistants = req.app.state.assistants or []
 
-    thread_count = 0
-    run_count = 0
-    message_count = 0
-
-    if hasattr(db, "_threads"):
-        thread_count = len(db._threads)
-    if hasattr(db, "_runs"):
-        run_count = sum(len(runs) for runs in db._runs.values())
-    if hasattr(db, "_messages"):
-        message_count = sum(len(msgs) for msgs in db._messages.values())
-
-    # Postgres stores expose count methods
-    if hasattr(db, "count_threads"):
-        thread_count = await db.count_threads()
-    if hasattr(db, "count_runs"):
-        run_count = await db.count_runs()
-    if hasattr(db, "count_messages"):
-        message_count = await db.count_messages()
-
     return JSONResponse({
         "assistants": len(assistants),
-        "threads": thread_count,
-        "runs": run_count,
-        "messages": message_count,
+        "threads": await db.count_threads(),
+        "runs": await db.count_runs(),
+        "messages": await db.count_messages(),
     })
 
 
@@ -126,22 +107,17 @@ async def list_threads(req: Request, limit: int = 50, order: str = "desc"):
     db = req.app.state.data_store
     assistants = {a.id: a for a in (req.app.state.assistants or [])}
 
-    threads = []
-    if hasattr(db, "list_threads"):
-        result = await db.list_threads()
-        threads = result.data if result else []
-    elif hasattr(db, "_threads"):
-        threads = list(db._threads.values())
+    result = await db.list_threads(limit=limit, order=order)
+    threads = result.data if result else []
     data = _serialize_list(threads)
-    reverse = order == "desc"
-    data.sort(key=lambda t: t.get("created_at", ""), reverse=reverse)
 
     # Enrich each thread with the root agent (first run without a parent)
     for t in data:
         tid = t.get("id")
         agent_id = None
-        if tid and hasattr(db, "_runs"):
-            for r in (db._runs.get(tid) or []):
+        if tid:
+            runs_result = await db.list_runs(tid, limit=100, order="asc", after=None, before=None)
+            for r in ((runs_result.data if runs_result else []) or []):
                 meta = (r.metadata if hasattr(r, "metadata") else {}) or {}
                 if not meta.get("parent_run_id"):
                     agent_id = r.assistant_id if hasattr(r, "assistant_id") else None
@@ -150,7 +126,7 @@ async def list_threads(req: Request, limit: int = 50, order: str = "desc"):
         t["agent_id"] = agent_id
         t["agent_name"] = (agent.name if agent and hasattr(agent, "name") else agent_id) if agent_id else None
 
-    return JSONResponse({"data": data[:limit], "total": len(data)})
+    return JSONResponse({"data": data, "total": len(data)})
 
 
 @router.get("/api/threads/{thread_id}")
@@ -206,9 +182,7 @@ async def get_run(req: Request, thread_id: str, run_id: str):
 @router.get("/api/threads/{thread_id}/runs/{run_id}/steps")
 async def list_run_steps(req: Request, thread_id: str, run_id: str, limit: int = 100, order: str = "asc"):
     db = req.app.state.data_store
-    result = db.list_run_steps(thread_id, run_id, limit=limit, order=order, after=None, before=None)
-    if hasattr(result, "__await__"):
-        result = await result
+    result = await db.list_run_steps(thread_id, run_id, limit=limit, order=order, after=None, before=None)
     if not result:
         return JSONResponse({"data": [], "total": 0})
     return JSONResponse({"data": _serialize_list(result.data), "total": len(result.data)})
@@ -275,11 +249,7 @@ async def compare_runs(
     ids = [r.strip() for r in run_ids.split(",") if r.strip()]
     results = []
     for run_id in ids:
-        # We need to find the run across threads
-        run = None
-        # Try direct lookup if store supports it
-        if hasattr(db, "get_run_by_run_id"):
-            run = await db.get_run_by_run_id(run_id)
+        run = await db.get_run_by_run_id(run_id)
         if not run:
             continue
         thread_id = run.thread_id
@@ -424,13 +394,8 @@ async def get_run_flow(req: Request, run_id: str):
     assistants = {a.id: a for a in (req.app.state.assistants or [])}
 
     # Collect ALL runs across every thread
-    all_runs: list = []
-    if hasattr(db, "_runs"):
-        for runs_list in db._runs.values():
-            all_runs.extend(runs_list)
-    elif hasattr(db, "list_all_runs"):
-        result = await db.list_all_runs()
-        all_runs = result.data if result else []
+    result = await db.list_runs_all()
+    all_runs = result.data if result else []
 
     # Index runs by id
     runs_by_id: dict = {}

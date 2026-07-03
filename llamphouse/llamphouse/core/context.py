@@ -95,10 +95,15 @@ class Context:
         self.pending_tool_calls: List[Dict[str, str]] = []
         # Runtime refs — set by the worker so call_agent() can bypass HTTP
         self._run_queue = run_queue
-        self._event_queues = event_queues or {}
+        self._event_queues = event_queues if event_queues is not None else {}
         self._queue_class = queue_class
-        self._assistants = assistants or []
+        self._assistants = assistants if assistants is not None else []
         self.last_call_thread_id: Optional[str] = None
+        self._send_chunk_message_id: Optional[str] = None
+        # Tracks fire-and-forget tasks scheduled by _send_event() so the
+        # worker can deterministically await them via flush() before
+        # emitting terminal events such as RUN_COMPLETED.
+        self._pending_emits: set[asyncio.Task] = set()
 
     def get_config(self) -> Dict[str, Any]:
         """Return the config values snapshot for this run.
@@ -270,6 +275,17 @@ class Context:
         if not self.__queue:
             return
         if self.__loop:
+            # run_coroutine_threadsafe is for cross-thread calls.  When we are
+            # already running inside the target event loop (async worker case),
+            # use create_task so the event is enqueued in the same iteration
+            # and not delayed behind RUN_COMPLETED via the self-pipe mechanism.
+            try:
+                current_loop = asyncio.get_running_loop()
+                if current_loop is self.__loop:
+                    self._track_emit(current_loop.create_task(self.__queue.add(event)))
+                    return
+            except RuntimeError:
+                pass
             asyncio.run_coroutine_threadsafe(self.__queue.add(event), self.__loop)
             return
         
@@ -279,7 +295,27 @@ class Context:
             asyncio.run(self.__queue.add(event))
             return
         
-        loop.create_task(self.__queue.add(event))
+        self._track_emit(loop.create_task(self.__queue.add(event)))
+
+    def _track_emit(self, task: asyncio.Task) -> None:
+        """Record a fire-and-forget emit task so flush() can await it."""
+        self._pending_emits.add(task)
+        task.add_done_callback(self._pending_emits.discard)
+
+    async def flush(self) -> bool:
+        """Wait for every fire-and-forget _send_event() task to complete.
+
+        Called by the worker before emitting terminal events (e.g.
+        RUN_COMPLETED) to guarantee that any send_chunk()/emit() calls made
+        during ``assistant.run()`` are visible on the output queue first.
+
+        Returns True if no emits errored, False otherwise (errors are also
+        logged via the task's default handler).
+        """
+        if not self._pending_emits:
+            return True
+        results = await asyncio.gather(*self._pending_emits, return_exceptions=True)
+        return not any(isinstance(r, Exception) for r in results)
 
     def send_completion_event(self, event):
         pass
@@ -577,6 +613,23 @@ class Context:
                                 if chunk:
                                     total_chars += len(chunk)
                                     yield chunk
+
+                    elif evt_name == event_type.MESSAGE_COMPLETED:
+                        try:
+                            evt_data = json.loads(evt.data)
+                        except Exception:
+                            continue
+                        for block in evt_data.get("content", []):
+                            if block.get("type") == "text":
+                                text_val = block.get("text", "")
+                                chunk = (
+                                    text_val.get("value", "")
+                                    if isinstance(text_val, dict)
+                                    else str(text_val)
+                                )
+                                if chunk:
+                                    total_chars += len(chunk)
+                                    yield chunk
             else:
                 # Non-streaming fallback: yield entire result as one chunk
                 text = await self._poll_for_result(child_thread_id, run)
@@ -596,22 +649,39 @@ class Context:
 
     # ── send_chunk ───────────────────────────────────────────────────────
 
-    def send_chunk(self, text: str) -> None:
-        """Send a text chunk to the client as a MESSAGE_DELTA event.
-
-        This is a convenience helper for use inside a
-        ``call_agent()`` loop::
-
-            async for chunk in context.call_agent("researcher", topic):
-                context.send_chunk(chunk)   # forward to client
-
-        :param text: The text fragment to send.
+    def _build_chunk_events(self, text: str):
+        """Build the (optional) MESSAGE_CREATED/IN_PROGRESS + MESSAGE_DELTA
+        events for a chunk.  Returns a list of Event objects in emit order.
         """
         from .streaming.event import Event
+        from datetime import datetime
 
-        self._send_event(Event(
+        events = []
+        if self._send_chunk_message_id is None:
+            self._send_chunk_message_id = str(uuid.uuid4())
+            now_ts = int(datetime.now().timestamp())
+            msg_payload = {
+                "id": self._send_chunk_message_id,
+                "object": "thread.message",
+                "created_at": now_ts,
+                "thread_id": self.thread_id,
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [],
+                "assistant_id": self.assistant_id,
+                "run_id": self.run_id,
+                "attachments": [],
+                "metadata": {},
+            }
+            payload_json = json.dumps(msg_payload)
+            events.append(Event(event=event_type.MESSAGE_CREATED, data=payload_json))
+            events.append(Event(event=event_type.MESSAGE_IN_PROGRESS, data=payload_json))
+
+        events.append(Event(
             event=event_type.MESSAGE_DELTA,
             data=json.dumps({
+                "id": self._send_chunk_message_id,
+                "object": "thread.message.delta",
                 "delta": {
                     "content": [{
                         "type": "text",
@@ -621,6 +691,48 @@ class Context:
                 }
             }),
         ))
+        return events
+
+    async def asend_chunk(self, text: str) -> None:
+        """Async-native version of :meth:`send_chunk`.
+
+        Awaits the underlying event queue directly, so chunks are
+        guaranteed to be enqueued before the next ``await`` returns.
+        Prefer this over :meth:`send_chunk` in new code::
+
+            async for chunk in context.call_agent("researcher", topic):
+                await context.asend_chunk(chunk)
+
+        :param text: The text fragment to send.
+        """
+        events = self._build_chunk_events(text)
+        if not self.__queue:
+            return
+        for evt in events:
+            await self.__queue.add(evt)
+
+    def send_chunk(self, text: str) -> None:
+        """Send a text chunk to the client as a MESSAGE_DELTA event.
+
+        .. deprecated::
+            Use :meth:`asend_chunk` instead. The sync variant schedules
+            queue writes as fire-and-forget tasks, which requires a
+            :meth:`flush` from the worker before terminal events can
+            be emitted in order.  The async variant has no such
+            requirement.
+
+        :param text: The text fragment to send.
+        """
+        import warnings
+        warnings.warn(
+            "Context.send_chunk() is deprecated; use `await context.asend_chunk(text)` "
+            "instead. The sync variant relies on fire-and-forget tasks and may emit "
+            "deltas out of order relative to terminal events.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        for evt in self._build_chunk_events(text):
+            self._send_event(evt)
 
     # ── handover_to_agent ────────────────────────────────────────────────
 
@@ -652,7 +764,7 @@ class Context:
         full_text = ""
         async for chunk in self.call_agent(agent_id, message, metadata=metadata, _dispatch_type="handover"):
             full_text += chunk
-            self.send_chunk(chunk)
+            await self.asend_chunk(chunk)
         return full_text
 
     def process_stream_sync(self, stream, adapter: Optional[BaseStreamAdapter] = None, on_event: Optional[Callable[[CanonicalStreamEvent], Any]] = None,) -> str:
