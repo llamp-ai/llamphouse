@@ -190,6 +190,11 @@ class AsyncWorker(BaseWorker):
                             usage=context._run_usage or None,
                         )
                     if output_queue:
+                        # Drain any fire-and-forget send_chunk()/emit() tasks
+                        # scheduled during assistant.run() so streaming deltas
+                        # are enqueued strictly before the terminal
+                        # RUN_COMPLETED event.
+                        await context.flush()
                         run_object = await data_store.get_run_by_id(thread_id, run_id)
                         if run_object:
                             await output_queue.add(run_object.to_event(event_type.RUN_COMPLETED))

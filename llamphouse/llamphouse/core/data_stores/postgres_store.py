@@ -244,6 +244,47 @@ class PostgresDataStore(BaseDataStore):
     # Messages
     # ------------------------------------------------------------------
 
+    async def _insert_message_in_session(
+        self,
+        session: AsyncSession,
+        thread_id: str,
+        message: CreateMessageRequest,
+        status: str = message_status.COMPLETED,
+    ) -> MessageObject | None:
+        """Insert a message reusing an existing session.
+
+        Called by insert_thread() and insert_run() so they don't acquire a
+        second connection while already holding one — which would exhaust the
+        pool under concurrent load.  Callers are responsible for committing
+        the session and firing any event-queue events.
+        """
+        result = await session.execute(
+            select(Thread).where(Thread.id == thread_id)
+        )
+        thread = result.scalars().first()
+        if not thread:
+            return None
+
+        metadata = message.metadata if message.metadata else {}
+        message_id = metadata.get("message_id", str(uuid.uuid4()))
+        parts = message.get_parts()
+
+        item = Message(
+            id=message_id,
+            role=message.role,
+            content=[_to_jsonable(p) for p in parts],
+            attachments=_to_jsonable(message.attachments),
+            meta=_to_jsonable(metadata),
+            thread_id=thread_id,
+            status=status,
+            completed_at=int(datetime.now(timezone.utc).timestamp()) if status == message_status.COMPLETED else None,
+        )
+
+        session.add(item)
+        await session.commit()
+        await session.refresh(item)
+        return MessageObject.model_validate(item.to_dict())
+
     async def insert_message(self, thread_id: str, message: CreateMessageRequest, status: str = message_status.COMPLETED, event_queue: BaseEventQueue = None) -> MessageObject | None:
         with span_context(
             store_tracer,
@@ -255,56 +296,41 @@ class PostgresDataStore(BaseDataStore):
                 "gen_ai.operation.name": "message.create",
             },
         ) as span:
+            result_obj = None
+            span.set_attribute("input.value", _json_dump({
+                "thread_id": thread_id,
+                "role": message.role,
+                "text": _clip(_content_to_text(message.content)),
+            }))
             async with self._session_factory() as session:
                 try:
-                    input_payload = {
-                        "thread_id": thread_id,
-                        "role": message.role,
-                        "text": _clip(_content_to_text(message.content)),
-                    }
-                    span.set_attribute("input.value", _json_dump(input_payload))
-
-                    result = await session.execute(
-                        select(Thread).where(Thread.id == thread_id)
-                    )
-                    thread = result.scalars().first()
-                    if not thread:
+                    result_obj = await self._insert_message_in_session(session, thread_id, message, status)
+                    if result_obj is None:
                         span.add_event("thread.not_found")
                         span.set_status(Status(StatusCode.ERROR))
                         span.set_attribute("output.value", _json_dump({"message_id": None, "status": None}))
                         return None
-
-                    item = self._make_message_row(thread_id, message, status=status)
-                    session.add(item)
-                    await session.commit()
-                    await session.refresh(item)
-
-                    result_obj = MessageObject.model_validate(item.to_dict())
-
-                    if event_queue is not None:
-                        try:
-                            await event_queue.add(result_obj.to_event(event_type.MESSAGE_CREATED))
-                        except Exception:
-                            pass
-
-                        if status == message_status.COMPLETED:
-                            await event_queue.add(result_obj.to_event(event_type.MESSAGE_IN_PROGRESS))
-                            await event_queue.add(result_obj.to_event(event_type.MESSAGE_COMPLETED))
-
-                    output_payload = {
-                        "message_id": result_obj.id,
-                        "status": result_obj.status,
-                    }
-                    span.set_attribute("output.value", _json_dump(output_payload))
+                    span.set_attribute("output.value", _json_dump({"message_id": result_obj.id, "status": result_obj.status}))
                     span.set_status(Status(StatusCode.OK))
-                    return result_obj
-
                 except Exception as e:
                     await session.rollback()
                     span.record_exception(e)
                     span.set_status(Status(StatusCode.ERROR))
                     logger.exception("insert_message() failed")
                     return None
+
+            # Connection is returned to the pool here — fire external I/O outside session scope
+            if event_queue is not None:
+                try:
+                    await event_queue.add(result_obj.to_event(event_type.MESSAGE_CREATED))
+                except Exception:
+                    pass
+
+                if status == message_status.COMPLETED:
+                    await event_queue.add(result_obj.to_event(event_type.MESSAGE_IN_PROGRESS))
+                    await event_queue.add(result_obj.to_event(event_type.MESSAGE_COMPLETED))
+
+            return result_obj
 
     async def list_messages(self, thread_id: str, limit: int = 20, order: Literal["desc", "asc"] = "desc", after: Optional[str] = None, before: Optional[str] = None) -> ListResponse | None:
         attrs = {
@@ -819,6 +845,8 @@ class PostgresDataStore(BaseDataStore):
                 "store.backend": "postgres",
             },
         ) as span:
+            thread_obj = None
+            inserted_messages = []
             async with self._session_factory() as session:
                 try:
                     metadata = thread.metadata or {}
@@ -855,15 +883,13 @@ class PostgresDataStore(BaseDataStore):
 
                     thread_obj = self._thread_object_from_row(new_thread)
 
-                    if event_queue is not None:
-                        await event_queue.add(thread_obj.to_event(event_type.THREAD_CREATED))
-
                     for msg in req.messages or []:
-                        await self.insert_message(thread_id, msg, event_queue=event_queue)
+                        msg_obj = await self._insert_message_in_session(session, thread_id, msg)
+                        if msg_obj is not None:
+                            inserted_messages.append((msg_obj, msg))
                     span.set_status(Status(StatusCode.OK))
                     span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "created": True}))
                     _telemetry.bump("threads_created")
-                    return thread_obj
 
                 except Exception as e:
                     await session.rollback()
@@ -871,6 +897,23 @@ class PostgresDataStore(BaseDataStore):
                     span.set_status(Status(StatusCode.ERROR))
                     logger.exception("insert_thread() failed")
                     return None
+
+            if thread_obj is None:
+                return None
+
+            # Connection is returned to the pool here — fire external I/O outside session scope
+            if event_queue is not None:
+                await event_queue.add(thread_obj.to_event(event_type.THREAD_CREATED))
+                for msg_obj, orig_msg in inserted_messages:
+                    try:
+                        await event_queue.add(msg_obj.to_event(event_type.MESSAGE_CREATED))
+                    except Exception:
+                        pass
+                    if msg_obj.status == message_status.COMPLETED:
+                        await event_queue.add(msg_obj.to_event(event_type.MESSAGE_IN_PROGRESS))
+                        await event_queue.add(msg_obj.to_event(event_type.MESSAGE_COMPLETED))
+
+            return thread_obj
 
     async def update_thread(self, thread_id: str, modifications: ModifyThreadRequest) -> ThreadObject | None:
         with span_context(
@@ -1064,6 +1107,8 @@ class PostgresDataStore(BaseDataStore):
                 "gen_ai.operation.name": "run.create",
             }
         ) as span:
+            run_obj = None
+            inserted_messages = []
             async with self._session_factory() as session:
                 try:
                     span.set_attribute(
@@ -1095,16 +1140,14 @@ class PostgresDataStore(BaseDataStore):
                     run_obj = RunObject.model_validate(new_run.to_dict())
 
                     for msg in run.additional_messages or []:
-                        await self.insert_message(
+                        msg_obj = await self._insert_message_in_session(
+                            session,
                             thread_id,
                             msg,
                             status=message_status.COMPLETED,
-                            event_queue=event_queue,
                         )
-
-                    if event_queue is not None:
-                        await event_queue.add(run_obj.to_event(event_type.RUN_CREATED))
-                        await event_queue.add(run_obj.to_event(event_type.RUN_QUEUED))
+                        if msg_obj is not None:
+                            inserted_messages.append(msg_obj)
 
                     span.set_status(Status(StatusCode.OK))
                     span.set_attribute(
@@ -1117,7 +1160,6 @@ class PostgresDataStore(BaseDataStore):
                         }),
                     )
                     _telemetry.bump("runs_created")
-                    return run_obj
 
                 except Exception as e:
                     await session.rollback()
@@ -1125,6 +1167,24 @@ class PostgresDataStore(BaseDataStore):
                     span.set_status(Status(StatusCode.ERROR))
                     logger.exception("insert_run() failed")
                     return None
+
+            if run_obj is None:
+                return None
+
+            # Connection is returned to the pool here — fire external I/O outside session scope
+            if event_queue is not None:
+                for msg_obj in inserted_messages:
+                    try:
+                        await event_queue.add(msg_obj.to_event(event_type.MESSAGE_CREATED))
+                    except Exception:
+                        pass
+                    await event_queue.add(msg_obj.to_event(event_type.MESSAGE_IN_PROGRESS))
+                    await event_queue.add(msg_obj.to_event(event_type.MESSAGE_COMPLETED))
+
+                await event_queue.add(run_obj.to_event(event_type.RUN_CREATED))
+                await event_queue.add(run_obj.to_event(event_type.RUN_QUEUED))
+
+            return run_obj
 
     # Allowlist of filterable Run fields: name → (column, kind).
     _RUN_FILTER_FIELDS = {
@@ -1655,6 +1715,15 @@ class PostgresDataStore(BaseDataStore):
                         base_meta = dict(run.meta or {})
                         base_meta.update(modifications.metadata or {})
                         run.meta = _to_jsonable(base_meta)
+                        flag_modified(run, "meta")
+
+                    if modifications.instructions is not None:
+                        run.instructions = modifications.instructions + (modifications.additional_instructions or "")
+                    elif modifications.additional_instructions is not None:
+                        run.instructions = (run.instructions or "") + modifications.additional_instructions
+
+                    if modifications.tools is not None:
+                        run.tools = _to_jsonable(modifications.tools)
 
                     await session.commit()
                     await session.refresh(run)
@@ -1833,12 +1902,6 @@ class PostgresDataStore(BaseDataStore):
 
                     step_obj = RunStepObject.model_validate(new_step.to_dict())
 
-                    if event_queue is not None:
-                        await event_queue.add(step_obj.to_event(event_type.RUN_STEP_CREATED))
-                        if step_obj.status == run_step_status.COMPLETED:
-                            await event_queue.add(step_obj.to_event(event_type.RUN_STEP_IN_PROGRESS))
-                            await event_queue.add(step_obj.to_event(event_type.RUN_STEP_COMPLETED))
-
                     span.set_attribute(
                         "output.value",
                         _json_dump({
@@ -1848,13 +1911,22 @@ class PostgresDataStore(BaseDataStore):
                         }),
                     )
                     span.set_status(Status(StatusCode.OK))
-                    return step_obj
+
                 except Exception as e:
                     await session.rollback()
                     span.record_exception(e)
                     span.set_status(Status(StatusCode.ERROR))
                     logger.exception("insert_run_step() failed")
                     return None
+
+            # Connection is returned to the pool here — fire external I/O outside session scope
+            if event_queue is not None:
+                await event_queue.add(step_obj.to_event(event_type.RUN_STEP_CREATED))
+                if step_obj.status == run_step_status.COMPLETED:
+                    await event_queue.add(step_obj.to_event(event_type.RUN_STEP_IN_PROGRESS))
+                    await event_queue.add(step_obj.to_event(event_type.RUN_STEP_COMPLETED))
+
+            return step_obj
 
     async def list_run_steps(self, thread_id: str, run_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         attrs = {
