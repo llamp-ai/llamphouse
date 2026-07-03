@@ -341,7 +341,9 @@ class TestHandoverToAgent:
         sub = ChunkingSubAgent(id="sub", name="Sub", chunks=("A", "B", "C"))
         ctx, wt, ds = await _make_env(sub)
         relayed = []
-        ctx.send_chunk = lambda text: relayed.append(text)
+        async def _capture(text):
+            relayed.append(text)
+        ctx.asend_chunk = _capture
         try:
             await ctx.handover_to_agent("sub", "go")
         finally:
@@ -400,16 +402,28 @@ class TestHandoverToAgent:
 
 class TestHandoverClientEvents:
     """
-    send_chunk() (called by handover_to_agent) must emit properly-shaped SSE
+    asend_chunk() (called by handover_to_agent) must emit properly-shaped SSE
     events on the caller's queue.  These are what a streaming client reads.
     """
+
+    @staticmethod
+    def _patch_queue_capture(ctx):
+        """Replace the caller's event queue add() with a capturing spy.
+        Returns the list that will be populated with emitted events."""
+        emitted = []
+        queue = ctx._Context__queue
+        original_add = queue.add
+        async def _capture(evt):
+            emitted.append(evt)
+            await original_add(evt)
+        queue.add = _capture
+        return emitted
 
     @pytest.mark.asyncio
     async def test_message_created_emitted_before_first_delta(self):
         sub = ChunkingSubAgent(id="sub", name="Sub", chunks=("hi",))
         ctx, wt, ds = await _make_env(sub)
-        emitted = []
-        ctx._send_event = lambda e: emitted.append(e)
+        emitted = self._patch_queue_capture(ctx)
         try:
             await ctx.handover_to_agent("sub", "go")
         finally:
@@ -425,8 +439,7 @@ class TestHandoverClientEvents:
     async def test_all_deltas_share_same_message_id(self):
         sub = ChunkingSubAgent(id="sub", name="Sub", chunks=("a", "b", "c"))
         ctx, wt, ds = await _make_env(sub)
-        emitted = []
-        ctx._send_event = lambda e: emitted.append(e)
+        emitted = self._patch_queue_capture(ctx)
         try:
             await ctx.handover_to_agent("sub", "go")
         finally:
@@ -440,8 +453,7 @@ class TestHandoverClientEvents:
     async def test_delta_payload_contains_text_value(self):
         sub = ChunkingSubAgent(id="sub", name="Sub", chunks=("hello",))
         ctx, wt, ds = await _make_env(sub)
-        emitted = []
-        ctx._send_event = lambda e: emitted.append(e)
+        emitted = self._patch_queue_capture(ctx)
         try:
             await ctx.handover_to_agent("sub", "go")
         finally:
