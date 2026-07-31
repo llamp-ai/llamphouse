@@ -13,7 +13,7 @@ End-to-end OpenTelemetry tracing with an A2A client and server. The client creat
 1. Navigate to this example:
 
    ```bash
-   cd llamphouse/examples/08_Tracing
+   cd llamphouse/examples/07_Tracing
    ```
 2. Install dependencies:
 
@@ -75,6 +75,7 @@ llamphouse = LLAMPHouse(
    ```
    http://127.0.0.1:8000/compass/
    ```
+
 
 ## Alternative: Export to Langfuse
 

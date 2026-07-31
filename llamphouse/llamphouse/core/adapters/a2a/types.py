@@ -118,13 +118,13 @@ class AgentCard(BaseModel):
     kind: Literal["agent"] = "agent"
     name: str
     description: Optional[str] = None
-    url: str
     version: str = "1.0.0"
     provider: Optional[AgentProvider] = None
     capabilities: AgentCapabilities = Field(default_factory=AgentCapabilities)
     skills: List[AgentSkill] = []
     defaultInputModes: List[str] = ["text"]
     defaultOutputModes: List[str] = ["text"]
+    supportedInterfaces: List[Dict[str, str]]
 
 
 # ── Request / response types ───────────────────────────────────────────────────

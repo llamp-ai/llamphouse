@@ -9,6 +9,7 @@
 | `AssistantAPIAdapter` | _(root)_ | OpenAI Assistants API — drop-in for the `openai` Python SDK | `assistant_api` |
 | `A2AAdapter` | _(root)_ | A2A JSON-RPC — interoperable agent-to-agent communication | `a2a` |
 | `CompassAdapter` | `/compass` | Full observability UI: threads, runs, traces, charts & dashboards | `compass` |
+| `SpotlightAdapter` | `/spotlight/v1` | Read-only observability evidence for Spotlight | — |
 
 ## Feature comparison
 
@@ -125,6 +126,33 @@ Each agent registered in LLAMPHouse gets its own agent card, enabling discovery 
 
 A2A protocol support requires LLAMPHouse **v1.2.0** or later. Earlier versions only support the OpenAI Assistants API adapter.
 ///
+
+## SpotlightAdapter
+
+`SpotlightAdapter` is an optional, read-only observability adapter. It is
+separate from `A2AAdapter`: A2A serves the Agent Card for registration, while
+Spotlight reads evidence only after registration has completed. It never
+invokes tasks or acts as an Agent Card fallback.
+
+`runtime_agent_id` is the LLAMPHouse `Agent.id`; names are not accepted as an
+alternate identifier.
+
+**Endpoints:**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/agents/{runtime_agent_id}/runs` | List the agent's runs |
+| `GET` | `/agents/{runtime_agent_id}/runs/{engine_run_id}` | Get one run |
+| `GET` | `/agents/{runtime_agent_id}/threads` | List the agent's threads |
+| `GET` | `/agents/{runtime_agent_id}/threads/{thread_id}/messages` | List a thread's messages |
+| `GET` | `/agents/{runtime_agent_id}/traces` | List traces when a Tracing Store is available |
+| `GET` | `/agents/{runtime_agent_id}/traces/{engine_run_id}` | Get a run's trace when available |
+
+```python
+from llamphouse import A2AAdapter, SpotlightAdapter
+
+adapters = [A2AAdapter(), SpotlightAdapter()]
+```
 
 ## CompassAdapter
 

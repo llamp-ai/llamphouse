@@ -205,6 +205,7 @@ class LLAMPHouse:
         self.worker = worker
         self.authenticator = authenticator
         self.fastapi = FastAPI(title="LLAMPHouse API Server", lifespan=self._lifespan)
+        self.fastapi.state.adapters = self.adapters
         self.fastapi.state.assistants = resolved
         self.fastapi.state.event_queues = {}
         self.fastapi.state.queue_class = event_queue_class or InMemoryEventQueue

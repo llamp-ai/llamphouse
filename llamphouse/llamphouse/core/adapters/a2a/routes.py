@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -42,6 +43,9 @@ TERMINAL_STATES = {
     run_status_enum.EXPIRED,
     run_status_enum.INCOMPLETE,
 }
+
+A2A_PROTOCOL_BINDING = "JSONRPC"
+A2A_PROTOCOL_VERSION = "1.0"
 
 RUN_STATUS_TO_A2A = {
     run_status_enum.QUEUED: "submitted",
@@ -122,10 +126,17 @@ def _build_card(agent, base_url: str, provider: AgentProvider) -> dict:
     card = AgentCard(
         name=agent.name or agent.id,
         description=agent.description,
-        url=base_url.rstrip("/"),
         version=version,
         provider=provider,
-        capabilities=AgentCapabilities(streaming=True, pushNotifications=False, stateTransitionHistory=False),
+        capabilities=AgentCapabilities(
+            streaming=True, pushNotifications=False, stateTransitionHistory=False,
+        ),
+        supportedInterfaces=[{
+            "url": f"{base_url.rstrip('/')}/",
+            "protocolBinding": A2A_PROTOCOL_BINDING,
+            "protocolVersion": A2A_PROTOCOL_VERSION,
+            "tenant": agent.name or agent.id,
+        }],
         skills=_skills_for_agent(agent),
     )
     return card.model_dump(exclude_none=True)
@@ -139,6 +150,26 @@ def _get_provider() -> AgentProvider:
     )
 
 
+def _public_base_url(req: Request) -> str:
+    adapter = next((a for a in getattr(req.app.state, "adapters", []) if a.__class__.__name__ == "A2AAdapter"), None)
+    if adapter and adapter.public_base_url:
+        return adapter.public_base_url
+    return str(req.base_url).rstrip("/")
+
+
+def _card_response(card: dict) -> JSONResponse:
+    """Return public Card evidence with validators suitable for Spotlight reads."""
+    encoded = json.dumps(card, sort_keys=True, separators=(",", ":")).encode()
+    etag = hashlib.sha256(encoded).hexdigest()
+    return JSONResponse(
+        card,
+        headers={
+            "Cache-Control": "public, max-age=60, must-revalidate",
+            "ETag": f'"{etag}"',
+        },
+    )
+
+
 @router.get("/.well-known/agent-card.json")
 async def get_agent_card(req: Request):
     """Default agent card — uses the first (primary) agent."""
@@ -147,16 +178,16 @@ async def get_agent_card(req: Request):
     if not first:
         return JSONResponse({"error": "No agents registered"}, status_code=404)
 
-    base_url = str(req.base_url)
+    base_url = _public_base_url(req)
     provider = _get_provider()
-    return JSONResponse(_build_card(first, base_url, provider))
+    return _card_response(_build_card(first, base_url, provider))
 
 
 @router.get("/agents")
 async def list_agents(req: Request):
     """List all registered agents with their card URLs."""
     assistants = req.app.state.assistants or []
-    base_url = str(req.base_url).rstrip("/")
+    base_url = _public_base_url(req)
     agents = []
     for a in assistants:
         agents.append({
@@ -176,9 +207,9 @@ async def get_agent_card_by_id(agent_id: str, req: Request):
     if not agent:
         return JSONResponse({"error": f"Agent '{agent_id}' not found"}, status_code=404)
 
-    base_url = str(req.base_url)
+    base_url = _public_base_url(req)
     provider = _get_provider()
-    return JSONResponse(_build_card(agent, base_url, provider))
+    return _card_response(_build_card(agent, base_url, provider))
 
 
 @router.post("/")

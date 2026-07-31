@@ -9,7 +9,7 @@ _setup_tracing()
 from .core.llamphouse import LLAMPHouse
 from .core.assistant import Agent, Assistant
 from .core.context import Context
-from .core.adapters import BaseAPIAdapter, AssistantAPIAdapter, A2AAdapter
+from .core.adapters import BaseAPIAdapter, AssistantAPIAdapter, A2AAdapter, SpotlightAdapter
 from .core.auth import AuthResult, BaseAuth, KeyAuth
 from .core.types.config import (
     BaseParam,
@@ -40,6 +40,7 @@ __all__ = [
     "BaseAPIAdapter",
     "AssistantAPIAdapter",
     "A2AAdapter",
+    "SpotlightAdapter",
     "AuthResult",
     "BaseAuth",
     "KeyAuth",
