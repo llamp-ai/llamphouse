@@ -27,6 +27,10 @@ A llamphouse.yaml file has this top-level structure:
           timeout: 30
           retries: 2
           concurrency: 5
+        triggers:
+          - webhook:
+              path: /triggers/research-fast
+              secret_env: WEBHOOK_SECRET
 
     adapters:        # API adapters to mount (uses adapter class constructors directly)
       - assistant_api:
@@ -36,6 +40,9 @@ A llamphouse.yaml file has this top-level structure:
     workers:         # worker to run (first entry wins; kwargs map to class __init__)
       - asyncworker:
           time_out: 90
+
+    data_store:      # data store (single entry; omit for in-memory)
+      in_memory:     # or: postgres (with constructor kwargs)
 
     tracing:         # tracing store (single entry; omit for env-var auto-detection)
       in_memory:     # or: postgres / clickhouse (with their respective kwargs)
@@ -53,8 +60,7 @@ Each adapter/worker entry is a single-key mapping: ``{name: {kwargs}}``.
 The kwargs are validated against the real class constructor — no separate
 config models are needed.
 
-Adapters available by default: ``assistant_api``, ``a2a``, ``compass``,
-``dashboard``.
+Adapters available by default: ``assistant_api``, ``a2a``, ``compass``.
 Workers available: ``asyncworker``.
 """
 
@@ -62,33 +68,37 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
+
+
+class StrictConfigModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 # ── Low-level building blocks ────────────────────────────────────────────────
 
 
-class ProjectConfig(BaseModel):
+class ProjectConfig(StrictConfigModel):
     name: str
 
 
-class SchemaProperty(BaseModel):
+class SchemaProperty(StrictConfigModel):
     type: str
     description: Optional[str] = None
 
 
-class SchemaDefinition(BaseModel):
+class SchemaDefinition(StrictConfigModel):
     type: str = "object"
     properties: Optional[Dict[str, SchemaProperty]] = None
     required: Optional[List[str]] = None
 
 
-class InterfaceConfig(BaseModel):
+class InterfaceConfig(StrictConfigModel):
     input_schema: Optional[SchemaDefinition] = None
     output_schema: Optional[SchemaDefinition] = None
 
 
-class RuntimeConfig(BaseModel):
+class RuntimeConfig(StrictConfigModel):
     python: Optional[str] = None
     requirements: Optional[List[str]] = None
 
@@ -96,7 +106,7 @@ class RuntimeConfig(BaseModel):
 # ── Agent type definition ────────────────────────────────────────────────────
 
 
-class AgentDefinition(BaseModel):
+class AgentDefinition(StrictConfigModel):
     """Defines a reusable agent *type*.
 
     ``entrypoint`` uses the same ``file:name`` convention as uvicorn:
@@ -115,25 +125,25 @@ class AgentDefinition(BaseModel):
 # ── Deployment (instance) ────────────────────────────────────────────────────
 
 
-class ResourceConfig(BaseModel):
+class ResourceConfig(StrictConfigModel):
     name: str
     type: str
     provider: str
     config: Optional[Dict[str, Any]] = None
 
 
-class DeploymentContextConfig(BaseModel):
+class DeploymentContextConfig(StrictConfigModel):
     identity: Optional[str] = None
     resources: Optional[List[ResourceConfig]] = None
 
 
-class ExecutionConfig(BaseModel):
+class ExecutionConfig(StrictConfigModel):
     timeout: Optional[float] = None
     retries: Optional[int] = None
     concurrency: Optional[int] = None
 
 
-class DeploymentConfig(BaseModel):
+class DeploymentConfig(StrictConfigModel):
     """A concrete deployment — one running instance of an agent type."""
 
     name: str
@@ -151,18 +161,21 @@ class DeploymentConfig(BaseModel):
     context: Optional[DeploymentContextConfig] = None
     execution: Optional[ExecutionConfig] = None
 
+    # Each entry is a single-key mapping ``{trigger_name: {kwargs}}``.
+    triggers: Optional[List[Dict[str, Any]]] = None
+
 
 # ── Globals & secret stores ──────────────────────────────────────────────────
 
 
-class GlobalsConfig(BaseModel):
+class GlobalsConfig(StrictConfigModel):
     # Applied to os.environ before any deployment env vars
     env: Optional[Dict[str, str]] = None
     # Maps env-var names → keys in ``secrets_store``
     secrets: Optional[Dict[str, str]] = None
 
 
-class SecretProviderConfig(BaseModel):
+class SecretProviderConfig(StrictConfigModel):
     provider: str   # e.g. "azure_keyvault", "env"
     name: str       # the name/key within the provider
 
@@ -170,7 +183,7 @@ class SecretProviderConfig(BaseModel):
 # ── Top-level config ─────────────────────────────────────────────────────────
 
 
-class LLAMPHouseConfig(BaseModel):
+class LLAMPHouseConfig(StrictConfigModel):
     version: str
     project: Optional[ProjectConfig] = None
 
@@ -187,9 +200,14 @@ class LLAMPHouseConfig(BaseModel):
     workers: Optional[List[Dict[str, Any]]] = None
 
     # Single-key mapping ``{store_name: {kwargs}}``, e.g. ``{in_memory: {}}``,
-    # ``{postgres: {db_url: ...}}``, or ``{clickhouse: {url: ...}}``.
+    # ``{postgres: {database_url: ...}}``, or ``{clickhouse: {clickhouse_url: ...}}``.
     # ``None`` → auto-detected from TRACING_STORE / CLICKHOUSE_URL env vars.
     tracing: Optional[Dict[str, Any]] = None
+
+    # Single-key mapping ``{store_name: {kwargs}}``, e.g. ``{in_memory: {}}``
+    # or ``{postgres: {database_url: ...}}``.
+    # ``None`` means use LLAMPHouse's default in-memory data store.
+    data_store: Optional[Dict[str, Any]] = None
 
     globals: Optional[GlobalsConfig] = None
     secrets_store: Optional[Dict[str, SecretProviderConfig]] = None

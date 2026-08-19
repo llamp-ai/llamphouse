@@ -175,6 +175,7 @@ class AsyncWorker(BaseWorker):
                         await asyncio.wait_for(assistant.run(context), timeout=self.time_out)
                     else:
                         await asyncio.wait_for(asyncio.to_thread(assistant.run, context), timeout=self.time_out)
+                    await context.flush()
 
                     output_payload = {"status": "completed", "run_id": run_id}
                     span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True, default=str))
