@@ -153,6 +153,7 @@ const columns = [
   { key: 'status',     label: 'Status',   width: '120px' },
   { key: 'duration',   label: 'Duration', width: '100px' },
   { key: 'tokens',     label: 'Tokens',   width: '80px' },
+  { key: 'trace',      label: 'Trace',    width: '90px' },
   { key: 'created_at', label: 'Created' },
 ]
 </script>
@@ -202,6 +203,15 @@ const columns = [
           </template>
           <template #tokens="{ row }">
             {{ row.usage?.total_tokens ?? '—' }}
+          </template>
+          <template #trace="{ row }">
+            <router-link
+              :to="`/traces/${row.id}`"
+              class="btn btn--sm"
+              @click.stop
+            >
+              Trace
+            </router-link>
           </template>
           <template #created_at="{ value }">{{ formatTs(value) }}</template>
         </DataTable>

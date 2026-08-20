@@ -2,8 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { compass, formatTs, shortId, statusBadge, durationMs } from '../api/client'
-import type { Run, RunStep, Span, FlowData, FlowNode, FlowEdge, Message } from '../api/client'
-import SpanTree from '../components/SpanTree.vue'
+import type { Run, RunStep, FlowData, FlowNode, FlowEdge, Message } from '../api/client'
 import MessageBubble from '../components/MessageBubble.vue'
 
 const route = useRoute()
@@ -14,12 +13,11 @@ const runId = ref(route.params.runId as string)
 const run = ref<Run | null>(null)
 const steps = ref<RunStep[]>([])
 const config = ref<any>(null)
-const spans = ref<Span[]>([])
 const flow = ref<FlowData>({ nodes: [], edges: [], has_flow: false })
 const messages = ref<Message[]>([])
 const loading = ref(true)
 const error = ref('')
-const tab = ref<'io' | 'details' | 'steps' | 'config' | 'trace' | 'flow'>('io')
+const tab = ref<'io' | 'details' | 'steps' | 'config' | 'flow'>('io')
 
 // Per-run step cache for the workflow inspector side panel.
 // Keyed by run_id. The current run is preloaded from `steps` once it loads.
@@ -90,7 +88,6 @@ async function fetchData() {
   run.value = null
   steps.value = []
   config.value = null
-  spans.value = []
   flow.value = { nodes: [], edges: [], has_flow: false }
   messages.value = []
   runStepsByRun.value = {}
@@ -103,17 +100,15 @@ async function fetchData() {
     const runs = await compass.listRuns(threadId.value)
     run.value = runs.find((r) => r.id === runId.value) || null
 
-    const [s, c, t, f, m] = await Promise.allSettled([
+    const [s, c, f, m] = await Promise.allSettled([
       compass.listRunSteps(threadId.value, runId.value),
       compass.getRunConfig(threadId.value, runId.value),
-      compass.getRunTrace(runId.value),
       compass.getRunFlow(runId.value),
       compass.listMessages(threadId.value),
     ])
 
     if (s.status === 'fulfilled') steps.value = s.value
     if (c.status === 'fulfilled') config.value = c.value
-    if (t.status === 'fulfilled') spans.value = t.value
     if (f.status === 'fulfilled') flow.value = f.value
     if (m.status === 'fulfilled') messages.value = m.value
 
@@ -126,8 +121,10 @@ async function fetchData() {
     // navigation from the workflow side panel lands on the right step.
     const qTab = route.query.tab as string | undefined
     const qStep = route.query.step as string | undefined
-    if (qTab === 'steps' || qTab === 'io' || qTab === 'details' || qTab === 'config' || qTab === 'trace' || qTab === 'flow') {
+    if (qTab === 'steps' || qTab === 'io' || qTab === 'details' || qTab === 'config' || qTab === 'flow') {
       tab.value = qTab
+    } else if (qTab === 'trace') {
+      router.replace(`/traces/${runId.value}`)
     }
     if (qStep && steps.value.some(s => s.id === qStep)) {
       selectedStepId.value = qStep
@@ -549,6 +546,10 @@ const selectedStepInPanel = computed<RunStep | null>(() => {
 })
 
 function stepLabel(step: RunStep): string {
+  const meta = stepMetadata(step)
+  if (meta.step_type === 'langgraph_node' && typeof meta.node_name === 'string') {
+    return meta.node_name
+  }
   const d = step.step_details
   if (!d) return step.type
   if (d.type === 'step') {
@@ -581,6 +582,8 @@ function truncateLabel(text: string, max: number): string {
 }
 
 function stepBadgeColor(step: RunStep): string {
+  const meta = stepMetadata(step)
+  if (meta.step_type === 'langgraph_node' || meta.framework === 'langgraph') return '#7c3aed' // violet
   const t = step.step_details?.type ?? step.type
   switch (t) {
     case 'step': return '#0d9488' // teal
@@ -591,6 +594,8 @@ function stepBadgeColor(step: RunStep): string {
 }
 
 function stepBadgeLetter(step: RunStep): string {
+  const meta = stepMetadata(step)
+  if (meta.step_type === 'langgraph_node' || meta.framework === 'langgraph') return 'L'
   const t = step.step_details?.type ?? step.type
   switch (t) {
     case 'step': return 'S'
@@ -601,11 +606,52 @@ function stepBadgeLetter(step: RunStep): string {
 }
 
 function stepTypeName(step: RunStep): string {
+  const meta = stepMetadata(step)
+  if (meta.step_type === 'langgraph_node' || meta.framework === 'langgraph') return 'langgraph node'
   const t = step.step_details?.type ?? step.type
   if (t === 'step') return '@step'
   if (t === 'tool_calls') return 'tool call'
   if (t === 'message_creation') return 'message'
   return String(t)
+}
+
+function stepMetadata(step: RunStep): Record<string, any> {
+  const meta = (step as any)?.metadata
+  return meta && typeof meta === 'object' ? meta : {}
+}
+
+function isLangGraphStep(step: RunStep | null): boolean {
+  if (!step) return false
+  const meta = stepMetadata(step)
+  return meta.step_type === 'langgraph_node' || meta.framework === 'langgraph'
+}
+
+function hasValue(v: any): boolean {
+  return !(v === null || v === undefined || v === '')
+}
+
+function prettyValue(v: any): string {
+  if (!hasValue(v)) return '—'
+  if (typeof v === 'string') return v
+  try {
+    return JSON.stringify(v, null, 2)
+  } catch {
+    return String(v)
+  }
+}
+
+function langGraphNodeName(step: RunStep): string {
+  const meta = stepMetadata(step)
+  if (typeof meta.node_name === 'string' && meta.node_name) return meta.node_name
+  const d = step.step_details
+  if (d?.type === 'step' && typeof d.name === 'string') return d.name
+  return stepLabel(step)
+}
+
+function toolCallsForStep(step: RunStep): Array<any> {
+  const d = step.step_details
+  if (!d || d.type !== 'tool_calls' || !Array.isArray(d.tool_calls)) return []
+  return d.tool_calls
 }
 
 // When the user selects a workflow node, auto-select the first step of that
@@ -656,7 +702,6 @@ watch(selectedNodeSteps, (next) => {
         <div class="tab" :class="{ 'tab--active': tab === 'steps' }" @click="tab = 'steps'">Steps ({{ steps.length }})</div>
         <div v-if="flow.has_flow" class="tab" :class="{ 'tab--active': tab === 'flow' }" @click="tab = 'flow'">Workflow</div>
         <div class="tab" :class="{ 'tab--active': tab === 'config' }" @click="tab = 'config'">Config</div>
-        <div class="tab" :class="{ 'tab--active': tab === 'trace' }" @click="tab = 'trace'">Trace ({{ spans.length }})</div>
       </div>
 
       <!-- I/O tab -->
@@ -935,8 +980,102 @@ watch(selectedNodeSteps, (next) => {
                 </div>
               </template>
 
-              <div class="step-detail__section-title">step_details</div>
-              <div class="json-view">{{ JSON.stringify(selectedStepInTab.step_details, null, 2) }}</div>
+              <div class="step-detail__section-title">Details</div>
+
+              <template v-if="isLangGraphStep(selectedStepInTab)">
+                <div class="step-structured">
+                  <div class="step-kv-grid">
+                    <div>
+                      <div class="step-kv__label">Node</div>
+                      <div class="step-kv__value">{{ langGraphNodeName(selectedStepInTab) }}</div>
+                    </div>
+                    <div>
+                      <div class="step-kv__label">Event</div>
+                      <div class="step-kv__value">{{ stepMetadata(selectedStepInTab).event_name || '—' }}</div>
+                    </div>
+                    <div>
+                      <div class="step-kv__label">Source</div>
+                      <div class="step-kv__value">{{ stepMetadata(selectedStepInTab).event_source || '—' }}</div>
+                    </div>
+                  </div>
+
+                  <template v-if="hasValue(stepMetadata(selectedStepInTab).state)">
+                    <div class="step-detail__section-title">State Snapshot (metadata)</div>
+                    <pre class="json-view">{{ prettyValue(stepMetadata(selectedStepInTab).state) }}</pre>
+                  </template>
+
+                  <template v-if="hasValue(selectedStepInTab.step_details?.input)">
+                    <div class="step-detail__section-title">Node Input</div>
+                    <pre class="json-view">{{ prettyValue(selectedStepInTab.step_details.input) }}</pre>
+                  </template>
+
+                  <template v-if="hasValue(selectedStepInTab.step_details?.output)">
+                    <div class="step-detail__section-title">Node Output</div>
+                    <pre class="json-view">{{ prettyValue(selectedStepInTab.step_details.output) }}</pre>
+                  </template>
+                </div>
+              </template>
+
+              <template v-else-if="selectedStepInTab.step_details?.type === 'step'">
+                <div class="step-structured">
+                  <div class="step-kv-grid">
+                    <div>
+                      <div class="step-kv__label">Step Name</div>
+                      <div class="step-kv__value">{{ selectedStepInTab.step_details.name || stepLabel(selectedStepInTab) }}</div>
+                    </div>
+                  </div>
+                  <template v-if="hasValue(selectedStepInTab.step_details.input)">
+                    <div class="step-detail__section-title">Input</div>
+                    <pre class="json-view">{{ prettyValue(selectedStepInTab.step_details.input) }}</pre>
+                  </template>
+                  <template v-if="hasValue(selectedStepInTab.step_details.output)">
+                    <div class="step-detail__section-title">Output</div>
+                    <pre class="json-view">{{ prettyValue(selectedStepInTab.step_details.output) }}</pre>
+                  </template>
+                </div>
+              </template>
+
+              <template v-else-if="selectedStepInTab.step_details?.type === 'tool_calls'">
+                <div class="step-structured">
+                  <div class="step-kv-grid">
+                    <div>
+                      <div class="step-kv__label">Tool Calls</div>
+                      <div class="step-kv__value">{{ toolCallsForStep(selectedStepInTab).length }}</div>
+                    </div>
+                  </div>
+                  <div v-for="(tc, idx) in toolCallsForStep(selectedStepInTab)" :key="tc.id || idx" class="tool-call-card">
+                    <div class="tool-call-card__title">
+                      {{ tc.function?.name || tc.type || `tool_call_${idx + 1}` }}
+                    </div>
+                    <template v-if="hasValue(tc.function?.arguments)">
+                      <div class="step-detail__section-title">Arguments</div>
+                      <pre class="json-view">{{ prettyValue(tc.function.arguments) }}</pre>
+                    </template>
+                    <template v-if="hasValue(tc)">
+                      <details class="raw-toggle">
+                        <summary>Raw tool call</summary>
+                        <pre class="json-view">{{ prettyValue(tc) }}</pre>
+                      </details>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <template v-else-if="selectedStepInTab.step_details?.type === 'message_creation'">
+                <div class="step-structured">
+                  <div class="step-kv-grid">
+                    <div>
+                      <div class="step-kv__label">Message ID</div>
+                      <div class="step-kv__value mono">{{ selectedStepInTab.step_details.message_creation?.message_id || '—' }}</div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <details class="raw-toggle" open>
+                <summary>Raw step_details</summary>
+                <div class="json-view">{{ JSON.stringify(selectedStepInTab.step_details, null, 2) }}</div>
+              </details>
 
               <template v-if="selectedStepInTab.last_error">
                 <div class="step-detail__section-title">Error</div>
@@ -957,11 +1096,6 @@ watch(selectedNodeSteps, (next) => {
           <div class="empty-state__icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
           <div class="empty-state__title">No config snapshot</div>
         </div>
-      </div>
-
-      <!-- Trace tab -->
-      <div v-if="tab === 'trace'">
-        <SpanTree :spans="spans" />
       </div>
 
       <!-- Flow tab -->
@@ -1423,6 +1557,60 @@ watch(selectedNodeSteps, (next) => {
   overflow: hidden;
   margin-top: 12px;
   background: var(--border);
+}
+
+.step-structured {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.step-kv__label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.step-kv__value {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  margin-top: 2px;
+}
+
+.tool-call-card {
+  border: 1px solid var(--border);
+  background: var(--bg-muted);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+}
+
+.tool-call-card__title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.raw-toggle {
+  border-top: 1px dashed var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.raw-toggle summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  user-select: none;
+  margin-bottom: 6px;
 }
 
 .status-bar__seg {

@@ -14,12 +14,41 @@ class DummyContext:
         self.messages = messages or []
         self.replies = []
         self.chunks = []
+        self.steps_started = []
+        self.steps_completed = []
 
     async def reply(self, content, metadata=None):
         self.replies.append(content)
 
     def send_chunk(self, text):
         self.chunks.append(text)
+
+    async def start_step(self, name, input=None, metadata=None):
+        step_id = f"step-{len(self.steps_started) + 1}"
+        self.steps_started.append(
+            {
+                "id": step_id,
+                "name": name,
+                "input": input,
+                "metadata": metadata,
+            }
+        )
+
+        class _Step:
+            def __init__(self, id):
+                self.id = id
+
+        return _Step(step_id)
+
+    async def complete_step(self, step_id, output=None, error=None, status=None):
+        self.steps_completed.append(
+            {
+                "id": step_id,
+                "output": output,
+                "error": error,
+                "status": status,
+            }
+        )
 
 
 class WrapperHarness(BaseAgentWrapper):
@@ -58,6 +87,29 @@ class StreamNoTextGraph:
 class NoInvokeGraph:
     async def astream(self, state):
         yield {"text": "x"}
+
+
+class EventsGraph:
+    async def astream_events(self, state, version="v1"):
+        yield {
+            "event": "on_chain_start",
+            "name": "respond",
+            "data": {"input": state},
+        }
+        yield {
+            "event": "on_chain_stream",
+            "name": "respond",
+            "data": {"chunk": {"output": "hello-from-events"}},
+            "output": "hello-from-events",
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "respond",
+            "data": {"output": {"output": "hello-from-events"}},
+        }
+
+    async def ainvoke(self, state):
+        return {"output": "ainvoke-fallback"}
 
 
 @pytest.mark.asyncio
@@ -137,3 +189,28 @@ async def test_langgraph_requires_ainvoke_when_no_stream_output():
 
     with pytest.raises(RuntimeError, match="ainvoke"):
         await agent.invoke_framework(cast(Any, ctx), {"messages": []})
+
+
+@pytest.mark.asyncio
+async def test_langgraph_events_stream_maps_node_to_steps():
+    ctx = DummyContext()
+    agent = LangGraphAgent(
+        id="lg5",
+        graph=EventsGraph(),
+        stream=True,
+        map_nodes_to_steps=True,
+    )
+
+    output = await agent.invoke_framework(cast(Any, ctx), {"messages": []})
+
+    assert output == {"output": "hello-from-events"}
+    assert ctx.chunks == ["hello-from-events"]
+    assert len(ctx.steps_started) == 1
+    assert ctx.steps_started[0]["name"] == "respond"
+    assert len(ctx.steps_completed) == 1
+    assert ctx.steps_completed[0]["status"] == "completed"
+    assert ctx.steps_started[0]["metadata"]["framework"] == "langgraph"
+    assert ctx.steps_started[0]["metadata"]["step_type"] == "langgraph_node"
+    assert ctx.steps_started[0]["metadata"]["node_name"] == "respond"
+    assert "state" in ctx.steps_started[0]["metadata"]
+    assert "state" in ctx.steps_completed[0]["output"]
