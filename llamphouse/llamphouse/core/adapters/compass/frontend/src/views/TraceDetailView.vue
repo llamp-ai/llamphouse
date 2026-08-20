@@ -10,6 +10,7 @@ const runId = route.params.runId as string
 const spans = ref<Span[]>([])
 const loading = ref(true)
 const error = ref('')
+const showLlamphouseInternals = ref(true)
 
 onMounted(async () => {
   try {
@@ -23,6 +24,20 @@ onMounted(async () => {
 
 const rootSpan = computed<Span | undefined>(() =>
   spans.value.find(s => !s.ParentSpanId)
+)
+
+function isLlamphouseInternalSpan(span: Span): boolean {
+  const n = span.SpanName || ''
+  return n.startsWith('llamphouse.')
+}
+
+const filteredSpans = computed(() => {
+  if (showLlamphouseInternals.value) return spans.value
+  return spans.value.filter(s => !isLlamphouseInternalSpan(s))
+})
+
+const hiddenInternalCount = computed(() =>
+  spans.value.filter(isLlamphouseInternalSpan).length
 )
 
 function rootAttr(key: string): string {
@@ -56,7 +71,7 @@ function totalDuration(): string {
         <div class="page-header__subtitle mono">Run {{ runId }}</div>
       </div>
       <div class="flex gap-2">
-        <span class="badge badge--info">{{ spans.length }} spans</span>
+        <span class="badge badge--info">{{ filteredSpans.length }} spans</span>
       </div>
     </div>
 
@@ -69,7 +84,7 @@ function totalDuration(): string {
         <div class="trace-summary">
           <div class="trace-summary__stat">
             <div class="section__title">Total Spans</div>
-            <div class="trace-summary__value">{{ spans.length }}</div>
+            <div class="trace-summary__value">{{ filteredSpans.length }}</div>
           </div>
           <div class="trace-summary__stat">
             <div class="section__title">Duration</div>
@@ -88,6 +103,16 @@ function totalDuration(): string {
             </div>
           </div>
         </div>
+
+        <div class="trace-controls">
+          <label class="trace-toggle">
+            <input v-model="showLlamphouseInternals" type="checkbox">
+            <span>Show LLAMPHouse internal spans</span>
+          </label>
+          <span v-if="!showLlamphouseInternals && hiddenInternalCount > 0" class="trace-muted">
+            Hiding {{ hiddenInternalCount }} internal span{{ hiddenInternalCount === 1 ? '' : 's' }}
+          </span>
+        </div>
       </div>
 
       <!-- Root Input / Output -->
@@ -103,7 +128,7 @@ function totalDuration(): string {
       </div>
 
       <!-- Span tree -->
-      <SpanTree :spans="spans" />
+      <SpanTree :spans="filteredSpans" />
 
       <!-- Raw span attributes -->
       <div v-if="spans.length > 0" class="mt-4">
@@ -134,6 +159,30 @@ function totalDuration(): string {
 .trace-summary__value {
   font-size: 1.3rem;
   font-weight: 700;
+}
+
+.trace-controls {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.trace-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.trace-muted {
+  color: var(--text-muted);
+  font-size: 0.8rem;
 }
 
 .trace-io {

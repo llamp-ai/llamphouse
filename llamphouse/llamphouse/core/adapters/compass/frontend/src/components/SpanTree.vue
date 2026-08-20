@@ -128,10 +128,10 @@ function truncate(text: unknown, max = 200): string {
   return s.slice(0, max) + '…'
 }
 
-function selectedSpan(): Span | null {
+const selectedSpan = computed<Span | null>(() => {
   if (!selectedSpanId.value) return null
   return props.spans.find(s => s.SpanId === selectedSpanId.value) ?? null
-}
+})
 
 function prettyJson(value: string): string {
   try {
@@ -140,6 +140,106 @@ function prettyJson(value: string): string {
     return value
   }
 }
+
+function parseJsonObject(value: string): Record<string, any> | null {
+  if (!value) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function findNumeric(obj: Record<string, any>, keys: string[]): number | null {
+  for (const key of keys) {
+    const parts = key.split('.')
+    let curr: any = obj
+    for (const part of parts) {
+      if (curr == null || typeof curr !== 'object' || !(part in curr)) {
+        curr = undefined
+        break
+      }
+      curr = curr[part]
+    }
+    const n = Number(curr)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return null
+}
+
+function extractTokens(span: Span): { total: number | null; prompt: number | null; completion: number | null } | null {
+  const inputObj = parseJsonObject(getAttr(span, 'input.value'))
+  const outputObj = parseJsonObject(getAttr(span, 'output.value'))
+  const total = outputObj ? findNumeric(outputObj, ['usage.total_tokens', 'total_tokens']) : null
+  const prompt = outputObj ? findNumeric(outputObj, ['usage.prompt_tokens', 'prompt_tokens']) : null
+  const completion = outputObj ? findNumeric(outputObj, ['usage.completion_tokens', 'completion_tokens']) : null
+  if (total !== null || prompt !== null || completion !== null) return { total, prompt, completion }
+  if (inputObj) {
+    const fallbackPrompt = findNumeric(inputObj, ['usage.prompt_tokens', 'prompt_tokens'])
+    const fallbackCompletion = findNumeric(inputObj, ['usage.completion_tokens', 'completion_tokens'])
+    const fallbackTotal = findNumeric(inputObj, ['usage.total_tokens', 'total_tokens'])
+    if (fallbackPrompt !== null || fallbackCompletion !== null || fallbackTotal !== null) {
+      return { total: fallbackTotal, prompt: fallbackPrompt, completion: fallbackCompletion }
+    }
+  }
+  return null
+}
+
+function stringifyMaybe(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function extractMessages(span: Span): { input: string | null; output: string | null } {
+  const inputObj = parseJsonObject(getAttr(span, 'input.value'))
+  const outputObj = parseJsonObject(getAttr(span, 'output.value'))
+
+  const inputMessage = inputObj?.message ?? inputObj?.messages ?? inputObj?.text ?? null
+  const outputMessage = outputObj?.message ?? outputObj?.messages ?? outputObj?.text ?? null
+
+  return {
+    input: inputMessage != null ? stringifyMaybe(inputMessage) : null,
+    output: outputMessage != null ? stringifyMaybe(outputMessage) : null,
+  }
+}
+
+function extractToolCalls(span: Span): Array<{ name: string; id: string; args: string; output: string }> {
+  const result: Array<{ name: string; id: string; args: string; output: string }> = []
+  const inputObj = parseJsonObject(getAttr(span, 'input.value'))
+  const outputObj = parseJsonObject(getAttr(span, 'output.value'))
+  const toolCalls = (inputObj?.tool_calls || inputObj?.tools || outputObj?.tool_calls || []) as any[]
+
+  for (const raw of toolCalls) {
+    const call = raw?.root ?? raw
+    const fn = call?.function ?? {}
+    const name = fn?.name || call?.name || call?.type || 'tool'
+    const id = call?.id || call?.tool_call_id || ''
+    const args = stringifyMaybe(fn?.arguments ?? call?.arguments ?? '')
+    const output = stringifyMaybe(call?.output ?? outputObj?.tool_output ?? '')
+    result.push({ name, id, args, output })
+  }
+
+  if (result.length === 0 && outputObj?.tool_call_id) {
+    result.push({
+      name: outputObj?.function_name || 'tool',
+      id: String(outputObj.tool_call_id),
+      args: stringifyMaybe(inputObj?.arguments ?? inputObj?.tool_arguments ?? ''),
+      output: stringifyMaybe(outputObj?.output ?? ''),
+    })
+  }
+
+  return result
+}
+
+const selectedTokens = computed(() => (selectedSpan.value ? extractTokens(selectedSpan.value) : null))
+const selectedMessages = computed(() => (selectedSpan.value ? extractMessages(selectedSpan.value) : { input: null, output: null }))
+const selectedToolCalls = computed(() => (selectedSpan.value ? extractToolCalls(selectedSpan.value) : []))
 </script>
 
 <template>
@@ -152,112 +252,169 @@ function prettyJson(value: string): string {
     </template>
 
     <template v-else>
-      <div class="span-tree__header">
-        <span>Span</span>
-        <span>Duration</span>
-        <span>Status</span>
-      </div>
+      <div class="span-tree__layout">
+        <section class="span-tree__table">
+          <div class="span-tree__header">
+            <span>Span</span>
+            <span>Duration</span>
+            <span>Status</span>
+          </div>
 
-      <div
-        v-for="node in flatList"
-        :key="node.id"
-        class="span-row"
-        :class="{ 'span-row--selected': selectedSpanId === node.id }"
-        :style="{ paddingLeft: (node.depth * 20 + 12) + 'px' }"
-        @click="selectSpan(node.id)"
-      >
-        <div class="span-row__name">
-          <button
-            v-if="node.hasChildren"
-            class="span-row__toggle"
-            @click.stop="toggle(node.id)"
-          >{{ collapsed.has(node.id) ? '▸' : '▾' }}</button>
-          <span v-else class="span-row__dot">·</span>
-          <span class="span-row__icon" :title="spanCategory(node.span.SpanName)">{{ spanIcon(node.span.SpanName) }}</span>
-          <span class="span-row__label" :title="node.span.SpanName">{{ node.span.SpanName }}</span>
-          <span v-if="spanCategory(node.span.SpanName)" class="span-row__tag">{{ spanCategory(node.span.SpanName) }}</span>
-          <span v-if="getAttr(node.span, 'assistant.name') || getAttr(node.span, 'assistant.id')" class="span-row__agent-badge">{{ getAttr(node.span, 'assistant.name') || getAttr(node.span, 'assistant.id') }}</span>
-          <span v-if="getAttr(node.span, 'dispatch.target_agent')" class="span-row__agent">→ {{ getAttr(node.span, 'dispatch.target_agent') }}</span>
-          <span v-if="getAttr(node.span, 'gen_ai.request.model')" class="span-row__model">{{ getAttr(node.span, 'gen_ai.request.model') }}</span>
-        </div>
-        <div class="span-row__duration mono">{{ durationLabel(node.span.Duration) }}</div>
-        <div class="span-row__status">
-          <span class="span-status-dot" :style="{ background: statusColor(node.span.StatusCode) }"></span>
-        </div>
-      </div>
-
-      <!-- Detail panel for selected span -->
-      <div v-if="selectedSpan()" class="span-detail">
-        <div class="span-detail__header">
-          <span class="span-detail__icon">{{ spanIcon(selectedSpan()!.SpanName) }}</span>
-          <span class="span-detail__title">{{ selectedSpan()!.SpanName }}</span>
-          <button class="span-detail__close" @click="selectedSpanId = null">✕</button>
-        </div>
-
-        <div class="span-detail__meta">
-          <div class="span-detail__meta-item">
-            <span class="span-detail__label">Span ID</span>
-            <span class="mono">{{ selectedSpan()!.SpanId }}</span>
-          </div>
-          <div class="span-detail__meta-item">
-            <span class="span-detail__label">Duration</span>
-            <span class="mono">{{ durationLabel(selectedSpan()!.Duration) }}</span>
-          </div>
-          <div v-if="getAttr(selectedSpan()!, 'assistant.name') || getAttr(selectedSpan()!, 'assistant.id')" class="span-detail__meta-item">
-            <span class="span-detail__label">Agent</span>
-            <span class="mono">{{ getAttr(selectedSpan()!, 'assistant.name') || getAttr(selectedSpan()!, 'assistant.id') }}</span>
-          </div>
-          <div v-if="getAttr(selectedSpan()!, 'gen_ai.request.model')" class="span-detail__meta-item">
-            <span class="span-detail__label">Model</span>
-            <span class="mono">{{ getAttr(selectedSpan()!, 'gen_ai.request.model') }}</span>
-          </div>
-          <div v-if="getAttr(selectedSpan()!, 'gen_ai.response.finish_reason')" class="span-detail__meta-item">
-            <span class="span-detail__label">Finish Reason</span>
-            <span class="mono">{{ getAttr(selectedSpan()!, 'gen_ai.response.finish_reason') }}</span>
-          </div>
-          <div v-if="getAttr(selectedSpan()!, 'dispatch.target_agent')" class="span-detail__meta-item">
-            <span class="span-detail__label">Target Agent</span>
-            <span class="mono">{{ getAttr(selectedSpan()!, 'dispatch.target_agent') }}</span>
-          </div>
-          <div v-if="getAttr(selectedSpan()!, 'dispatch.source_agent')" class="span-detail__meta-item">
-            <span class="span-detail__label">Source Agent</span>
-            <span class="mono">{{ getAttr(selectedSpan()!, 'dispatch.source_agent') }}</span>
-          </div>
-          <div v-if="getAttr(selectedSpan()!, 'dispatch.child_run')" class="span-detail__meta-item">
-            <span class="span-detail__label">Child Run</span>
-            <span class="mono">{{ getAttr(selectedSpan()!, 'dispatch.child_run') }}</span>
-          </div>
-          <div v-if="getAttr(selectedSpan()!, 'dispatch.response_chars')" class="span-detail__meta-item">
-            <span class="span-detail__label">Response Chars</span>
-            <span class="mono">{{ getAttr(selectedSpan()!, 'dispatch.response_chars') }}</span>
-          </div>
-        </div>
-
-        <!-- Input -->
-        <div v-if="getAttr(selectedSpan()!, 'input.value')" class="span-detail__section">
-          <div class="span-detail__section-title">Input</div>
-          <pre class="span-detail__value">{{ prettyJson(getAttr(selectedSpan()!, 'input.value')) }}</pre>
-        </div>
-
-        <!-- Output -->
-        <div v-if="getAttr(selectedSpan()!, 'output.value')" class="span-detail__section">
-          <div class="span-detail__section-title">Output</div>
-          <pre class="span-detail__value">{{ prettyJson(getAttr(selectedSpan()!, 'output.value')) }}</pre>
-        </div>
-
-        <!-- All attributes -->
-        <details class="span-detail__section">
-          <summary class="span-detail__section-title" style="cursor: pointer;">All Attributes</summary>
-          <div class="span-detail__attrs">
-            <div v-for="(value, key) in selectedSpan()!.SpanAttributes" :key="key" class="span-detail__attr-row">
-              <span class="span-detail__attr-key">{{ key }}</span>
-              <span class="span-detail__attr-val mono">{{ truncate(value, 300) }}</span>
-            </div>
-            <div v-if="!selectedSpan()!.SpanAttributes || Object.keys(selectedSpan()!.SpanAttributes).length === 0" style="color: var(--text-muted); font-size: 0.8rem;">
-              No attributes
+          <div class="span-tree__rows">
+            <div
+              v-for="node in flatList"
+              :key="node.id"
+              class="span-row"
+              :class="{ 'span-row--selected': selectedSpanId === node.id }"
+              :style="{ paddingLeft: (node.depth * 20 + 12) + 'px' }"
+              @click="selectSpan(node.id)"
+            >
+              <div class="span-row__name">
+                <button
+                  v-if="node.hasChildren"
+                  class="span-row__toggle"
+                  @click.stop="toggle(node.id)"
+                >{{ collapsed.has(node.id) ? '▸' : '▾' }}</button>
+                <span v-else class="span-row__dot">·</span>
+                <span class="span-row__icon" :title="spanCategory(node.span.SpanName)">{{ spanIcon(node.span.SpanName) }}</span>
+                <span class="span-row__label" :title="node.span.SpanName">{{ node.span.SpanName }}</span>
+                <span v-if="spanCategory(node.span.SpanName)" class="span-row__tag">{{ spanCategory(node.span.SpanName) }}</span>
+                <span v-if="getAttr(node.span, 'assistant.name') || getAttr(node.span, 'assistant.id')" class="span-row__agent-badge">{{ getAttr(node.span, 'assistant.name') || getAttr(node.span, 'assistant.id') }}</span>
+                <span v-if="getAttr(node.span, 'dispatch.target_agent')" class="span-row__agent">→ {{ getAttr(node.span, 'dispatch.target_agent') }}</span>
+                <span v-if="getAttr(node.span, 'gen_ai.request.model')" class="span-row__model">{{ getAttr(node.span, 'gen_ai.request.model') }}</span>
+              </div>
+              <div class="span-row__duration mono">{{ durationLabel(node.span.Duration) }}</div>
+              <div class="span-row__status">
+                <span class="span-status-dot" :style="{ background: statusColor(node.span.StatusCode) }"></span>
+              </div>
             </div>
           </div>
-        </details>
+        </section>
+
+        <aside class="span-inspector">
+          <div v-if="selectedSpan" class="span-detail">
+            <div class="span-detail__header">
+              <span class="span-detail__icon">{{ spanIcon(selectedSpan.SpanName) }}</span>
+              <span class="span-detail__title">{{ selectedSpan.SpanName }}</span>
+              <button class="span-detail__close" @click="selectedSpanId = null">✕</button>
+            </div>
+
+            <div class="span-detail__meta">
+              <div class="span-detail__meta-item">
+                <span class="span-detail__label">Span ID</span>
+                <span class="mono">{{ selectedSpan.SpanId }}</span>
+              </div>
+              <div class="span-detail__meta-item">
+                <span class="span-detail__label">Duration</span>
+                <span class="mono">{{ durationLabel(selectedSpan.Duration) }}</span>
+              </div>
+              <div v-if="getAttr(selectedSpan, 'assistant.name') || getAttr(selectedSpan, 'assistant.id')" class="span-detail__meta-item">
+                <span class="span-detail__label">Agent</span>
+                <span class="mono">{{ getAttr(selectedSpan, 'assistant.name') || getAttr(selectedSpan, 'assistant.id') }}</span>
+              </div>
+              <div v-if="getAttr(selectedSpan, 'gen_ai.request.model')" class="span-detail__meta-item">
+                <span class="span-detail__label">Model</span>
+                <span class="mono">{{ getAttr(selectedSpan, 'gen_ai.request.model') }}</span>
+              </div>
+              <div v-if="getAttr(selectedSpan, 'gen_ai.response.finish_reason')" class="span-detail__meta-item">
+                <span class="span-detail__label">Finish Reason</span>
+                <span class="mono">{{ getAttr(selectedSpan, 'gen_ai.response.finish_reason') }}</span>
+              </div>
+              <div v-if="getAttr(selectedSpan, 'dispatch.target_agent')" class="span-detail__meta-item">
+                <span class="span-detail__label">Target Agent</span>
+                <span class="mono">{{ getAttr(selectedSpan, 'dispatch.target_agent') }}</span>
+              </div>
+              <div v-if="getAttr(selectedSpan, 'dispatch.source_agent')" class="span-detail__meta-item">
+                <span class="span-detail__label">Source Agent</span>
+                <span class="mono">{{ getAttr(selectedSpan, 'dispatch.source_agent') }}</span>
+              </div>
+              <div v-if="getAttr(selectedSpan, 'dispatch.child_run')" class="span-detail__meta-item">
+                <span class="span-detail__label">Child Run</span>
+                <span class="mono">{{ getAttr(selectedSpan, 'dispatch.child_run') }}</span>
+              </div>
+              <div v-if="getAttr(selectedSpan, 'dispatch.response_chars')" class="span-detail__meta-item">
+                <span class="span-detail__label">Response Chars</span>
+                <span class="mono">{{ getAttr(selectedSpan, 'dispatch.response_chars') }}</span>
+              </div>
+            </div>
+
+            <div v-if="getAttr(selectedSpan, 'input.value')" class="span-detail__section">
+              <div class="span-detail__section-title">Input</div>
+              <pre class="span-detail__value">{{ prettyJson(getAttr(selectedSpan, 'input.value')) }}</pre>
+            </div>
+
+            <div v-if="selectedTokens" class="span-detail__section">
+              <div class="span-detail__section-title">Token Usage</div>
+              <div class="span-detail__meta span-detail__meta--tight">
+                <div class="span-detail__meta-item" v-if="selectedTokens.total !== null">
+                  <span class="span-detail__label">Total</span>
+                  <span class="mono">{{ selectedTokens.total }}</span>
+                </div>
+                <div class="span-detail__meta-item" v-if="selectedTokens.prompt !== null">
+                  <span class="span-detail__label">Prompt</span>
+                  <span class="mono">{{ selectedTokens.prompt }}</span>
+                </div>
+                <div class="span-detail__meta-item" v-if="selectedTokens.completion !== null">
+                  <span class="span-detail__label">Completion</span>
+                  <span class="mono">{{ selectedTokens.completion }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="selectedMessages.input" class="span-detail__section">
+              <div class="span-detail__section-title">Messages (Input)</div>
+              <pre class="span-detail__value">{{ selectedMessages.input }}</pre>
+            </div>
+
+            <div v-if="selectedMessages.output" class="span-detail__section">
+              <div class="span-detail__section-title">Messages (Output)</div>
+              <pre class="span-detail__value">{{ selectedMessages.output }}</pre>
+            </div>
+
+            <div v-if="getAttr(selectedSpan, 'output.value')" class="span-detail__section">
+              <div class="span-detail__section-title">Output</div>
+              <pre class="span-detail__value">{{ prettyJson(getAttr(selectedSpan, 'output.value')) }}</pre>
+            </div>
+
+            <div v-if="selectedToolCalls.length > 0" class="span-detail__section">
+              <div class="span-detail__section-title">Function / Tool Calls</div>
+              <div class="tool-calls">
+                <div v-for="(call, idx) in selectedToolCalls" :key="idx" class="tool-call-card">
+                  <div class="tool-call-card__header">
+                    <span class="tool-call-card__name">{{ call.name }}</span>
+                    <span v-if="call.id" class="tool-call-card__id mono">{{ call.id }}</span>
+                  </div>
+                  <div v-if="call.args" class="tool-call-card__section">
+                    <div class="tool-call-card__label">Arguments</div>
+                    <pre class="span-detail__value">{{ call.args }}</pre>
+                  </div>
+                  <div v-if="call.output" class="tool-call-card__section">
+                    <div class="tool-call-card__label">Output</div>
+                    <pre class="span-detail__value">{{ call.output }}</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <details class="span-detail__section">
+              <summary class="span-detail__section-title" style="cursor: pointer;">All Attributes</summary>
+              <div class="span-detail__attrs">
+                <div v-for="(value, key) in selectedSpan.SpanAttributes" :key="key" class="span-detail__attr-row">
+                  <span class="span-detail__attr-key">{{ key }}</span>
+                  <span class="span-detail__attr-val mono">{{ truncate(value, 300) }}</span>
+                </div>
+                <div v-if="!selectedSpan.SpanAttributes || Object.keys(selectedSpan.SpanAttributes).length === 0" style="color: var(--text-muted); font-size: 0.8rem;">
+                  No attributes
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div v-else class="span-inspector__empty">
+            <div class="span-inspector__empty-title">Span Inspector</div>
+            <div class="span-inspector__empty-text">Select a span on the left to inspect its input/output and attributes.</div>
+          </div>
+        </aside>
       </div>
     </template>
   </div>
@@ -270,6 +427,17 @@ function prettyJson(value: string): string {
   overflow: hidden;
 }
 
+.span-tree__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  min-height: 520px;
+}
+
+.span-tree__table {
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+
 .span-tree__header {
   display: grid;
   grid-template-columns: 1fr 100px 60px;
@@ -280,6 +448,11 @@ function prettyJson(value: string): string {
   color: var(--text-muted);
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
+}
+
+.span-tree__rows {
+  max-height: 640px;
+  overflow-y: auto;
 }
 
 .span-row {
@@ -413,6 +586,28 @@ function prettyJson(value: string): string {
   display: inline-block;
 }
 
+.span-inspector {
+  background: var(--bg-secondary);
+  max-height: 640px;
+  overflow-y: auto;
+}
+
+.span-inspector__empty {
+  padding: 20px;
+  color: var(--text-secondary);
+}
+
+.span-inspector__empty-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.span-inspector__empty-text {
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
 /* ─── Detail panel ───────────────────────────────────────── */
 
 .span-detail {
@@ -472,6 +667,11 @@ function prettyJson(value: string): string {
   background: var(--bg-surface);
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
+}
+
+.span-detail__meta--tight {
+  margin-bottom: 0;
+  padding: 8px 10px;
 }
 
 .span-detail__meta-item {
@@ -542,5 +742,59 @@ function prettyJson(value: string): string {
 .span-detail__attr-val {
   color: var(--text-secondary);
   word-break: break-word;
+}
+
+.tool-calls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tool-call-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  background: var(--bg-surface);
+}
+
+.tool-call-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.tool-call-card__name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tool-call-card__id {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.tool-call-card__label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 6px 0;
+}
+
+@media (max-width: 1200px) {
+  .span-tree__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .span-tree__table {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .span-inspector {
+    max-height: none;
+  }
 }
 </style>
