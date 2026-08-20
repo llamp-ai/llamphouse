@@ -14,11 +14,9 @@ from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.types import (
     Message,
     Part,
+    TextPart,
     Role,
-    SendMessageConfiguration,
-    SendMessageRequest,
     TaskArtifactUpdateEvent,
-    TaskState,
     TaskStatusUpdateEvent,
 )
 from opentelemetry import propagate, trace
@@ -89,51 +87,41 @@ async def main():
             chunks: list[str] = []
 
             message = Message(
-                message_id=uuid4().hex,
-                role=Role.ROLE_USER,
-                parts=[Part(text=question)],
-            )
-            request = SendMessageRequest(
-                message=message,
-                configuration=SendMessageConfiguration(
-                    accepted_output_modes=["text"],
-                ),
+                messageId=uuid4().hex,
+                role=Role.user,
+                parts=[Part(root=TextPart(text=question))],
             )
 
-            async for event in client.send_message(request):
-                payload = event.WhichOneof("payload")
-                if payload == "artifact_update":
-                    result = event.artifact_update
-                elif payload == "status_update":
-                    result = event.status_update
-                else:
+            async for event in client.send_message(message):
+                # With current A2A SDK, streaming send_message yields
+                # (task, streaming_event) tuples.
+                if not isinstance(event, tuple):
                     continue
 
-                if isinstance(result, TaskArtifactUpdateEvent):
-                    for part in result.artifact.parts:
-                        if part.text:
-                            chunks.append(part.text)
-                            print(part.text, end="", flush=True)
-                elif isinstance(result, TaskStatusUpdateEvent):
-                    state = TaskState.Name(result.status.state).removeprefix(
-                        "TASK_STATE_"
-                    ).lower()
-                    if state in {
-                        "failed",
-                        "canceled",
-                        "input_required",
-                        "rejected",
-                        "auth_required",
-                    }:
+                _, streaming_event = event
+                if isinstance(streaming_event, TaskArtifactUpdateEvent):
+                    for part in streaming_event.artifact.parts:
+                        root = getattr(part, "root", part)
+                        text = getattr(root, "text", "") or ""
+                        if text:
+                            chunks.append(text)
+                            print(text, end="", flush=True)
+                elif isinstance(streaming_event, TaskStatusUpdateEvent):
+                    state = getattr(
+                        streaming_event.status.state,
+                        "value",
+                        str(streaming_event.status.state),
+                    )
+                    if streaming_event.final and state != "completed":
                         msg = ""
-                        if result.status.message and result.status.message.parts:
-                            for p in result.status.message.parts:
-                                if p.text:
-                                    msg += p.text
-                        print(
-                            f"\n  [status: {state}] {msg}",
-                            flush=True,
-                        )
+                        if (
+                            streaming_event.status.message
+                            and streaming_event.status.message.parts
+                        ):
+                            for p in streaming_event.status.message.parts:
+                                root = getattr(p, "root", p)
+                                msg += getattr(root, "text", "") or ""
+                        print(f"\n  [status: {state}] {msg}", flush=True)
 
             print("\n")
 

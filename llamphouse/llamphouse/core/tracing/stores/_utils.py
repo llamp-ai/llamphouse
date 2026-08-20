@@ -39,6 +39,15 @@ def span_to_dict(span: "ReadableSpan") -> dict:
 
     attrs: dict = dict(span.attributes) if span.attributes else {}
 
+    # Merge resource attributes (service.name, service.version, deployment.environment, ...)
+    # so downstream consumers (Compass UI, queries) can see them without a separate lookup.
+    # Span-level attributes take precedence if a key collides.
+    resource = getattr(span, "resource", None)
+    if resource is not None:
+        resource_attrs = getattr(resource, "attributes", None) or {}
+        for r_key, r_val in resource_attrs.items():
+            attrs.setdefault(r_key, r_val)
+
     events_ts: list = []
     events_name: list = []
     events_attrs: list = []

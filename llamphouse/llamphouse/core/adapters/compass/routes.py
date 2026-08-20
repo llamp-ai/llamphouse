@@ -122,6 +122,18 @@ async def compass_ui(req: Request):
     return HTMLResponse(html)
 
 
+# ── Info ─────────────────────────────────────────────────────────────────────
+
+@router.get("/api/info")
+async def compass_info():
+    """Return build / package info for the sidebar footer."""
+    try:
+        from llamphouse import __version__ as _v
+    except Exception:
+        _v = "unknown"
+    return {"version": _v, "website": "https://llamp.ai"}
+
+
 # ── Overview / stats ─────────────────────────────────────────────────────────
 
 @router.get("/api/overview")
@@ -583,8 +595,10 @@ async def get_run_flow(req: Request, run_id: str):
     for idx, e in enumerate(edges):
         e["sequence"] = idx + 1
 
-    # Only return flow if there's more than one node
-    if len(nodes) <= 1:
+    # Surface the workflow view for any run that has at least one node.
+    # Even single-agent runs benefit from it because each node can be
+    # expanded to inspect its @step / tool_call / message_creation timeline.
+    if not nodes:
         return JSONResponse({"nodes": [], "edges": [], "has_flow": False})
 
     return JSONResponse({"nodes": nodes, "edges": edges, "has_flow": True})

@@ -51,7 +51,20 @@ def setup_tracing(tracing_store=None) -> None:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
     service_name = os.getenv("OTEL_SERVICE_NAME", "llamphouse")
-    resource = Resource.create({"service.name": service_name})
+    # Explicit attributes; Resource.create() also merges in the default OTel resource,
+    # which picks up OTEL_SERVICE_NAME + OTEL_RESOURCE_ATTRIBUTES automatically.
+    explicit_attrs: dict = {"service.name": service_name}
+    service_version = os.getenv("OTEL_SERVICE_VERSION") or os.getenv("SERVICE_VERSION")
+    if service_version:
+        explicit_attrs["service.version"] = service_version
+    deployment_env = (
+        os.getenv("OTEL_DEPLOYMENT_ENVIRONMENT")
+        or os.getenv("DEPLOYMENT_ENVIRONMENT")
+        or os.getenv("ENVIRONMENT")
+    )
+    if deployment_env:
+        explicit_attrs["deployment.environment"] = deployment_env
+    resource = Resource.create(explicit_attrs)
 
     provider = TracerProvider(resource=resource)
     trace.set_tracer_provider(provider)

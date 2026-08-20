@@ -93,13 +93,11 @@ pip install llamphouse
 
 ### 2. Create your agent
 
-Create a file called `server.py`:
+Create a file called `agents.py`:
 
 ```python
-from llamphouse.core import LLAMPHouse, Agent
+from llamphouse.core import Agent
 from llamphouse.core.context import Context
-from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse.core.adapters.a2a import A2AAdapter
 
 
 class HelloAgent(Agent):
@@ -107,35 +105,35 @@ class HelloAgent(Agent):
         await context.insert_message(
             "Hello! I'm a simple agent running on LLAMPHouse."
         )
-
-
-agent = HelloAgent(
-    id="hello-agent",
-    name="Hello Agent",
-    description="A friendly assistant that answers questions.",
-    version="0.1.0",
-)
-
-app = LLAMPHouse(
-    agents=[agent],
-    data_store=InMemoryDataStore(),
-    adapters=[A2AAdapter()],
-)
-
-app.ignite(host="127.0.0.1", port=8000)
 ```
 
-### 3. Run it
+### 3. Add a config file
+
+Create `llamphouse.yaml` in the same directory:
+
+```yaml
+version: "0.1"
+
+definitions:
+  - name: hello-agent
+    entrypoint: agents.py:HelloAgent
+
+agents:
+  - name: hello-agent
+    definition: hello-agent
+```
+
+### 4. Run it
 
 ```bash
-python server.py
+llamphouse up
 ```
 
 Your agent is now live at `http://127.0.0.1:8000` with:
 - **A2A protocol** at `/.well-known/agent.json`
 - **Compass dashboard** at `http://127.0.0.1:8000/compass`
 
-### 4. Talk to it
+### 5. Talk to it
 
 Use any A2A client, the OpenAI Python SDK, or just curl:
 
@@ -366,8 +364,11 @@ The [examples/](examples/) directory contains runnable samples for every feature
 | [10_DistributedWorker](examples/10_DistributedWorker/) | Redis-backed distributed workers |
 | [11_WebhookTrigger](examples/11_WebhookTrigger/) | Webhook trigger integration |
 | [12_PlannerAgent](examples/12_PlannerAgent/) | Planner/executor agent pattern |
+| [13_LLAMPHouseYAML](examples/13_LLAMPHouseYAML/) | YAML-first runtime setup (`llamphouse up`) |
+| [14_WorkflowSteps](examples/14_WorkflowSteps/) | `@step` workflow example (YAML-first runtime) |
+| [15_LangGraph](examples/15_LangGraph/) | LangGraph branching wrapper (YAML-first runtime) |
 
-Each example includes a `server.py`, `client.py`, and `README.md` with instructions.
+Most examples include `server.py`, `client.py`, and `README.md`. Examples 13, 14, and 15 are YAML-first and start with `llamphouse up`.
 
 ---
 

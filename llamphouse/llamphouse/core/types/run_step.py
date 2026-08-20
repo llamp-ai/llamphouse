@@ -1,4 +1,4 @@
-from typing import Optional, Union, List, Literal, Annotated
+from typing import Any, Optional, Union, List, Literal, Annotated
 from .tool_call import ToolCall
 from ..streaming.event import Event
 from pydantic import BaseModel, Field
@@ -15,8 +15,19 @@ class MessageCreationStepDetails(BaseModel):
     message_creation: MessageCreation
     type: Literal["message_creation"]
 
+class StepCallDetails(BaseModel):
+    """Details for a `@step`-decorated function invocation inside a run.
+
+    Captures the function name and a JSON-serializable snapshot of its input
+    and output. Errors raised by the step are stored in ``RunStepObject.last_error``.
+    """
+    type: Literal["step"]
+    name: str
+    input: Optional[Any] = None
+    output: Optional[Any] = None
+
 StepDetails = Annotated[
-    Union[MessageCreationStepDetails, ToolCallsStepDetails],
+    Union[MessageCreationStepDetails, ToolCallsStepDetails, StepCallDetails],
     Field(discriminator="type"),
 ]
 
@@ -44,7 +55,7 @@ class RunStepObject(BaseModel):
     status: Literal["in_progress", "cancelled", "failed", "completed", "expired"] = "completed"
     step_details: StepDetails
     thread_id: str
-    type: Literal["message_creation", "tool_calls"]
+    type: Literal["message_creation", "tool_calls", "step"]
     usage: Optional[Usage] = None
 
     def to_event(self, event: str) -> Event:

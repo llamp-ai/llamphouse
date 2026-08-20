@@ -128,13 +128,14 @@ A2A protocol support requires LLAMPHouse **v1.2.0** or later. Earlier versions o
 
 ## CompassAdapter
 
-A full observability UI mounted at `/compass` (default). Includes a React SPA and a backing REST API.
+A full observability UI mounted at `/compass` (default). Includes a Vue SPA and a backing REST API.
 
 **Endpoints:**
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | Compass SPA |
+| `GET` | `/api/info` | Runtime/package info for Compass footer |
 | `GET` | `/api/overview` | Server-wide overview stats |
 | `GET` | `/api/assistants` | List agents |
 | `GET/POST` | `/api/assistants/{id}/config` | Read / write agent config |

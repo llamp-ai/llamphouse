@@ -1,4 +1,4 @@
-# Example 10 - AsyncWorker vs DistributedWorker
+# Example 10 — AsyncWorker vs DistributedWorker
 
 Compares the two worker modes in llamphouse using the A2A streaming protocol:
 

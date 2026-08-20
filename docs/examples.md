@@ -20,6 +20,8 @@ Each example includes an `agents.py` (or `server.py`), `client.py`, and `README.
 | [11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger) | Trigger an agent via an HTTP POST instead of a human chat message. | `WebhookTrigger`, `secret_env` |
 | [12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent) | A generic ReAct-style Planner-Executor agent that you can drop into any project by providing a list of tools and a re… |  |
 | [13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML) | The config-driven way to run LLAMPHouse — no server.py required. | `server.py`, `The difference between a de…` |
+| [14_WorkflowSteps](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_WorkflowSteps) | Demonstrates the experimental @step decorator — the first piece of a | `@step`, `How input/output is capture…` |
+| [15_LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_LangGraph) | This example shows a non-trivial LangGraph workflow running behind the LLAMPHouse runtime contract. |  |
 
 ## Running an example
 
@@ -45,19 +47,21 @@ Some examples require environment variables (e.g., `OPENAI_API_KEY`). Check each
 
 If you're new to LLAMPHouse, we recommend working through the examples in this order:
 
-1. **[01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld)** — 👋 Hello World
-2. **[02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat)** — 💬 Chat
-3. **[03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming)** — 🌊 Streaming
-4. **[04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall)** — Tool Call Example
-5. **[05_OrchestratorAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_OrchestratorAgent)** — Central Orchestrator with Review & Correction
-6. **[06_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_AgentHandover)** — Agent Handover
-7. **[07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing)** — Tracing Example (A2A)
-8. **[08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore)** — Config Store Example
-9. **[09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth)** — Custom Authenticator Example
-10. **[10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker)** — AsyncWorker vs DistributedWorker
-11. **[11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger)** — Webhook Trigger
-12. **[12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent)** — Planner Agent
-13. **[13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML)** — 📄 LLAMPHouse YAML
+2. **[01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld)** — 👋 Hello World
+3. **[02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat)** — 💬 Chat
+4. **[03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming)** — 🌊 Streaming
+5. **[04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall)** — Tool Call Example
+6. **[05_OrchestratorAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_OrchestratorAgent)** — Central Orchestrator with Review & Correction
+7. **[06_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_AgentHandover)** — Agent Handover
+8. **[07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing)** — Tracing Example (A2A)
+9. **[08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore)** — Config Store Example
+10. **[09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth)** — Custom Authenticator Example
+11. **[10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker)** — AsyncWorker vs DistributedWorker
+12. **[11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger)** — Webhook Trigger
+13. **[12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent)** — Planner Agent
+14. **[13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML)** — 📄 LLAMPHouse YAML
+15. **[14_WorkflowSteps](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_WorkflowSteps)** — 🪜 Workflow Steps
+16. **[15_LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_LangGraph)** — LangGraph Branching Wrapper Example
 
 ## Next steps
 
