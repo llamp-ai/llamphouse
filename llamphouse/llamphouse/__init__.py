@@ -24,6 +24,7 @@ from .core.config_store import BaseConfigStore, InMemoryConfigStore
 from .core.queue import BaseQueue, InMemoryQueue, RedisQueue
 from .core.workers import AsyncWorker, DistributedWorker
 from .core.types.message import TextPart, ImagePart, FilePart, DataPart
+from .core.wrappers import BaseAgentWrapper, LangGraphAgent
 from .core.triggers import BaseTrigger, TriggerInfo, WebhookTrigger
 from .core.tracing import (
     BaseTracingStore,
@@ -60,6 +61,8 @@ __all__ = [
     "ImagePart",
     "FilePart",
     "DataPart",
+    "BaseAgentWrapper",
+    "LangGraphAgent",
     "BaseTracingStore",
     "InMemoryTracingStore",
     "PostgresTracingStore",

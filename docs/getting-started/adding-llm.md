@@ -138,6 +138,34 @@ class LangChainAgent(Agent):
         await context.insert_message(result.content)
 ```
 
+For LangGraph, use the built-in wrapper to keep LLAMPHouse as the public
+runtime contract (A2A / Assistant API / Compass), while delegating execution
+to your graph:
+
+```python
+from langgraph.graph import StateGraph, START, END
+from llamphouse import LLAMPHouse, A2AAdapter, LangGraphAgent
+from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
+
+# Build your graph as usual
+graph = StateGraph(dict).compile()
+
+agent = LangGraphAgent(
+    id="planner-graph",
+    name="Planner Graph",
+    description="LangGraph planner running inside LLAMPHouse",
+    graph=graph,
+)
+
+app = LLAMPHouse(
+    agents=[agent],
+    data_store=InMemoryDataStore(),
+    adapters=[A2AAdapter()],
+)
+
+app.ignite(host="127.0.0.1", port=8000)
+```
+
 See the [LangGraph example](https://github.com/llamp-ai/llamphouse/tree/main/examples/LangGraph) for a full integration.
 
 ## Key takeaway
