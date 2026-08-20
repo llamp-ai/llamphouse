@@ -122,6 +122,18 @@ async def compass_ui(req: Request):
     return HTMLResponse(html)
 
 
+# ── Info ─────────────────────────────────────────────────────────────────────
+
+@router.get("/api/info")
+async def compass_info():
+    """Return build / package info for the sidebar footer."""
+    try:
+        from llamphouse import __version__ as _v
+    except Exception:
+        _v = "unknown"
+    return {"version": _v, "website": "https://llamp.ai"}
+
+
 # ── Overview / stats ─────────────────────────────────────────────────────────
 
 @router.get("/api/overview")

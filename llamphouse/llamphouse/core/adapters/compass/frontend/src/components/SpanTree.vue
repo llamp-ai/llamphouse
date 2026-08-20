@@ -128,6 +128,27 @@ function statusColor(code: string): string {
   }
 }
 
+/**
+ * Return an effective OTel-style status code for a span, promoting
+ * `gen_ai.task.status` (e.g. "success" / "error" / "failed") to
+ * STATUS_CODE_OK / STATUS_CODE_ERROR when the underlying span status is
+ * unset. Some instrumentations (Traceloop, LangChain) leave the OTel
+ * status unset and record success via a task attribute instead.
+ */
+function effectiveStatus(span: any): string {
+  const code = span?.StatusCode || ''
+  if (code === 'STATUS_CODE_OK' || code === 'STATUS_CODE_ERROR') return code
+  const task = String(getAttr(span, 'gen_ai.task.status') || '').toLowerCase()
+  if (!task) return code
+  if (task === 'success' || task === 'ok' || task === 'succeeded' || task === 'completed') {
+    return 'STATUS_CODE_OK'
+  }
+  if (task === 'error' || task === 'failed' || task === 'failure') {
+    return 'STATUS_CODE_ERROR'
+  }
+  return code
+}
+
 function spanIcon(name: string): string {
   if (name.includes('.call_agent')) return '→'
   if (name.includes('.handover')) return '⇒'
@@ -495,8 +516,8 @@ const selectedLevel = computed<string>(() => {
     'level',
   ])
   if (explicit) return explicit.toUpperCase()
-  // Derive from status
-  const status = selectedSpan.value.StatusCode || ''
+  // Derive from status (including gen_ai.task.status fallback)
+  const status = effectiveStatus(selectedSpan.value)
   if (status.includes('ERROR')) return 'ERROR'
   if (status.includes('OK')) return 'DEFAULT'
   return ''
@@ -650,7 +671,7 @@ const selectedSimpleAttrs = computed<Array<{ key: string; value: string }>>(() =
               <div class="span-row__tokens mono">{{ tokenTotal(node.span) }}</div>
               <div class="span-row__duration mono">{{ durationLabel(node.span.Duration) }}</div>
               <div class="span-row__status">
-                <span class="span-status-dot" :style="{ background: statusColor(node.span.StatusCode) }"></span>
+                <span class="span-status-dot" :style="{ background: statusColor(effectiveStatus(node.span)) }"></span>
               </div>
             </div>
           </div>
@@ -669,8 +690,8 @@ const selectedSimpleAttrs = computed<Array<{ key: string; value: string }>>(() =
             <!-- Summary chip row (Langfuse-style) -->
             <div class="span-detail__chips">
               <span class="span-chip">
-                <span class="span-chip__dot" :style="{ background: statusColor(selectedSpan.StatusCode) }"></span>
-                {{ (selectedSpan.StatusCode || 'UNSET').replace('STATUS_CODE_', '') }}
+                <span class="span-chip__dot" :style="{ background: statusColor(effectiveStatus(selectedSpan)) }"></span>
+                {{ (effectiveStatus(selectedSpan) || 'UNSET').replace('STATUS_CODE_', '') }}
               </span>
               <span class="span-chip">
                 <span class="span-chip__label">Duration</span>

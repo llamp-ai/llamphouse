@@ -1,15 +1,31 @@
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 
 const route = useRoute()
 
+const version = ref<string>('')
+const website = ref<string>('https://llamp.ai')
+
+onMounted(async () => {
+  try {
+    const res = await fetch('api/info')
+    if (res.ok) {
+      const data = await res.json()
+      if (data?.version) version.value = data.version
+      if (data?.website) website.value = data.website
+    }
+  } catch {
+    /* ignore — footer stays minimal */
+  }
+})
+
 const navItems = [
   { to: '/',            icon: 'nav-overview',    label: 'Overview' },
   { to: '/assistants',  icon: 'nav-assistants',  label: 'Agents' },
-  { to: '/threads',     icon: 'nav-threads',     label: 'Threads' },
   { to: '/runs',        icon: 'nav-runs',        label: 'Runs' },
+  { to: '/threads',     icon: 'nav-threads',     label: 'Threads' },
   { to: '/traces',      icon: 'nav-traces',      label: 'Traces' },
-  { to: '/compare',     icon: 'nav-compare',     label: 'Compare' },
   { to: '/dashboards',  icon: 'nav-dashboards',  label: 'Dashboards' },
 ]
 
@@ -50,7 +66,13 @@ function isActive(to: string): boolean {
     </nav>
 
     <div class="sidebar__footer">
-      <span class="sidebar__version">LLAMPHouse</span>
+      <a
+        class="sidebar__brand-link"
+        :href="website"
+        target="_blank"
+        rel="noopener noreferrer"
+      >LLAMPHouse</a>
+      <span v-if="version" class="sidebar__version">v{{ version }}</span>
     </div>
   </aside>
 </template>
@@ -134,13 +156,31 @@ function isActive(to: string): boolean {
 }
 
 .sidebar__footer {
-  padding: 16px 18px;
+  padding: 14px 18px;
   border-top: 1px solid var(--border);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar__brand-link {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+}
+
+.sidebar__brand-link:hover {
+  color: var(--accent, #6366f1);
+  text-decoration: underline;
 }
 
 .sidebar__version {
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
   letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
 }
 </style>
