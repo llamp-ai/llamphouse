@@ -387,4 +387,8 @@ async def test_compass_flow_endpoint_returns_empty_state_for_single_run(
     response = await compass_client.get(f"/dashboard/api/runs/{run_id}/flow")
 
     assert response.status_code == 200
-    assert response.json() == {"nodes": [], "edges": [], "has_flow": False}
+    payload = response.json()
+    assert payload["edges"] == []
+    assert payload["has_flow"] is True
+    assert len(payload["nodes"]) == 1
+    assert payload["nodes"][0]["id"] == run_id
