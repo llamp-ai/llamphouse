@@ -1,39 +1,25 @@
-"""Workflow steps example.
+"""Workflow steps example agent definitions.
 
-Demonstrates the experimental ``@step`` decorator. Each ``@step``-decorated
-function called inside ``Agent.run`` is automatically recorded in the data
-store as a ``RunStepObject`` of type ``"step"``, capturing its input and
-output. Think of ``Agent.run`` as the ``@workflow`` and each ``@step`` as
-a checkpointed activity inside it.
-
-Run the server, then run ``client.py``. After the agent replies, the server
-process prints all run steps captured for that run, including the input
-arguments and output value of every ``@step`` invocation.
+This file contains only agent logic so deployments can be bootstrapped
+from ``llamphouse.yaml`` (like example 13).
 """
+
 import asyncio
 import json
 
-from llamphouse.core import LLAMPHouse, Agent, Context, step
-from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse.core.adapters.a2a import A2AAdapter
-from llamphouse.core.adapters.compass import CompassAdapter
+from llamphouse.core import Agent, Context, step
 
-
-# ─── Fake "tools" implemented as @step-decorated workflow steps ──────────────
 
 class TripPlannerAgent(Agent):
 
     @step
     async def validate_destination(self, context: Context, destination: str) -> str:
-        # Demo failure path: certain destinations are not supported and the
-        # step raises, which fails the surrounding run.
         if destination.strip().lower() in {"mars", "moon", "pluto"}:
             raise ValueError(f"Destination not supported: {destination}")
         return destination
 
     @step
     async def get_weather(self, context: Context, city: str) -> dict:
-        # Simulate a slow API call.
         await asyncio.sleep(0.2)
         return {"city": city, "temp_c": 22, "summary": "sunny"}
 
@@ -54,12 +40,6 @@ class TripPlannerAgent(Agent):
         )
 
     async def run(self, context: Context):
-        # Treat ``run`` as the workflow body. Each @step call below is a
-        # checkpointed activity recorded in the data store.
-        #
-        # Pull the destination out of the latest user message so the demo
-        # client can trigger a successful run ("Amsterdam") and a failing run
-        # ("Mars") against the same agent.
         destination = "Amsterdam"
         for msg in reversed(context.messages):
             if msg.role == "user":
@@ -75,8 +55,6 @@ class TripPlannerAgent(Agent):
 
         await context.insert_message(itinerary)
 
-        # ── For demo purposes: print the captured run steps to the server log.
-        # In production you'd query these via the data store or a dashboard.
         steps = context.data_store.list_run_steps(
             thread_id=context.thread_id,
             run_id=context.run_id,
@@ -92,24 +70,3 @@ class TripPlannerAgent(Agent):
             if s.last_error:
                 print(f"                    error  ={s.last_error}")
         print("────────────────────────────────────\n")
-
-
-def main():
-    agent = TripPlannerAgent(
-        id="trip-planner",
-        name="Trip Planner",
-        description="Plans a trip using a small workflow of @step-decorated activities.",
-        version="0.1.0",
-    )
-
-    llamphouse = LLAMPHouse(
-        agents=[agent],
-        data_store=InMemoryDataStore(),
-        adapters=[A2AAdapter(), CompassAdapter()],
-    )
-
-    llamphouse.ignite(host="127.0.0.1", port=8000)
-
-
-if __name__ == "__main__":
-    main()

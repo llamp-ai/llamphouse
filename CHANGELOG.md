@@ -48,6 +48,11 @@
 - **Synced Compass home-page example** (`examples/00_sync/server.py`) — minimal `HelloAgent` backed by `PostgresDataStore` with both A2A and Compass adapters mounted, loading `DATABASE_URL` from `.env`.
 - **Plan: lifecycle events & subscribers** — `docs/PLAN_LIFECYCLE_EVENTS.md` for the upcoming Trigger / Event / Subscriber model.
 - **Plan: Compass dev focus** — `docs/PLAN_COMPASS_DEV_FOCUS.md` for Playground, Replay, Scores, Datasets, SQL editor, editable Overview, and webhook actions.
+- **Compass trace inspector overhaul** — Span inspector redesigned with richer chip metadata, workflow topology hints, dedicated task input/output cards, and improved readability for large span payloads.
+- **Structured LLM message rendering in traces** — span attributes like `gen_ai.input.messages`, `gen_ai.output.messages`, and `gen_ai.system_instructions` are now parsed and displayed as conversation-style message blocks.
+- **Reusable content-format viewer in Compass** — trace payload sections now support Plain / Markdown / JSON display toggles via a shared `ContentBlock` component.
+- **Trace detail run/thread deep-links** — Trace Detail now surfaces contextual "Open Run" and "Open Thread" actions when linked IDs are available in span attributes, while still handling standalone traces gracefully.
+- **Compass sidebar footer info endpoint** — added `/api/info` to expose package version + website (`https://llamp.ai`) and wired sidebar footer to display `LLAMPHouse vX.Y.Z` dynamically.
 
 ### Changed
 
@@ -65,6 +70,9 @@
 - **Run-detail I/O resolver tolerates missing `run_id`** — assistant messages without a stamped `run_id` now match the run's `started_at..completed_at` window. Messages route also re-introduces `run_id` / `assistant_id` as explicit `null` (the prior `exclude_none=True` serialiser was stripping them entirely).
 - **`PostgresDataStore.close()` is bounded** — `engine.dispose()` is wrapped in `asyncio.wait_for(..., timeout=5.0)` so a hung asyncpg socket can't block server shutdown for the OS TCP timeout.
 - **Compass adapter no longer relies on missing methods.** All `hasattr(db, "…")` branches that masked data-store API gaps (`list_threads`, `list_all_runs`, `count_threads/runs/messages`, `get_run_any_thread`) are gone, replaced by abstract methods on `BaseDataStore`. The only `hasattr` left is the legitimate backend dispatch in the dashboard SQL endpoint.
+- **Compass sidebar navigation updated** — default navigation now orders key views as Agents → Runs → Threads → Traces → Dashboards (after Overview), and removes Compare from the sidebar menu while keeping the API route available.
+- **Trace status derivation improved** — span status UI now falls back to `gen_ai.task.status` (e.g. `success`, `failed`) when OTel `StatusCode` is unset, improving status accuracy for instrumentations that only emit GenAI task status.
+- **Resource metadata surfaced in trace UI** — service version and deployment environment from OTel resource attributes are now merged into span attributes and rendered as inspector chips (e.g. Env, Version, Service).
 
 ### Fixed
 

@@ -2,6 +2,15 @@
 
 **Compass** is LLAMPHouse's built-in developer dashboard. It provides a visual interface for inspecting threads, messages, runs, traces, and agent flows — all from your browser.
 
+Default navigation order:
+
+- Overview
+- Agents
+- Runs
+- Threads
+- Traces
+- Dashboards
+
 ## Accessing Compass
 
 Compass is automatically enabled. Once your server is running, open:
@@ -33,13 +42,23 @@ Drill into run steps to see:
 
 ### Traces
 
-When [tracing](tracing.md) is enabled with ClickHouse, the Traces tab shows:
+When [tracing](tracing.md) is enabled with a configured tracing store, the Traces tab shows:
 
 - **Span tree** — hierarchical view of all spans in a trace
 - **Agent badges** — colored indicators showing which agent produced each span
 - **Timing** — duration bars and timestamps
 - **Attributes** — full span attributes for debugging
 - **Filtering** — filter traces by status, agent, or time range
+- **Linked navigation** — contextual "Open Run" / "Open Thread" actions in Trace Detail when IDs are present on spans
+
+#### Trace inspector enhancements
+
+The trace inspector supports:
+
+- Chip-style summary metadata (status, duration, tokens, model, service/env/version)
+- Parsed GenAI message rendering from span attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`)
+- Plain / Markdown / JSON content toggles for payload-heavy sections
+- Status fallback from `gen_ai.task.status` when OTel `StatusCode` is unset
 
 ### Flow Visualization
 
@@ -74,6 +93,13 @@ app = LLAMPHouse(
     compass=False,
 )
 ```
+
+## Footer metadata
+
+Compass fetches runtime/package info from `GET /api/info` and displays:
+
+- current LLAMPHouse package version
+- website link (`https://llamp.ai`)
 
 ## Next steps
 

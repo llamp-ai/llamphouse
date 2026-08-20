@@ -1,0 +1,19 @@
+version: "0.1"
+
+project:
+  name: workflow-steps-demo
+
+definitions:
+  - name: trip-planner
+    entrypoint: agents.py:TripPlannerAgent
+
+agents:
+  - name: trip-planner
+    definition: trip-planner
+
+adapters:
+  - a2a:
+  - compass:
+
+data_store:
+  in_memory:

@@ -35,7 +35,7 @@ Conceptually:
 
 ```sh
 pip install -r requirements.txt
-python server.py
+llamphouse up
 ```
 
 In a second terminal:
@@ -86,6 +86,16 @@ The decorator looks for a `Context` in the call's arguments and uses it to:
 2. Run the function.
 3. On success, mark the step `completed` and store the return value.
 4. On exception, mark `failed`, record the error, and re-raise.
+
+### YAML runtime (`llamphouse.yaml`)
+
+This example now supports config-driven startup with no `python server.py` command.
+`llamphouse up` loads:
+
+- definition entrypoint: `server.py:TripPlannerAgent`
+- one deployment instance: `trip-planner`
+- adapters: `a2a`, `compass`
+- data store: `in_memory`
 
 ### Inspecting steps
 

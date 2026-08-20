@@ -34,7 +34,7 @@ pip install -r requirements.txt
 2. Start the server:
 
 ```bash
-python server.py
+llamphouse up
 ```
 
 3. Run the client:
@@ -54,3 +54,15 @@ Open Compass and inspect:
 
 - Traces list for run-level span trees
 - Run detail -> Trace tab for run-specific traces
+
+## YAML-based startup
+
+This example now includes `llamphouse.yaml` and runs config-first.
+
+- agent definition entrypoint: `server.py:create_agent`
+- deployment: `langgraph-agent`
+- adapters: `a2a`, `compass`
+- stores: `in_memory` data + `in_memory` tracing
+- tracing/env metadata: configured in `globals.env`
+
+If you still want the original direct Python startup path, `python server.py` remains supported.

@@ -1,9 +1,7 @@
-"""LangGraph branching workflow example for LLAMPHouse.
+"""LangGraph branching workflow agent definitions.
 
-Run:
-    1) pip install -r requirements.txt
-    2) python server.py
-    3) python client.py
+This file contains only graph/agent construction so deployments can be
+bootstrapped from ``llamphouse.yaml`` (like example 13).
 """
 
 from dotenv import load_dotenv
@@ -13,13 +11,7 @@ import logging
 
 load_dotenv(override=True)
 
-from llamphouse.core import LLAMPHouse
-from llamphouse.core.adapters.a2a import A2AAdapter
-from llamphouse.core.adapters.compass import CompassAdapter
-from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse.core.tracing.stores.in_memory_tracing_store import InMemoryTracingStore
 from llamphouse.core.wrappers import LangGraphAgent
-
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +23,6 @@ except ImportError:
 
 
 if LangchainInstrumentor is not None:
-    # Instrument LangChain/LangGraph internals so node/model/tool calls emit spans.
     LangchainInstrumentor().instrument()
 else:
     logger.warning(
@@ -133,7 +124,6 @@ def _build_graph():
     async def solve_math(state: GraphState) -> GraphState:
         text = state.get("user_text", "")
         compact = text.replace(" ", "")
-        # Deterministic toy solver for the demo path.
         if "x+1=4" in compact:
             answer = "x = 3"
         else:
@@ -246,26 +236,9 @@ def _build_graph():
     return graph.compile()
 
 
-def main():
-    # Example safety net: ensure tracing is enabled even when local .env disables it.
-    os.environ["LLAMPHOUSE_TRACING_ENABLED"] = "true"
-
-    # Langfuse-style span metadata: these become resource attributes on every span
-    # (visible in Compass as chips + queryable in ClickHouse/Postgres stores).
-    os.environ.setdefault("OTEL_SERVICE_NAME", "langgraph-demo")
-    os.environ.setdefault("OTEL_SERVICE_VERSION", "1.0.0")
-    os.environ.setdefault(
-        "OTEL_DEPLOYMENT_ENVIRONMENT",
-        os.getenv("APP_ENV", "development"),
-    )
-    # Anything in OTEL_RESOURCE_ATTRIBUTES is merged in as well (comma-separated key=value).
-    os.environ.setdefault(
-        "OTEL_RESOURCE_ATTRIBUTES",
-        "llamphouse.example=15_LangGraph,team=platform",
-    )
-
+def create_agent(_deployment_cfg=None):
     graph = _build_graph()
-    agent = LangGraphAgent(
+    return LangGraphAgent(
         id="langgraph-agent",
         name="LangGraph Agent",
         description="A branched LangGraph workflow running inside LLAMPHouse.",
@@ -273,15 +246,3 @@ def main():
         stream=True,
         map_nodes_to_steps=True,
     )
-
-    app = LLAMPHouse(
-        agents=[agent],
-        data_store=InMemoryDataStore(),
-        tracing_store=InMemoryTracingStore(),
-        adapters=[A2AAdapter(), CompassAdapter()],
-    )
-    app.ignite(host="127.0.0.1", port=8000)
-
-
-if __name__ == "__main__":
-    main()
