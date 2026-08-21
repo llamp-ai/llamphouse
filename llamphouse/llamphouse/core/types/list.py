@@ -7,3 +7,4 @@ class ListResponse(BaseModel):
     first_id: Optional[str] = None
     last_id: Optional[str] = None
     has_more: bool = False
+    total: Optional[int] = None

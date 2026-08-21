@@ -1,4 +1,5 @@
 from typing import Optional, List
+import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
 from opentelemetry.trace import Status, StatusCode
@@ -10,6 +11,12 @@ from ..types.assistant import AgentObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
 from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRequest
+from ..types.webhook import (
+    WebhookCommand,
+    WebhookCommandConflict,
+    WebhookCommandResult,
+    WebhookThreadNotFound,
+)
 from ..types.enum import message_status, event_type, run_status, run_step_status
 from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, StepDetails, RunStepObject
@@ -43,6 +50,8 @@ class InMemoryDataStore(BaseDataStore):
         self._messages: dict[str, list[MessageObject]] = {}
         self._run_steps: dict[str, list[RunStepObject]] = {}
         self._last_created_at: Optional[datetime] = None
+        self._webhook_command_lock = asyncio.Lock()
+        self._webhook_idempotency_claims: dict[tuple[str, str], dict] = {}
 
     def _next_created_at(self) -> datetime:
         now = datetime.now(timezone.utc)
@@ -367,6 +376,18 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
     
+    async def get_first_run_assistant_ids(self, thread_ids: List[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for tid in thread_ids:
+            runs = self._runs.get(tid) or []
+            if not runs:
+                continue
+            first = min(runs, key=lambda r: getattr(r, "created_at", 0) or 0)
+            aid = getattr(first, "assistant_id", None)
+            if aid:
+                out[tid] = aid
+        return out
+
     async def insert_thread(self, thread: CreateThreadRequest, event_queue: BaseEventQueue = None) -> ThreadObject | None:
         with span_context(
             store_tracer,
@@ -426,7 +447,116 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
-    
+
+    # Allowlist for thread filters: name → (extractor, kind).
+    _THREAD_FILTER_FIELDS = {
+        "id":         (lambda t: t.id,         "string"),
+        "created_at": (lambda t: t.created_at, "date"),
+        "metadata":   (lambda t: t.metadata,   "json_string"),
+    }
+
+    async def list_threads(self, limit: int = 50, order: str = "desc", after: Optional[str] = None, before: Optional[str] = None, filters: Optional[List[dict]] = None, include_total: bool = True) -> ListResponse:
+        attrs = {
+            "store.backend": "in_memory",
+            "limit": limit,
+            "order": order,
+            "gen_ai.operation.name": "threads.list",
+        }
+        if after is not None:
+            attrs["after"] = after
+        if before is not None:
+            attrs["before"] = before
+
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_threads",
+            require_parent=True,
+            attributes=attrs,
+        ) as span:
+            try:
+                span.set_attribute(
+                    "input.value",
+                    _json_dump({"limit": limit, "order": order, "after": after, "before": before}),
+                )
+
+                threads = list(self._threads.values())
+
+                # ── Filters (allowlisted fields only) ─────────────────
+                if filters:
+                    from . import _filters as _fmod
+                    for f in filters:
+                        field = f.get("field")
+
+                        # Special case: agent_id matches if *any* run on
+                        # the thread uses an assistant_id satisfying the
+                        # predicate.
+                        if field == "agent_id":
+                            def _agent_match(t, _f=f):
+                                runs = self._runs.get(t.id) or []
+                                aids = {getattr(r, "assistant_id", None) for r in runs}
+                                return any(
+                                    _fmod.matches(aid, "string", _f)
+                                    for aid in aids if aid is not None
+                                )
+                            threads = [t for t in threads if _agent_match(t)]
+                            continue
+
+                        spec = self._THREAD_FILTER_FIELDS.get(field)
+                        if not spec:
+                            continue
+                        extractor, kind = spec
+                        threads = [t for t in threads if _fmod.matches(extractor(t), kind, f)]
+
+                threads = sorted(
+                    threads,
+                    key=lambda t: t.created_at or 0,
+                    reverse=(order != "asc"),
+                )
+                total = len(threads) if include_total else None
+
+                # Cursor pagination.
+                def _index_of(thread_id: str) -> Optional[int]:
+                    for i, t in enumerate(threads):
+                        if t.id == thread_id:
+                            return i
+                    return None
+
+                if after:
+                    idx = _index_of(after)
+                    if idx is not None:
+                        threads = threads[idx + 1:]
+                if before:
+                    idx = _index_of(before)
+                    if idx is not None:
+                        threads = threads[:idx]
+
+                has_more = len(threads) > limit
+                page = threads[:limit]
+
+                response = ListResponse(
+                    data=page,
+                    first_id=page[0].id if page else None,
+                    last_id=page[-1].id if page else None,
+                    has_more=has_more,
+                    total=total,
+                )
+                span.set_status(Status(StatusCode.OK))
+                span.set_attribute(
+                    "output.value",
+                    _json_dump({
+                        "count": len(page),
+                        "first_id": response.first_id,
+                        "last_id": response.last_id,
+                        "has_more": has_more,
+                    }),
+                )
+                return response
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+                logger.exception("list_threads() failed")
+                return ListResponse(data=[])
+
     async def update_thread(self, thread_id: str, modifications: ModifyThreadRequest) -> ThreadObject | None:
         with span_context(
             store_tracer,
@@ -512,6 +642,34 @@ class InMemoryDataStore(BaseDataStore):
                 return run
         return None
 
+    async def get_run_any_thread(self, run_id: str) -> RunObject | None:
+        for runs_list in self._runs.values():
+            for r in runs_list:
+                if r.id == run_id:
+                    return r
+        return None
+
+    async def list_runs_by_parent_ids(self, parent_ids: List[str]) -> List[RunObject]:
+        if not parent_ids:
+            return []
+        wanted = set(parent_ids)
+        out: List[RunObject] = []
+        for runs_list in self._runs.values():
+            for r in runs_list:
+                meta = getattr(r, "metadata", None) or {}
+                if meta.get("parent_run_id") in wanted:
+                    out.append(r)
+        return out
+
+    async def count_threads(self) -> int:
+        return len(self._threads)
+
+    async def count_runs(self) -> int:
+        return sum(len(runs) for runs in self._runs.values())
+
+    async def count_messages(self) -> int:
+        return sum(len(msgs) for msgs in self._messages.values())
+
     async def insert_run(self, thread_id: str, run: RunCreateRequest, assistant: AgentObject, event_queue: BaseEventQueue = None) -> RunObject | None:
         with span_context(
             store_tracer,
@@ -596,6 +754,185 @@ class InMemoryDataStore(BaseDataStore):
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR))
                 raise
+
+    # Allowlist for run filters: name → (extractor, kind).
+    _RUN_FILTER_FIELDS = {
+        "id":           (lambda r: getattr(r, "id", None),           "string"),
+        "assistant_id": (lambda r: getattr(r, "assistant_id", None), "string"),
+        "agent_id":     (lambda r: getattr(r, "assistant_id", None), "string"),
+        "thread_id":    (lambda r: getattr(r, "thread_id", None),    "string"),
+        "status":       (lambda r: getattr(r, "status", None),       "string"),
+        "created_at":   (lambda r: getattr(r, "created_at", None),   "date"),
+    }
+
+    async def execute_webhook_command(self, command: WebhookCommand) -> WebhookCommandResult:
+        async with self._webhook_command_lock:
+            claim_key = None
+            if command.idempotency_key is not None:
+                claim_key = (command.scope, command.idempotency_key)
+                existing = self._webhook_idempotency_claims.get(claim_key)
+                if existing is not None:
+                    if existing["fingerprint"] != command.fingerprint:
+                        raise WebhookCommandConflict(
+                            "Webhook idempotency key was reused for a different command."
+                        )
+                    response = dict(existing["response_json"])
+                    response["deduped"] = True
+                    response["thread_created"] = False
+                    return WebhookCommandResult(
+                        run_id=response["run_id"],
+                        thread_id=response["thread_id"],
+                        message_id=response.get("message_id"),
+                        deduped=True,
+                        thread_created=False,
+                        response_json=response,
+                    )
+
+            assistant = next((agent for agent in self.agents if agent.id == command.agent_id), None)
+            if assistant is None:
+                raise ValueError(f"Agent '{command.agent_id}' not found")
+
+            thread_created = False
+            if command.thread_id is not None:
+                thread = self._threads.get(command.thread_id)
+                if thread is None:
+                    raise WebhookThreadNotFound(
+                        f"Thread '{command.thread_id}' was not found."
+                    )
+            else:
+                thread = await self.insert_thread(
+                    CreateThreadRequest(metadata=command.thread_metadata)
+                )
+                thread_created = True
+                if thread is None:
+                    raise RuntimeError("Webhook thread creation failed.")
+
+            message_id = None
+            if command.message_text is not None:
+                message = await self.insert_message(
+                    thread.id,
+                    CreateMessageRequest(role="user", content=command.message_text),
+                )
+                if message is None:
+                    raise RuntimeError("Webhook user message insertion failed.")
+                message_id = message.id
+
+            run = await self.insert_run(
+                thread.id,
+                RunCreateRequest(
+                    assistant_id=command.agent_id,
+                    metadata=command.run_metadata,
+                    config_values=command.run_config_values or None,
+                ),
+                assistant,
+            )
+            if run is None:
+                raise RuntimeError("Webhook run creation failed.")
+
+            response_json = {
+                "run_id": run.id,
+                "thread_id": thread.id,
+                "message_id": message_id,
+                "deduped": False,
+                "thread_created": thread_created,
+            }
+            if claim_key is not None:
+                now = self._next_created_at()
+                self._webhook_idempotency_claims[claim_key] = {
+                    "fingerprint": command.fingerprint,
+                    "agent_id": command.agent_id,
+                    "trigger_path": command.trigger_path,
+                    "thread_id": thread.id,
+                    "message_id": message_id,
+                    "run_id": run.id,
+                    "response_json": response_json,
+                    "created_at": now,
+                    "updated_at": now,
+                    "expires_at": None,
+                }
+
+            return WebhookCommandResult(
+                run_id=run.id,
+                thread_id=thread.id,
+                message_id=message_id,
+                deduped=False,
+                thread_created=thread_created,
+                response_json=response_json,
+            )
+
+    async def list_all_runs(
+        self,
+        limit: int = 50,
+        order: str = "desc",
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        filters: Optional[List[dict]] = None,
+        include_total: bool = True,
+    ) -> ListResponse:
+        attrs = {
+            "store.backend": "in_memory",
+            "limit": limit,
+            "order": order,
+            "gen_ai.operation.name": "runs.list_all",
+        }
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_all_runs",
+            require_parent=True,
+            attributes=attrs,
+        ) as span:
+            try:
+                runs = [r for thread_runs in self._runs.values() for r in thread_runs]
+
+                if filters:
+                    from . import _filters as _fmod
+                    for f in filters:
+                        spec = self._RUN_FILTER_FIELDS.get(f.get("field"))
+                        if not spec:
+                            continue
+                        extractor, kind = spec
+                        runs = [r for r in runs if _fmod.matches(extractor(r), kind, f)]
+
+                runs = sorted(
+                    runs,
+                    key=lambda r: getattr(r, "created_at", 0) or 0,
+                    reverse=(order != "asc"),
+                )
+                total = len(runs) if include_total else None
+
+                # Cursor pagination.
+                def _index_of(run_id: str) -> Optional[int]:
+                    for i, r in enumerate(runs):
+                        if getattr(r, "id", None) == run_id:
+                            return i
+                    return None
+
+                if after:
+                    idx = _index_of(after)
+                    if idx is not None:
+                        runs = runs[idx + 1:]
+                if before:
+                    idx = _index_of(before)
+                    if idx is not None:
+                        runs = runs[:idx]
+
+                has_more = len(runs) > limit
+                page = runs[:limit]
+
+                response = ListResponse(
+                    data=page,
+                    first_id=getattr(page[0], "id", None) if page else None,
+                    last_id=getattr(page[-1], "id", None) if page else None,
+                    has_more=has_more,
+                    total=total,
+                )
+                span.set_status(Status(StatusCode.OK))
+                return response
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR))
+                logger.exception("list_all_runs() failed")
+                return ListResponse(data=[])
 
     async def list_runs(self, thread_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse:
         attrs = {
@@ -1113,24 +1450,31 @@ class InMemoryDataStore(BaseDataStore):
                     error = {"message": error, "code": "server_error"}
                 elif error is not None:
                     error = {"message": str(error), "code": "server_error"}
+                run.status = status
+                run.last_error = RunObject.model_validate({**run.model_dump(), "last_error": error}).last_error
 
+                # ── Lifecycle timestamps ───────────────────────────────
                 now = datetime.now(timezone.utc)
-                payload = run.model_dump()
-                payload["status"] = status
-                payload["last_error"] = error
-                if usage is not None:
-                    payload["usage"] = usage
                 if status == run_status.IN_PROGRESS and run.started_at is None:
-                    payload["started_at"] = now
+                    run.started_at = now
                 elif status == run_status.COMPLETED:
-                    payload["completed_at"] = now
+                    run.completed_at = now
                 elif status == run_status.FAILED:
-                    payload["failed_at"] = now
+                    run.failed_at = now
                 elif status == run_status.CANCELLED:
-                    payload["cancelled_at"] = now
+                    run.cancelled_at = now
                 elif status == run_status.EXPIRED:
-                    payload["expires_at"] = now
-                run = RunObject.model_validate(payload)
+                    run.expires_at = now
+
+                # ── Usage ─────────────────────────────────────────────
+                if usage:
+                    from ..types.run import UsageStatistics
+                    run.usage = UsageStatistics(
+                        prompt_tokens=usage.get("prompt_tokens") or 0,
+                        completion_tokens=usage.get("completion_tokens") or 0,
+                        total_tokens=usage.get("total_tokens") or 0,
+                    )
+
                 self._runs[thread_id] = [r if r.id != run_id else run for r in self._runs[thread_id]]
                 span.set_status(Status(StatusCode.OK))
                 span.set_attribute("output.value", _json_dump({"run_id": run.id, "status": run.status}))
@@ -1182,12 +1526,15 @@ class InMemoryDataStore(BaseDataStore):
 
                             step.status = status
 
-                            if output and hasattr(step.step_details, "tool_calls"):
-                                tool_calls = step.step_details.tool_calls or []
-                                if tool_calls:
-                                    call_obj = tool_calls[0].root if hasattr(tool_calls[0], "root") else tool_calls[0]
-                                    if hasattr(call_obj, "function"):
-                                        call_obj.function.output = output
+                            if output is not None:
+                                if hasattr(step.step_details, "tool_calls"):
+                                    tool_calls = step.step_details.tool_calls or []
+                                    if tool_calls:
+                                        call_obj = tool_calls[0].root if hasattr(tool_calls[0], "root") else tool_calls[0]
+                                        if hasattr(call_obj, "function"):
+                                            call_obj.function.output = output
+                                elif getattr(step.step_details, "type", None) == "step":
+                                    step.step_details.output = output
 
                             payload = step.model_dump()
                             payload["status"] = status
@@ -1215,17 +1562,6 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
 
-    async def list_threads(self, limit: int = 50, order: str = "desc") -> ListResponse | None:
-        threads = list(self._threads.values())
-        threads.sort(key=lambda t: (t.created_at, t.id), reverse=(order == "desc"))
-        limited = threads[:limit]
-        return ListResponse(
-            data=limited,
-            first_id=limited[0].id if limited else None,
-            last_id=limited[-1].id if limited else None,
-            has_more=len(threads) > limit,
-        )
-
     async def list_runs_all(self, limit: int = 200, order: str = "desc") -> ListResponse | None:
         runs = [run for thread_runs in self._runs.values() for run in thread_runs]
         runs.sort(key=lambda r: (r.created_at, r.id), reverse=(order == "desc"))
@@ -1237,15 +1573,6 @@ class InMemoryDataStore(BaseDataStore):
             has_more=len(runs) > limit,
         )
 
-    async def count_threads(self) -> int:
-        return len(self._threads)
-
-    async def count_runs(self) -> int:
-        return sum(len(runs) for runs in self._runs.values())
-
-    async def count_messages(self) -> int:
-        return sum(len(messages) for messages in self._messages.values())
-    
     async def purge_expired(self, policy: RetentionPolicy) -> PurgeStats:
         with span_context(
             store_tracer,

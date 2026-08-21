@@ -8,6 +8,7 @@ from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRe
 from ..types.enum.message_status import COMPLETED as MESSAGE_COMPLETED
 from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, RunStepObject
+from ..types.webhook import WebhookCommand, WebhookCommandResult
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 
 if TYPE_CHECKING:
@@ -72,6 +73,28 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def list_threads(
+        self,
+        limit: int = 50,
+        order: str = "desc",
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        filters: Optional[List[dict]] = None,
+        include_total: bool = True,
+    ) -> ListResponse | None:
+        """List threads with pagination, ordering, and optional filters.
+
+        ``filters`` is a list of ``{"field", "operator", "value", "value2"?}``
+        dicts.  Implementations should silently ignore filters referencing
+        unsupported fields.
+
+        Set ``include_total=False`` to skip the matching ``COUNT(*)`` query —
+        useful for views that only need a page of rows and treat the total as
+        a nice-to-have.
+        """
+        pass
+
+    @abstractmethod
     async def get_run_by_id(self, thread_id: str, run_id: str) -> RunObject | None:
         """Retrieve a run by its ID."""
         pass
@@ -86,10 +109,85 @@ class BaseDataStore(ABC):
         """Insert a new run associated with a thread."""
         pass
 
+    async def execute_webhook_command(self, command: WebhookCommand) -> WebhookCommandResult:
+        """Atomically execute an inbound webhook command.
+
+        Stores that support webhook idempotency should override this method
+        with a single transaction or critical section covering idempotency
+        claim, thread/message/run creation, and response persistence.
+        """
+        raise NotImplementedError("execute_webhook_command is not implemented by this data store.")
+
     @abstractmethod
     async def list_runs(self, thread_id: str, limit: int, order: str, after: Optional[str], before: Optional[str]) -> ListResponse | None:
         """List runs for a specific thread with pagination and ordering."""
         pass
+
+    @abstractmethod
+    async def list_all_runs(
+        self,
+        limit: int = 50,
+        order: str = "desc",
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        filters: Optional[List[dict]] = None,
+        include_total: bool = True,
+    ) -> ListResponse | None:
+        """List runs across all threads with pagination, ordering, and optional filters.
+
+        Set ``include_total=False`` to skip the matching ``COUNT(*)`` query.
+        """
+        pass
+
+    @abstractmethod
+    async def get_run_any_thread(self, run_id: str) -> RunObject | None:
+        """Fetch a single run by id without knowing its ``thread_id``.
+
+        Used by graph-walking flows (e.g. the Compass agent flow view) that
+        need to traverse parent_run_id pointers without scanning all runs.
+        """
+        pass
+
+    @abstractmethod
+    async def list_runs_by_parent_ids(self, parent_ids: List[str]) -> List[RunObject]:
+        """Return every run whose ``metadata.parent_run_id`` is in
+        ``parent_ids``.  One bulk query — used to BFS down a run tree."""
+        pass
+
+    @abstractmethod
+    async def count_threads(self) -> int:
+        """Total number of threads in the store."""
+        pass
+
+    @abstractmethod
+    async def count_runs(self) -> int:
+        """Total number of runs in the store."""
+        pass
+
+    @abstractmethod
+    async def count_messages(self) -> int:
+        """Total number of messages in the store."""
+        pass
+
+    async def get_first_run_assistant_ids(self, thread_ids: List[str]) -> dict[str, str]:
+        """Return a ``{thread_id: assistant_id}`` mapping for the first
+        (earliest) run in each given thread.  Threads with no runs are
+        omitted from the result.
+
+        The default implementation loops over ``list_runs`` per thread.
+        Concrete stores should override with a single bulk query.
+        """
+        out: dict[str, str] = {}
+        for tid in thread_ids:
+            try:
+                result = await self.list_runs(tid, limit=1, order="asc", after=None, before=None)
+            except Exception:
+                continue
+            if result and result.data:
+                aid = getattr(result.data[0], "assistant_id", None)
+                if aid:
+                    out[tid] = aid
+        return out
 
     @abstractmethod
     async def update_run(self, thread_id: str, run_id: str, modifications: ModifyRunRequest) -> RunObject | None:
@@ -129,31 +227,6 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def update_run_step_status(self, run_step_id: str, status: str, output=None, error: str | None = None) -> RunStepObject | None:
         """Update status/output/error of a run step."""
-        pass
-
-    @abstractmethod
-    async def list_threads(self, limit: int = 50, order: str = "desc") -> ListResponse | None:
-        """List threads across the store for operational views."""
-        pass
-
-    @abstractmethod
-    async def list_runs_all(self, limit: int = 200, order: str = "desc") -> ListResponse | None:
-        """List runs across all threads for operational views."""
-        pass
-
-    @abstractmethod
-    async def count_threads(self) -> int:
-        """Return total thread count."""
-        pass
-
-    @abstractmethod
-    async def count_runs(self) -> int:
-        """Return total run count across all threads."""
-        pass
-
-    @abstractmethod
-    async def count_messages(self) -> int:
-        """Return total message count across all threads."""
         pass
 
     @abstractmethod

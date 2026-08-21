@@ -1,0 +1,30 @@
+version: "0.1"
+
+project:
+  name: langgraph-branching-demo
+
+definitions:
+  - name: langgraph-agent
+    entrypoint: agents.py:create_agent
+
+agents:
+  - name: langgraph-agent
+    definition: langgraph-agent
+
+adapters:
+  - a2a:
+  - compass:
+
+data_store:
+  in_memory:
+
+tracing:
+  in_memory:
+
+globals:
+  env:
+    LLAMPHOUSE_TRACING_ENABLED: "true"
+    OTEL_SERVICE_NAME: langgraph-demo
+    OTEL_SERVICE_VERSION: 1.0.0
+    OTEL_DEPLOYMENT_ENVIRONMENT: development
+    OTEL_RESOURCE_ATTRIBUTES: llamphouse.example=15_LangGraph,team=platform

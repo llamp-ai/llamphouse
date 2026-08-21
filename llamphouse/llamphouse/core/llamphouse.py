@@ -22,6 +22,8 @@ from .config_store.base import BaseConfigStore
 from .config_store.in_memory_store import InMemoryConfigStore
 from .tracing import setup_tracing, shutdown_tracing, set_span_excludes
 from . import telemetry as _telemetry
+from .tracing.stores import BaseTracingStore, get_tracing_store_from_env
+from .triggers.webhook_trigger import WebhookTrigger
 
 import os
 import sys
@@ -185,6 +187,7 @@ class LLAMPHouse:
                  config_store: Optional[BaseConfigStore] = None,
                  retention_policy: Optional[RetentionPolicy] = None,
                  exclude_spans: Optional[list[str]] = None,
+                 tracing_store: Optional[BaseTracingStore] = None,
                  compass: bool = True,
                  ):
         # Accept either 'agents' (new) or 'assistants' (legacy) parameter
@@ -213,7 +216,13 @@ class LLAMPHouse:
         self.exclude_spans = exclude_spans or []
         self._skip_worker = False   # Set by CLI --no-workers
 
-        setup_tracing()
+        # ── Tracing store ─────────────────────────────────────────────────
+        # Resolve before setup_tracing() so the store's exporter is wired
+        # in as the primary internal pipeline.
+        resolved_tracing_store = tracing_store or get_tracing_store_from_env()
+        self.fastapi.state.tracing_store = resolved_tracing_store
+
+        setup_tracing(tracing_store=resolved_tracing_store)
         set_span_excludes(self.exclude_spans)
 
         if self.fastapi.state.data_store:
@@ -272,6 +281,16 @@ class LLAMPHouse:
             except Exception:
                 llamphouse_logger.exception(f"on_startup failed for agent '{agent.id}'")
 
+        # Start triggers declared on each agent
+        for agent in self.agents:
+            for trigger in getattr(agent, "triggers", []):
+                try:
+                    await trigger.start(agent.id, self.fastapi.state)
+                except Exception:
+                    llamphouse_logger.exception(
+                        f"trigger.start failed for agent '{agent.id}': {trigger!r}"
+                    )
+
         if self.retention_policy and self.retention_policy.enabled:
             async def _retention_loop():
                 await asyncio.sleep(self.retention_policy.sleep_seconds())
@@ -316,6 +335,16 @@ class LLAMPHouse:
                 except Exception:
                     llamphouse_logger.exception(f"on_shutdown failed for agent '{agent.id}'")
 
+            # Stop triggers
+            for agent in self.agents:
+                for trigger in getattr(agent, "triggers", []):
+                    try:
+                        await trigger.stop()
+                    except Exception:
+                        llamphouse_logger.exception(
+                            f"trigger.stop failed for agent '{agent.id}': {trigger!r}"
+                        )
+
             # Close data store and run queue
             try:
                 await self.fastapi.state.data_store.close()
@@ -346,9 +375,68 @@ ______[===]______{_R}"""
         llamphouse_logger.info(ascii_art)
         llamphouse_logger.info(f"{_B}{_GR}We have light!{_R}")
         llamphouse_logger.info(f"Server: {_B}http://{host}:{port}{_R}")
+
+        # ── Adapters ───────────────────────────────────────────────────────
+        llamphouse_logger.info(f"  {_DIM}Adapters{_R}")
         for adapter in self.adapters:
             prefix = adapter.prefix or "/"
-            llamphouse_logger.info(f"  {_DIM}▸{_R} {type(adapter).__name__:<28} {_CY}{prefix}{_R}")
+            llamphouse_logger.info(f"    {_DIM}▸{_R} {type(adapter).__name__:<28} {_CY}{prefix}{_R}")
+
+        # ── Agents ─────────────────────────────────────────────────────────
+        llamphouse_logger.info(f"  {_DIM}Agents ({len(self.agents)}){_R}")
+        for agent in self.agents:
+            llamphouse_logger.info(f"    {_DIM}▸{_R} {agent.id}")
+
+        # ── Triggers ───────────────────────────────────────────────────────
+        _trigger_lines: list[str] = []
+        for agent in self.agents:
+            for trigger in getattr(agent, "triggers", []):
+                if isinstance(trigger, WebhookTrigger):
+                    path = "/" + trigger.path
+                    label = type(trigger).__name__
+                    _trigger_lines.append(
+                        f"    {_DIM}▸{_R} {label:<28} {_CY}{path}{_R} "
+                        f"{_DIM}→ {agent.id}{_R}"
+                    )
+        if _trigger_lines:
+            llamphouse_logger.info(f"  {_DIM}Triggers{_R}")
+            for line in _trigger_lines:
+                llamphouse_logger.info(line)
+
+        # ── Infrastructure ─────────────────────────────────────────────────
+        llamphouse_logger.info(f"  {_DIM}Infrastructure{_R}")
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Data store':<28} {type(self.fastapi.state.data_store).__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Run queue':<28} {type(self.fastapi.state.run_queue).__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Event queue':<28} {self.fastapi.state.queue_class.__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Config store':<28} {type(self.fastapi.state.config_store).__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Tracing store':<28} {type(self.fastapi.state.tracing_store).__name__}"
+        )
+        llamphouse_logger.info(
+            f"    {_DIM}▸{_R} {'Worker':<28} {type(self.worker).__name__}"
+        )
+
+        # ── Optional features ──────────────────────────────────────────────
+        if self.authenticator:
+            llamphouse_logger.info(
+                f"    {_DIM}▸{_R} {'Auth':<28} {type(self.authenticator).__name__}"
+            )
+        if self.retention_policy and self.retention_policy.enabled:
+            llamphouse_logger.info(
+                f"    {_DIM}▸{_R} {'Retention':<28} ttl={self.retention_policy.ttl_days}d"
+            )
+        if self.exclude_spans:
+            llamphouse_logger.info(
+                f"    {_DIM}▸{_R} {'Excluded spans':<28} {', '.join(self.exclude_spans)}"
+            )
 
     def ignite(self, host="0.0.0.0", port=80, reload=False, ws="auto", timeout_graceful_shutdown=10):
         self.__print_ignite(host, port)
@@ -367,3 +455,56 @@ ______[===]______{_R}"""
         for adapter in self.adapters:
             for router in adapter.get_routers():
                 self.fastapi.include_router(router, prefix=adapter.prefix)
+
+        # Register WebhookTrigger routes declared on agents (no prefix — the
+        # trigger's own path is the canonical URL, e.g. /triggers/my-agent).
+        for agent in self.agents:
+            for trigger in getattr(agent, "triggers", []):
+                if isinstance(trigger, WebhookTrigger):
+                    self.fastapi.include_router(trigger.get_router(agent.id))
+
+        self._warn_on_route_conflicts()
+
+    def _warn_on_route_conflicts(self):
+        """Warn when webhook trigger paths collide with each other or fall
+        under a non-root adapter prefix.  Triggers are registered without a
+        prefix, so a path like ``/v1/foo`` would shadow / be shadowed by an
+        adapter mounted at ``/v1``.  Adapters at root (``/`` or empty) are
+        skipped because they own specific paths, not a sub-tree — any
+        actual collision there would only be visible by inspecting the
+        adapter's individual routes, which this check does not do."""
+        adapter_prefixes = []
+        for a in self.adapters:
+            prefix = (a.prefix or "").rstrip("/")
+            if prefix:  # skip root / empty prefixes
+                adapter_prefixes.append((type(a).__name__, prefix))
+
+        seen: dict[str, str] = {}  # path -> owner description
+
+        for agent in self.agents:
+            for trigger in getattr(agent, "triggers", []):
+                if not isinstance(trigger, WebhookTrigger):
+                    continue
+                path = "/" + trigger.path
+                owner = f"{type(trigger).__name__} on agent '{agent.id}'"
+
+                # Duplicate trigger paths across agents.
+                if path in seen:
+                    llamphouse_logger.warning(
+                        f"Route conflict: {owner} declares '{path}', but "
+                        f"{seen[path]} already declared the same path. "
+                        f"The second registration will be ignored by FastAPI."
+                    )
+                else:
+                    seen[path] = owner
+
+                # Trigger path lives under (or equals) an adapter prefix.
+                for adapter_name, prefix in adapter_prefixes:
+                    if path == prefix or path.startswith(prefix + "/"):
+                        llamphouse_logger.warning(
+                            f"Route conflict: {owner} at '{path}' falls under "
+                            f"{adapter_name}'s prefix '{prefix}'. The trigger "
+                            f"may shadow or be shadowed by adapter routes — "
+                            f"consider giving the trigger its own top-level "
+                            f"path (e.g. '/triggers/...')."
+                        )

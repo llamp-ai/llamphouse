@@ -1,0 +1,224 @@
+"""
+Pydantic models for ``llamphouse.yaml``.
+
+A llamphouse.yaml file has this top-level structure:
+
+    version: "0.1"
+
+    project:
+      name: my-platform
+
+    definitions:     # agent *types* — reusable definitions
+      - name: research-agent
+        entrypoint: agent.py:ResearchAgent   # Agent subclass
+        runtime: ...
+        interface: ...
+
+    agents:          # running instances of a definition
+      - name: research-fast
+        definition: research-agent
+        config:      # passed to the agent as agent.settings
+          model: gpt-4o-mini
+        env:         # injected into os.environ for this deployment
+          MODEL: gpt-4o-mini
+        secrets:     # ENVVAR_NAME: secret-store-ref
+          OPENAI_API_KEY: openai-key
+        execution:   # concurrency / timeout / retries
+          timeout: 30
+          retries: 2
+          concurrency: 5
+        triggers:
+          - webhook:
+              path: /triggers/research-fast
+              secret_env: WEBHOOK_SECRET
+
+    adapters:        # API adapters to mount (uses adapter class constructors directly)
+      - assistant_api:
+      - compass:
+          prefix: /dashboard
+
+    workers:         # worker to run (first entry wins; kwargs map to class __init__)
+      - asyncworker:
+          time_out: 90
+
+    data_store:      # data store (single entry; omit for in-memory)
+      in_memory:     # or: postgres (with constructor kwargs)
+
+    tracing:         # tracing store (single entry; omit for env-var auto-detection)
+      in_memory:     # or: postgres / clickhouse (with their respective kwargs)
+
+    globals:
+      env: {LOG_LEVEL: info}
+      secrets: {OPENAI_API_KEY: openai-key}
+
+    secrets_store:
+      openai-key:
+        provider: azure_keyvault
+        name: my-openai-key
+
+Each adapter/worker entry is a single-key mapping: ``{name: {kwargs}}``.
+The kwargs are validated against the real class constructor — no separate
+config models are needed.
+
+Adapters available by default: ``assistant_api``, ``a2a``, ``compass``.
+Workers available: ``asyncworker``.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+
+class StrictConfigModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+# ── Low-level building blocks ────────────────────────────────────────────────
+
+
+class ProjectConfig(StrictConfigModel):
+    name: str
+
+
+class SchemaProperty(StrictConfigModel):
+    type: str
+    description: Optional[str] = None
+
+
+class SchemaDefinition(StrictConfigModel):
+    type: str = "object"
+    properties: Optional[Dict[str, SchemaProperty]] = None
+    required: Optional[List[str]] = None
+
+
+class InterfaceConfig(StrictConfigModel):
+    input_schema: Optional[SchemaDefinition] = None
+    output_schema: Optional[SchemaDefinition] = None
+
+
+class RuntimeConfig(StrictConfigModel):
+    python: Optional[str] = None
+    requirements: Optional[List[str]] = None
+
+
+# ── Agent type definition ────────────────────────────────────────────────────
+
+
+class AgentDefinition(StrictConfigModel):
+    """Defines a reusable agent *type*.
+
+    ``entrypoint`` uses the same ``file:name`` convention as uvicorn:
+    - ``agent.py:ResearchAgent``  – an ``Agent`` subclass
+    - ``agent.py:run``            – an ``async def run(context)`` function
+                                    (auto-wrapped in an Agent class)
+    - ``agent.py:create_agent``   – a factory ``(deployment_cfg) -> Agent``
+    """
+
+    name: str
+    entrypoint: str
+    interface: Optional[InterfaceConfig] = None
+    runtime: Optional[RuntimeConfig] = None
+
+
+# ── Deployment (instance) ────────────────────────────────────────────────────
+
+
+class ResourceConfig(StrictConfigModel):
+    name: str
+    type: str
+    provider: str
+    config: Optional[Dict[str, Any]] = None
+
+
+class DeploymentContextConfig(StrictConfigModel):
+    identity: Optional[str] = None
+    resources: Optional[List[ResourceConfig]] = None
+
+
+class ExecutionConfig(StrictConfigModel):
+    timeout: Optional[float] = None
+    retries: Optional[int] = None
+    concurrency: Optional[int] = None
+
+
+class DeploymentConfig(StrictConfigModel):
+    """A concrete deployment — one running instance of an agent type."""
+
+    name: str
+    definition: str  # must match an AgentDefinition.name
+
+    # Passed to the agent instance as ``agent.settings``
+    config: Optional[Dict[str, Any]] = None
+
+    # Merged into os.environ before the agent module is loaded
+    env: Optional[Dict[str, str]] = None
+
+    # Maps env-var names → keys in ``secrets_store``
+    secrets: Optional[Dict[str, str]] = None
+
+    context: Optional[DeploymentContextConfig] = None
+    execution: Optional[ExecutionConfig] = None
+
+    # Each entry is a single-key mapping ``{trigger_name: {kwargs}}``.
+    triggers: Optional[List[Dict[str, Any]]] = None
+
+
+# ── Globals & secret stores ──────────────────────────────────────────────────
+
+
+class GlobalsConfig(StrictConfigModel):
+    # Applied to os.environ before any deployment env vars
+    env: Optional[Dict[str, str]] = None
+    # Maps env-var names → keys in ``secrets_store``
+    secrets: Optional[Dict[str, str]] = None
+
+
+class SecretProviderConfig(StrictConfigModel):
+    provider: str   # e.g. "azure_keyvault", "env"
+    name: str       # the name/key within the provider
+
+
+# ── Top-level config ─────────────────────────────────────────────────────────
+
+
+class LLAMPHouseConfig(StrictConfigModel):
+    version: str
+    project: Optional[ProjectConfig] = None
+
+    definitions: List[AgentDefinition] = []
+    agents: List[DeploymentConfig] = []
+
+    # Each entry is a single-key mapping ``{adapter_name: {kwargs}}``.
+    # ``None`` means "use LLAMPHouse defaults" (AssistantAPIAdapter + Compass).
+    # An explicit list (even empty) replaces the defaults entirely.
+    adapters: Optional[List[Dict[str, Any]]] = None
+
+    # First entry wins; subsequent entries are ignored with a warning.
+    # ``None`` means use the default AsyncWorker.
+    workers: Optional[List[Dict[str, Any]]] = None
+
+    # Single-key mapping ``{store_name: {kwargs}}``, e.g. ``{in_memory: {}}``,
+    # ``{postgres: {database_url: ...}}``, or ``{clickhouse: {clickhouse_url: ...}}``.
+    # ``None`` → auto-detected from TRACING_STORE / CLICKHOUSE_URL env vars.
+    tracing: Optional[Dict[str, Any]] = None
+
+    # Single-key mapping ``{store_name: {kwargs}}``, e.g. ``{in_memory: {}}``
+    # or ``{postgres: {database_url: ...}}``.
+    # ``None`` means use LLAMPHouse's default in-memory data store.
+    data_store: Optional[Dict[str, Any]] = None
+
+    globals: Optional[GlobalsConfig] = None
+    secrets_store: Optional[Dict[str, SecretProviderConfig]] = None
+
+    @model_validator(mode="after")
+    def _check_deployment_agent_refs(self) -> "LLAMPHouseConfig":
+        definition_names = {d.name for d in self.definitions}
+        for agent in self.agents:
+            if agent.definition not in definition_names:
+                raise ValueError(
+                    f"Agent '{agent.name}' references unknown definition '{agent.definition}'. "
+                    f"Defined definitions: {sorted(definition_names)}"
+                )
+        return self

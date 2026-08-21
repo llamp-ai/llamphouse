@@ -10,10 +10,12 @@ import os
 from uuid import uuid4
 
 import httpx
-from a2a.client import A2ACardResolver, A2AClient
+from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.types import (
-    MessageSendParams,
-    SendStreamingMessageRequest,
+    Message,
+    Part,
+    TextPart,
+    Role,
     TaskArtifactUpdateEvent,
     TaskStatusUpdateEvent,
 )
@@ -67,7 +69,10 @@ async def main():
             print(f"  Streaming:   {card.capabilities.streaming}")
             print()
 
-            client = A2AClient(httpx_client=httpx_client, agent_card=card)
+            factory = ClientFactory(
+                ClientConfig(httpx_client=httpx_client, streaming=True)
+            )
+            client = factory.create(card)
 
             # ── 2. Stream a question ─────────────────────────────────────
             question = (
@@ -81,38 +86,42 @@ async def main():
 
             chunks: list[str] = []
 
-            async for chunk in client.send_message_streaming(
-                SendStreamingMessageRequest(
-                    id=str(uuid4()),
-                    params=MessageSendParams(
-                        message={
-                            "role": "user",
-                            "parts": [{"kind": "text", "text": question}],
-                            "messageId": uuid4().hex,
-                        }
-                    ),
-                )
-            ):
-                result = chunk.root.result
-                if isinstance(result, TaskArtifactUpdateEvent):
-                    for part in result.artifact.parts:
-                        if hasattr(part.root, "text") and part.root.text:
-                            chunks.append(part.root.text)
-                            print(part.root.text, end="", flush=True)
-                elif isinstance(result, TaskStatusUpdateEvent):
-                    if (
-                        result.final
-                        and result.status.state.value != "completed"
-                    ):
+            message = Message(
+                messageId=uuid4().hex,
+                role=Role.user,
+                parts=[Part(root=TextPart(text=question))],
+            )
+
+            async for event in client.send_message(message):
+                # With current A2A SDK, streaming send_message yields
+                # (task, streaming_event) tuples.
+                if not isinstance(event, tuple):
+                    continue
+
+                _, streaming_event = event
+                if isinstance(streaming_event, TaskArtifactUpdateEvent):
+                    for part in streaming_event.artifact.parts:
+                        root = getattr(part, "root", part)
+                        text = getattr(root, "text", "") or ""
+                        if text:
+                            chunks.append(text)
+                            print(text, end="", flush=True)
+                elif isinstance(streaming_event, TaskStatusUpdateEvent):
+                    state = getattr(
+                        streaming_event.status.state,
+                        "value",
+                        str(streaming_event.status.state),
+                    )
+                    if streaming_event.final and state != "completed":
                         msg = ""
-                        if result.status.message and result.status.message.parts:
-                            for p in result.status.message.parts:
-                                if hasattr(p.root, "text"):
-                                    msg += p.root.text
-                        print(
-                            f"\n  [status: {result.status.state.value}] {msg}",
-                            flush=True,
-                        )
+                        if (
+                            streaming_event.status.message
+                            and streaming_event.status.message.parts
+                        ):
+                            for p in streaming_event.status.message.parts:
+                                root = getattr(p, "root", p)
+                                msg += getattr(root, "text", "") or ""
+                        print(f"\n  [status: {state}] {msg}", flush=True)
 
             print("\n")
 

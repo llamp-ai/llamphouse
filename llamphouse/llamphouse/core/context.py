@@ -10,7 +10,7 @@ from .tracing import get_tracer, span_context
 
 _dispatch_tracer = get_tracer("llamphouse.dispatch")
 from .types.message import Attachment, CreateMessageRequest, MessageObject, ModifyMessageRequest
-from .types.run_step import ToolCallsStepDetails, CreateRunStepRequest
+from .types.run_step import ToolCallsStepDetails, CreateRunStepRequest, StepCallDetails, RunStepObject
 from .types.run import ToolOutput, RunObject, ModifyRunRequest, RunCreateRequest
 from .types.tool_call import FunctionToolCall, Function
 from .types.thread import CreateThreadRequest, ModifyThreadRequest
@@ -19,7 +19,9 @@ from .streaming.emitter import StreamingEmitter
 from .streaming.adapters.base_stream_adapter import BaseStreamAdapter
 from .streaming.adapters.openai_chat_completions import OpenAIChatCompletionAdapter
 from .streaming.event_queue.base_event_queue import BaseEventQueue
+from .streaming.llm_usage_metadata import apply_stream_metadata, apply_stream_usage
 from .data_stores.base_data_store import BaseDataStore
+from .triggers.base import TriggerInfo
 from .streaming.stream_events import (
     CanonicalStreamEvent,
     StreamError,
@@ -44,6 +46,26 @@ def _content_to_text(content) -> str:
 
 def _clip(val: str, max_len: int = 2000) -> str:
     return val[:max_len] if val else val
+
+def _jsonable(value: Any) -> Any:
+    """Best-effort conversion of arbitrary Python values to JSON-safe data.
+
+    Pydantic models are dumped via ``model_dump``; everything else is
+    round-tripped through ``json`` with ``default=str`` so non-serializable
+    objects are stringified rather than raising.
+    """
+    if value is None:
+        return None
+    try:
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        try:
+            return json.loads(json.dumps(value, default=str))
+        except Exception:
+            return str(value)
 
 def _tap_sync(evt: CanonicalStreamEvent, on_event: Optional[Callable[[CanonicalStreamEvent], Any]]) -> None:
     if not on_event:
@@ -104,6 +126,20 @@ class Context:
         # worker can deterministically await them via flush() before
         # emitting terminal events such as RUN_COMPLETED.
         self._pending_emits: set[asyncio.Task] = set()
+        # Accumulated token usage across all streaming calls in this run
+        self._run_usage: Dict[str, int] = {}
+        # Populated when this run was started by a trigger; None for human runs.
+        self.trigger: Optional[TriggerInfo] = self._resolve_trigger()
+
+    def _resolve_trigger(self) -> Optional[TriggerInfo]:
+        """Extract TriggerInfo from run metadata, if present."""
+        try:
+            raw = (self.run.metadata or {}).get("__trigger__")
+            if raw and isinstance(raw, dict):
+                return TriggerInfo.from_dict(raw)
+        except Exception:
+            pass
+        return None
 
     def get_config(self) -> Dict[str, Any]:
         """Return the config values snapshot for this run.
@@ -176,6 +212,76 @@ class Context:
             await self.data_store.update_run_status(self.thread_id, self.run_id, run_status.AWAITING_TOOLS)
 
         return run_step
+
+    async def start_step(
+        self,
+        name: str,
+        input: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> RunStepObject:
+        """Record the start of a workflow step (typically used by ``@step``).
+
+        Creates a ``RunStepObject`` of type ``"step"`` in ``in_progress`` state,
+        capturing the step ``name`` and a snapshot of its ``input``. Returns the
+        newly-created run step so callers can later complete it via
+        :meth:`complete_step`.
+        """
+        step_details = StepCallDetails(
+            type="step",
+            name=name,
+            input=_jsonable(input),
+            output=None,
+        )
+        return await self.data_store.insert_run_step(
+            thread_id=self.thread_id,
+            run_id=self.run_id,
+            step=CreateRunStepRequest(
+                assistant_id=self.assistant_id,
+                step_details=step_details,
+                metadata=metadata or {},
+            ),
+            status=run_step_status.IN_PROGRESS,
+            event_queue=self.__queue,
+        )
+
+    async def complete_step(
+        self,
+        step_id: str,
+        output: Any = None,
+        error: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Optional[RunStepObject]:
+        """Transition a previously-started workflow step to a terminal state.
+
+        :param step_id: The ``RunStepObject.id`` returned by :meth:`start_step`.
+        :param output: JSON-serializable result; persisted into
+            ``step_details.output`` when provided.
+        :param error: Human-readable error message; recorded in ``last_error``.
+        :param status: Explicit terminal status. When omitted, defaults to
+            ``failed`` if ``error`` is set, otherwise ``completed``. Pass
+            ``"cancelled"`` or ``"expired"`` for those lifecycle states.
+
+        Emits the matching ``run.step.{completed,failed,cancelled,expired}``
+        SSE event so streaming clients observe the transition.
+        """
+        if status is None:
+            status = run_step_status.FAILED if error else run_step_status.COMPLETED
+        step = await self.data_store.update_run_step_status(
+            run_step_id=step_id,
+            status=status,
+            output=None if output is None else _jsonable(output),
+            error=error,
+        )
+        if step is not None and self.__queue is not None:
+            evt_map = {
+                run_step_status.COMPLETED: event_type.RUN_STEP_COMPLETED,
+                run_step_status.FAILED: event_type.RUN_STEP_FAILED,
+                run_step_status.CANCELLED: event_type.RUN_STEP_CANCELLED,
+                run_step_status.EXPIRED: event_type.RUN_STEP_EXPIRED,
+            }
+            evt = evt_map.get(status, event_type.RUN_STEP_COMPLETED)
+            await self.__queue.add(step.to_event(evt))
+        return step
 
     async def submit_tool_outputs(self, outputs: List[ToolOutput]):
         """Submit tool outputs for the current run's pending tool call step.
@@ -436,7 +542,19 @@ class Context:
                 assistant_id=agent_id, thread_id=thread_id,
             )
             self._event_queues[task_key] = output_queue
-            await output_queue.subscribe()
+            try:
+                await output_queue.subscribe()
+            except Exception:
+                # subscribe() raised before call_agent entered its try/finally,
+                # so the cleanup in _cleanup_queue would never run. Drop the
+                # registered queue and close it here to avoid leaking the entry
+                # and its connection pool, then re-raise.
+                self._event_queues.pop(task_key, None)
+                try:
+                    await output_queue.close()
+                except Exception:
+                    pass
+                raise
 
         await self._run_queue.enqueue({
             "run_id": run.id,
@@ -830,17 +948,8 @@ class Context:
                     elif isinstance(evt, StreamFinished):
                         span.add_event("stream.finished", {"reason": evt.reason})
                         span.set_attribute("gen_ai.response.finish_reason", evt.reason)
-
-                        if evt.usage:
-                            prompt = evt.usage.get("prompt_tokens")
-                            completion = evt.usage.get("completion_tokens")
-                            total = evt.usage.get("total_tokens")
-                            if prompt is not None:
-                                span.set_attribute("gen_ai.usage.input_tokens", int(prompt))
-                            if completion is not None:
-                                span.set_attribute("gen_ai.usage.output_tokens", int(completion))
-                            if total is not None:
-                                span.set_attribute("gen_ai.usage.total_tokens", int(total))
+                        apply_stream_usage(span, self._run_usage, evt.usage)
+                        apply_stream_metadata(span, evt.metadata)
 
                 span.set_attribute("output.value", json.dumps({"text": _clip(emitter.content)}, ensure_ascii=True))
                 span.set_attribute("gen_ai.response.status", "completed")
@@ -928,19 +1037,8 @@ class Context:
                     elif isinstance(evt, StreamFinished):
                         span.add_event("stream.finished", {"reason": evt.reason})
                         span.set_attribute("gen_ai.response.finish_reason", evt.reason)
-
-                        if evt.usage:
-                            prompt = evt.usage.get("prompt_tokens")
-                            completion = evt.usage.get("completion_tokens")
-                            total = evt.usage.get("total_tokens")
-                            if prompt is not None:
-                                span.set_attribute("gen_ai.usage.input_tokens", int(prompt))
-                            if completion is not None:
-                                span.set_attribute("gen_ai.usage.output_tokens", int(completion))
-                            if total is not None:
-                                span.set_attribute("gen_ai.usage.total_tokens", int(total))
-
-                # ── Auto-persist tool call steps ──────────────────────────
+                        apply_stream_usage(span, self._run_usage, evt.usage)
+                        apply_stream_metadata(span, evt.metadata)
                 # The emitter already pushed RUN_STEP_CREATED/COMPLETED
                 # events into the queue during streaming, so we persist
                 # without event_queue to avoid duplicate SSE events.

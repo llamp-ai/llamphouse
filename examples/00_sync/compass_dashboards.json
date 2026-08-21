@@ -1,0 +1,26 @@
+[
+  {
+    "id": "5964b8dc-4dc9-4c94-8a9a-a797ed75cd15",
+    "title": "Data Ingestion",
+    "description": "",
+    "charts": [
+      {
+        "chart_id": "6fdd43ed-cc06-4c14-895c-cd8b26ecfafd",
+        "col_span": 3,
+        "height_px": 320
+      },
+      {
+        "chart_id": "2adc0127-b409-471b-8425-2a6419d1ee7d",
+        "col_span": 1,
+        "height_px": 320
+      },
+      {
+        "chart_id": "28bd8774-25cc-4973-a98b-28b33b5d4bb6",
+        "col_span": 4,
+        "height_px": 240
+      }
+    ],
+    "created_at": 1780283335.774,
+    "updated_at": 1780564208.128
+  }
+]

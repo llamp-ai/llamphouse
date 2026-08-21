@@ -1,4 +1,4 @@
-# Example 11 — Agent Handover
+# Example 06 — Agent Handover
 
 Demonstrates how one agent can **hand over** a user request to a specialised agent at runtime, with both agents running on the **same LLAMPHouse server** and communicating via the **A2A protocol** — with the specialist's response streamed in real-time back to the client.
 

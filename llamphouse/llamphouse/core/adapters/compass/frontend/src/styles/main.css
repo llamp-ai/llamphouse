@@ -239,6 +239,10 @@ tr.clickable {
   font-weight: 500;
   margin-bottom: 4px;
 }
+.empty-state__subtitle {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
 
 /* ── Loading ────────────────────────────────────── */
 .spinner {
@@ -248,6 +252,14 @@ tr.clickable {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
+}
+.spinner--tiny {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 4px;
 }
 @keyframes spin {
   to { transform: rotate(360deg); }

@@ -9,7 +9,7 @@ from llamphouse.core import LLAMPHouse, Agent
 from llamphouse.core.context import Context
 from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
 from llamphouse.core.streaming.adapters.registry import get_adapter
-from llamphouse.core.adapters.a2a import A2AAdapter
+from llamphouse.core.adapters import A2AAdapter, CompassAdapter
 
 # Instrument the OpenAI SDK so every API call emits a trace span
 # Note: this should be done after the TracerProvider is set up (which is guaranteed by llamphouse.core.tracing.setup_tracing() being called in __init__.py)
@@ -26,6 +26,7 @@ class CustomAgent(Agent):
             model="gpt-4o-mini",
             messages=messages,
             stream=True,
+            stream_options={"include_usage": True},
         )
 
         adapter = get_adapter("openai")
@@ -49,7 +50,7 @@ def main():
     llamphouse = LLAMPHouse(
         agents=[my_agent],
         data_store=InMemoryDataStore(),
-        adapters=[A2AAdapter()],
+        adapters=[A2AAdapter(), CompassAdapter(prefix="/compass")],
         exclude_spans=exclude_spans,
     )
 

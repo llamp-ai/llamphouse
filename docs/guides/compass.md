@@ -2,6 +2,15 @@
 
 **Compass** is LLAMPHouse's built-in developer dashboard. It provides a visual interface for inspecting threads, messages, runs, traces, and agent flows — all from your browser.
 
+Default navigation order:
+
+- Overview
+- Agents
+- Runs
+- Threads
+- Traces
+- Dashboards
+
 ## Accessing Compass
 
 Compass is automatically enabled. Once your server is running, open:
@@ -28,17 +37,28 @@ Drill into run steps to see:
 
 - Message creation steps
 - Tool call steps with inputs and outputs
+- `@step`-decorated function invocations (input / output / status)
 - Step timing and status
 
 ### Traces
 
-When [tracing](tracing.md) is enabled with ClickHouse, the Traces tab shows:
+When [tracing](tracing.md) is enabled with a configured tracing store, the Traces tab shows:
 
 - **Span tree** — hierarchical view of all spans in a trace
 - **Agent badges** — colored indicators showing which agent produced each span
 - **Timing** — duration bars and timestamps
 - **Attributes** — full span attributes for debugging
 - **Filtering** — filter traces by status, agent, or time range
+- **Linked navigation** — contextual "Open Run" / "Open Thread" actions in Trace Detail when IDs are present on spans
+
+#### Trace inspector enhancements
+
+The trace inspector supports:
+
+- Chip-style summary metadata (status, duration, tokens, model, service/env/version)
+- Parsed GenAI message rendering from span attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`)
+- Plain / Markdown / JSON content toggles for payload-heavy sections
+- Status fallback from `gen_ai.task.status` when OTel `StatusCode` is unset
 
 ### Flow Visualization
 
@@ -48,6 +68,16 @@ For multi-agent runs, the Flow view shows a **swim-lane diagram** of how agents 
 - Dispatches (`call_agent`, `handover_to_agent`) are shown as arrows between lanes
 - Sequence badges indicate the order of operations
 - Thread groups show which messages belong to which thread
+
+#### Workflow inspector
+
+Each run node in the Flow view has an expand toggle (`▸`) in its top-right
+corner. Expanding a node reveals the run's **steps** inline — including
+`message_creation`, `tool_calls`, and any `@step`-decorated function calls —
+so you can see the agent orchestration and the per-run workflow on the same
+canvas. The current run is auto-expanded; other runs lazy-load their steps
+on first expand. Steps are color-coded by type (S = `@step`, T = tool call,
+M = message) with a status dot indicating success / failure / in-progress.
 
 ### Agent Config
 
@@ -63,6 +93,13 @@ app = LLAMPHouse(
     compass=False,
 )
 ```
+
+## Footer metadata
+
+Compass fetches runtime/package info from `GET /api/info` and displays:
+
+- current LLAMPHouse package version
+- website link (`https://llamp.ai`)
 
 ## Next steps
 

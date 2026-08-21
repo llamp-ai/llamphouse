@@ -93,13 +93,11 @@ pip install llamphouse
 
 ### 2. Create your agent
 
-Create a file called `server.py`:
+Create a file called `agents.py`:
 
 ```python
-from llamphouse.core import LLAMPHouse, Agent
+from llamphouse.core import Agent
 from llamphouse.core.context import Context
-from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse.core.adapters.a2a import A2AAdapter
 
 
 class HelloAgent(Agent):
@@ -107,35 +105,35 @@ class HelloAgent(Agent):
         await context.insert_message(
             "Hello! I'm a simple agent running on LLAMPHouse."
         )
-
-
-agent = HelloAgent(
-    id="hello-agent",
-    name="Hello Agent",
-    description="A friendly assistant that answers questions.",
-    version="0.1.0",
-)
-
-app = LLAMPHouse(
-    agents=[agent],
-    data_store=InMemoryDataStore(),
-    adapters=[A2AAdapter()],
-)
-
-app.ignite(host="127.0.0.1", port=8000)
 ```
 
-### 3. Run it
+### 3. Add a config file
+
+Create `llamphouse.yaml` in the same directory:
+
+```yaml
+version: "0.1"
+
+definitions:
+  - name: hello-agent
+    entrypoint: agents.py:HelloAgent
+
+agents:
+  - name: hello-agent
+    definition: hello-agent
+```
+
+### 4. Run it
 
 ```bash
-python server.py
+llamphouse up
 ```
 
 Your agent is now live at `http://127.0.0.1:8000` with:
 - **A2A protocol** at `/.well-known/agent.json`
 - **Compass dashboard** at `http://127.0.0.1:8000/compass`
 
-### 4. Talk to it
+### 5. Talk to it
 
 Use any A2A client, the OpenAI Python SDK, or just curl:
 
@@ -247,14 +245,15 @@ The `Context` object is passed to every `run()` call and provides the full toolk
 
 ### Adapters
 
-Adapters control how clients communicate with your agents:
+Adapters control how clients communicate with your agents. Multiple adapters can be mounted simultaneously — the same agents are reachable via every enabled protocol.
 
-| Adapter | Protocol | Use case |
+| Adapter | Default prefix | Protocol / purpose |
 |---|---|---|
-| `A2AAdapter` | A2A (Agent-to-Agent) | Interoperable agent communication |
-| `AssistantAPIAdapter` | OpenAI Assistants API | OpenAI SDK compatibility |
+| `AssistantAPIAdapter` | _(root)_ | OpenAI Assistants API — use the `openai` Python SDK as a client |
+| `A2AAdapter` | _(root)_ | A2A JSON-RPC — interoperable agent-to-agent communication |
+| `CompassAdapter` | `/compass` | Full observability UI with traces, config, charts & dashboards |
 
-Both can be used simultaneously. If no adapters are specified, `AssistantAPIAdapter` is used by default.
+If no adapters are specified, `AssistantAPIAdapter` is used by default.
 
 ### Multi-Agent
 
@@ -299,7 +298,7 @@ LLAMPHouse(
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string passed to `PostgresDataStore` | _(none)_ |
+| `DATABASE_URL` | Postgres connection string used by `data_store.postgres`, tracing Postgres, and direct `PostgresDataStore` setup | _(none)_ |
 | `REDIS_URL` | Redis URL for queues | _(in-memory if unset)_ |
 | `LLAMPHOUSE_TRACING_ENABLED` | Enable OpenTelemetry tracing | `true` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | _(none)_ |
@@ -363,10 +362,13 @@ The [examples/](examples/) directory contains runnable samples for every feature
 | [08_ConfigStore](examples/08_ConfigStore/) | Runtime-tunable agent config |
 | [09_CustomAuth](examples/09_CustomAuth/) | Custom authentication |
 | [10_DistributedWorker](examples/10_DistributedWorker/) | Redis-backed distributed workers |
-| [11_WebhookSignal](examples/11_WebhookSignal/) | Webhook signal integration |
+| [11_WebhookTrigger](examples/11_WebhookTrigger/) | Webhook trigger integration |
 | [12_PlannerAgent](examples/12_PlannerAgent/) | Planner/executor agent pattern |
+| [13_LLAMPHouseYAML](examples/13_LLAMPHouseYAML/) | YAML-first runtime setup (`llamphouse up`) |
+| [14_WorkflowSteps](examples/14_WorkflowSteps/) | `@step` workflow example (YAML-first runtime) |
+| [15_LangGraph](examples/15_LangGraph/) | LangGraph branching wrapper (YAML-first runtime) |
 
-Each example includes a `server.py`, `client.py`, and `README.md` with instructions.
+Most examples include `server.py`, `client.py`, and `README.md`. Examples 13, 14, and 15 are YAML-first and start with `llamphouse up`.
 
 ---
 

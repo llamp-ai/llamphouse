@@ -175,6 +175,7 @@ class AsyncWorker(BaseWorker):
                         await asyncio.wait_for(assistant.run(context), timeout=self.time_out)
                     else:
                         await asyncio.wait_for(asyncio.to_thread(assistant.run, context), timeout=self.time_out)
+                    await context.flush()
 
                     output_payload = {"status": "completed", "run_id": run_id}
                     span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True, default=str))
@@ -184,13 +185,14 @@ class AsyncWorker(BaseWorker):
                     span.set_status(Status(StatusCode.OK))
 
                     if thread_id and run_id:
-                        await data_store.update_run_status(thread_id, run_id, run_status.COMPLETED)
+                        await data_store.update_run_status(
+                            thread_id, run_id, run_status.COMPLETED,
+                            usage=context._run_usage or None,
+                        )
                     if output_queue:
-                        # Drain any fire-and-forget send_chunk()/emit() tasks
-                        # scheduled during assistant.run() so streaming deltas
-                        # are enqueued strictly before the terminal
-                        # RUN_COMPLETED event.
-                        await context.flush()
+                        # flush_events() above already drained pending send_chunk()/emit()
+                        # tasks, so streaming deltas are enqueued strictly before the
+                        # terminal RUN_COMPLETED event below.
                         run_object = await data_store.get_run_by_id(thread_id, run_id)
                         if run_object:
                             await output_queue.add(run_object.to_event(event_type.RUN_COMPLETED))
@@ -262,6 +264,7 @@ class AsyncWorker(BaseWorker):
                     if output_queue and run_object:
                         await output_queue.add(run_object.to_event(event_type.RUN_FAILED))
                         await output_queue.add(ErrorEvent(error))
+
                     if message.attempts < run_queue.retry_policy.max_attempts:
                         await run_queue.requeue(receipt, message)
                     else:

@@ -10,7 +10,12 @@ at ``/compass``.  In **prod mode** it can run as a standalone service
 via ``llamphouse compass``.
 """
 
+import json
 import os
+import re
+import sqlite3
+import asyncio
+from datetime import datetime, timezone
 from mimetypes import guess_type
 from pathlib import Path
 from typing import Optional
@@ -19,20 +24,78 @@ from fastapi import APIRouter, Request, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from .chart_store import ChartStore
+from .dashboard_store import DashboardStore
+
 router = APIRouter()
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Module-level stores (lazy-initialised on first use)
+_chart_store: Optional[ChartStore] = None
+_dashboard_store: Optional[DashboardStore] = None
+
+
+def _get_chart_store() -> ChartStore:
+    global _chart_store
+    if _chart_store is None:
+        _chart_store = ChartStore()
+    return _chart_store
+
+
+def _get_dashboard_store() -> DashboardStore:
+    global _dashboard_store
+    if _dashboard_store is None:
+        _dashboard_store = DashboardStore(chart_store=_get_chart_store())
+    return _dashboard_store
+
+# Timestamp field names that must be serialized as Unix epoch seconds (float)
+# so the Compass frontend formatTs() / durationMs() helpers work correctly.
+_TIMESTAMP_KEYS = frozenset({
+    "created_at", "started_at", "completed_at", "failed_at",
+    "cancelled_at", "expired_at", "expires_at", "updated_at",
+})
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _to_epoch(val) -> Optional[float]:
+    """Convert a datetime / ISO string / epoch number to Unix epoch seconds
+    with millisecond precision (3 decimal places)."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return round(float(val), 3)
+    if isinstance(val, datetime):
+        return round(val.timestamp(), 3)
+    if isinstance(val, str):
+        try:
+            d = datetime.fromisoformat(val)
+            # If the parsed datetime is naive, assume UTC.
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return round(d.timestamp(), 3)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 def _serialize(obj) -> dict:
-    """Convert a Pydantic model or plain object to a JSON-safe dict."""
+    """Convert a Pydantic model or plain object to a JSON-safe dict.
+
+    Datetime fields listed in ``_TIMESTAMP_KEYS`` are normalised to Unix
+    epoch seconds (int) so the Compass frontend helpers work correctly.
+    """
     if hasattr(obj, "model_dump"):
-        return obj.model_dump(mode="json", exclude_none=True)
-    if hasattr(obj, "dict"):
-        return obj.dict()
-    return {"value": str(obj)}
+        d = obj.model_dump(mode="json", exclude_none=True)
+    elif hasattr(obj, "dict"):
+        d = obj.dict()
+    else:
+        return {"value": str(obj)}
+    for k in _TIMESTAMP_KEYS:
+        if k in d:
+            d[k] = _to_epoch(d[k])
+    return d
 
 
 def _serialize_list(items) -> list[dict]:
@@ -42,12 +105,33 @@ def _serialize_list(items) -> list[dict]:
 # ── UI ───────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-async def compass_ui():
+async def compass_ui(req: Request):
     """Serve the Compass SPA (or placeholder)."""
     html_path = STATIC_DIR / "index.html"
     if not html_path.exists():
         return HTMLResponse("<h1>Compass UI not found</h1>", status_code=500)
-    return HTMLResponse(html_path.read_text())
+
+    # Derive the actual mount prefix from the request URL so that the
+    # <base href="..."> tag is correct for any configured prefix.
+    # req.url.path is the full path (e.g. "/dashboard/"), and this route
+    # is registered as GET "/" relative to the sub-router.
+    prefix = req.url.path.rstrip("/") or "/compass"
+
+    html = html_path.read_text(encoding="utf-8")
+    html = re.sub(r'<base\s+href="[^"]*"', f'<base href="{prefix}/"', html, count=1)
+    return HTMLResponse(html)
+
+
+# ── Info ─────────────────────────────────────────────────────────────────────
+
+@router.get("/api/info")
+async def compass_info():
+    """Return build / package info for the sidebar footer."""
+    try:
+        from llamphouse import __version__ as _v
+    except Exception:
+        _v = "unknown"
+    return {"version": _v, "website": "https://llamp.ai"}
 
 
 # ── Overview / stats ─────────────────────────────────────────────────────────
@@ -58,11 +142,21 @@ async def overview(req: Request):
     db = req.app.state.data_store
     assistants = req.app.state.assistants or []
 
+    # Run the three counts concurrently — each is a COUNT(*) that can be
+    # slow on big tables, and there's no reason for them to wait on each
+    # other.  Any failure leaves the corresponding count at 0.
+    thread_count, run_count, message_count = await asyncio.gather(
+        db.count_threads(),
+        db.count_runs(),
+        db.count_messages(),
+        return_exceptions=False,
+    )
+
     return JSONResponse({
         "assistants": len(assistants),
-        "threads": await db.count_threads(),
-        "runs": await db.count_runs(),
-        "messages": await db.count_messages(),
+        "threads": thread_count,
+        "runs": run_count,
+        "messages": message_count,
     })
 
 
@@ -95,38 +189,72 @@ async def list_assistants(req: Request):
             "top_p": getattr(a, 'top_p', None),
             "skills": skills,
             "has_config": bool(getattr(a, "config", None)),
-            "created_at": a.created_at.isoformat() if hasattr(a, "created_at") and a.created_at else None,
+            "created_at": _to_epoch(a.created_at) if hasattr(a, "created_at") and a.created_at else None,
         })
     return JSONResponse({"data": data, "total": len(data)})
 
 
 # ── Threads ──────────────────────────────────────────────────────────────────
 
+_MAX_PAGE_SIZE = 200
+
+
 @router.get("/api/threads")
-async def list_threads(req: Request, limit: int = 50, order: str = "desc"):
+async def list_threads(
+    req: Request,
+    limit: int = 50,
+    order: str = "desc",
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    filters: Optional[str] = None,
+    include_total: bool = True,
+):
+    # Hard cap to protect the DB from clients (e.g. stale bundles) asking
+    # for thousands of rows at once.
+    limit = max(1, min(limit, _MAX_PAGE_SIZE))
+
+    parsed_filters: list[dict] = []
+    if filters:
+        try:
+            raw = json.loads(filters)
+            if isinstance(raw, list):
+                parsed_filters = [f for f in raw if isinstance(f, dict)]
+        except json.JSONDecodeError:
+            pass  # bad payload — fall back to no filters
+
     db = req.app.state.data_store
     assistants = {a.id: a for a in (req.app.state.assistants or [])}
 
-    result = await db.list_threads(limit=limit, order=order)
+    result = await db.list_threads(
+        limit=limit, order=order, after=after, before=before,
+        filters=parsed_filters or None, include_total=include_total,
+    )
     threads = result.data if result else []
+    has_more = bool(result.has_more) if result else False
+    first_id = result.first_id if result else None
+    last_id = result.last_id if result else None
+    total = result.total if result else None
     data = _serialize_list(threads)
 
-    # Enrich each thread with the root agent (first run without a parent)
+    # Enrich each thread with the agent that owns it (first run in that thread).
+    # Sub-agent threads (created via call_agent) have runs with a parent_run_id,
+    # but the agent of that thread is still the sub-agent — so we take the first
+    # run regardless of parent_run_id.  Single bulk lookup instead of N+1.
+    thread_ids = [t.get("id") for t in data if t.get("id")]
+    agent_id_by_thread = await db.get_first_run_assistant_ids(thread_ids)
     for t in data:
-        tid = t.get("id")
-        agent_id = None
-        if tid:
-            runs_result = await db.list_runs(tid, limit=100, order="asc", after=None, before=None)
-            for r in ((runs_result.data if runs_result else []) or []):
-                meta = (r.metadata if hasattr(r, "metadata") else {}) or {}
-                if not meta.get("parent_run_id"):
-                    agent_id = r.assistant_id if hasattr(r, "assistant_id") else None
-                    break
+        agent_id = agent_id_by_thread.get(t.get("id"))
         agent = assistants.get(agent_id) if agent_id else None
         t["agent_id"] = agent_id
         t["agent_name"] = (agent.name if agent and hasattr(agent, "name") else agent_id) if agent_id else None
 
-    return JSONResponse({"data": data, "total": len(data)})
+    return JSONResponse({
+        "data": data,
+        "first_id": first_id,
+        "last_id": last_id,
+        "has_more": has_more,
+        "total": total,
+    })
 
 
 @router.get("/api/threads/{thread_id}")
@@ -150,6 +278,12 @@ async def list_messages(req: Request, thread_id: str, limit: int = 100, order: s
 
     data = _serialize_list(result.data)
     for msg in data:
+        # _serialize uses exclude_none=True, so these keys can be missing when
+        # the message was never stamped with a run / assistant.  Re-introduce
+        # them as explicit `null` so the UI can reason about them.
+        msg.setdefault("run_id", None)
+        msg.setdefault("assistant_id", None)
+
         aid = msg.get("assistant_id")
         agent = assistants.get(aid) if aid else None
         msg["agent_name"] = (agent.name if agent and hasattr(agent, "name") else aid) if aid else None
@@ -166,6 +300,58 @@ async def list_runs(req: Request, thread_id: str, limit: int = 100, order: str =
     if not result:
         return JSONResponse({"data": [], "total": 0})
     return JSONResponse({"data": _serialize_list(result.data), "total": len(result.data)})
+
+
+# ── Global Runs ───────────────────────────────────────────────────────────────
+
+@router.get("/api/runs")
+async def list_all_runs(
+    req: Request,
+    limit: int = 50,
+    order: str = "desc",
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    filters: Optional[str] = None,
+    include_total: bool = True,
+):
+    """Return runs across all threads, paginated, with optional filters."""
+    limit = max(1, min(limit, _MAX_PAGE_SIZE))
+
+    parsed_filters: list[dict] = []
+    if filters:
+        try:
+            raw = json.loads(filters)
+            if isinstance(raw, list):
+                parsed_filters = [f for f in raw if isinstance(f, dict)]
+        except json.JSONDecodeError:
+            pass
+
+    db = req.app.state.data_store
+    assistants = {a.id: a for a in (req.app.state.assistants or [])}
+
+    result = await db.list_all_runs(
+        limit=limit, order=order, after=after, before=before,
+        filters=parsed_filters or None, include_total=include_total,
+    )
+    runs = result.data if result else []
+    has_more = bool(result.has_more) if result else False
+    first_id = result.first_id if result else None
+    last_id = result.last_id if result else None
+    total = result.total if result else None
+    data = _serialize_list(runs)
+
+    for r in data:
+        aid = r.get("assistant_id")
+        agent = assistants.get(aid) if aid else None
+        r["agent_name"] = (agent.name if agent and hasattr(agent, "name") else aid) if aid else None
+
+    return JSONResponse({
+        "data": data,
+        "first_id": first_id,
+        "last_id": last_id,
+        "has_more": has_more,
+        "total": total,
+    })
 
 
 @router.get("/api/threads/{thread_id}/runs/{run_id}")
@@ -249,7 +435,9 @@ async def compare_runs(
     ids = [r.strip() for r in run_ids.split(",") if r.strip()]
     results = []
     for run_id in ids:
-        run = await db.get_run_by_run_id(run_id)
+        # We need to find the run across threads — every store implements
+        # this since the flow / overview routes started using it.
+        run = await db.get_run_any_thread(run_id)
         if not run:
             continue
         thread_id = run.thread_id
@@ -263,63 +451,22 @@ async def compare_runs(
     return JSONResponse({"runs": results, "total": len(results)})
 
 
-# ── Traces (ClickHouse) ─────────────────────────────────────────────────────
+# ── Traces ───────────────────────────────────────────────────────────────────
+
+def _tracing_store(req: Request):
+    """Return the tracing store from app state, or None."""
+    return getattr(req.app.state, "tracing_store", None)
+
 
 @router.get("/api/traces/{run_id}")
 async def get_traces(req: Request, run_id: str):
-    """
-    Fetch trace spans for a run from ClickHouse.
-
-    Requires CLICKHOUSE_URL to be set (e.g. http://clickhouse:8123).
-    Returns an empty list with a hint if ClickHouse is not configured.
-    """
-    clickhouse_url = os.getenv("CLICKHOUSE_URL")
-    if not clickhouse_url:
-        return JSONResponse({
-            "traces": [],
-            "hint": "Set CLICKHOUSE_URL to enable trace viewing (e.g. http://clickhouse:8123)",
-        })
-
+    """Fetch all trace spans for a run via the configured tracing store."""
+    store = _tracing_store(req)
+    if store is None:
+        return JSONResponse({"traces": [], "hint": "No tracing store configured"})
     try:
-        import httpx
-    except ImportError:
-        return JSONResponse({
-            "traces": [],
-            "hint": "Install httpx to enable trace queries: pip install httpx",
-        })
-
-    query = f"""
-        SELECT
-            Timestamp,
-            TraceId,
-            SpanId,
-            ParentSpanId,
-            SpanName,
-            SpanKind,
-            Duration,
-            StatusCode,
-            StatusMessage,
-            SpanAttributes,
-            Events.Timestamp,
-            Events.Name,
-            Events.Attributes
-        FROM otel.otel_traces
-        WHERE TraceId IN (
-            SELECT DISTINCT TraceId
-            FROM otel.otel_traces
-            WHERE SpanAttributes['run.id'] = '{run_id}'
-               OR SpanAttributes['llamphouse.run_id'] = '{run_id}'
-        )
-        ORDER BY Timestamp ASC
-        FORMAT JSON
-    """
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(clickhouse_url, content=query)
-            resp.raise_for_status()
-            data = resp.json()
-            return JSONResponse({"traces": data.get("data", []), "total": data.get("rows", 0)})
+        spans = await store.get_trace(run_id)
+        return JSONResponse({"traces": spans, "total": len(spans)})
     except Exception as e:
         return JSONResponse({"traces": [], "error": str(e)}, status_code=502)
 
@@ -331,51 +478,12 @@ async def list_recent_traces(
     limit: int = 50,
 ):
     """List recent top-level trace spans, optionally filtered by assistant."""
-    clickhouse_url = os.getenv("CLICKHOUSE_URL")
-    if not clickhouse_url:
-        return JSONResponse({
-            "traces": [],
-            "hint": "Set CLICKHOUSE_URL to enable trace viewing",
-        })
-
+    store = _tracing_store(req)
+    if store is None:
+        return JSONResponse({"traces": [], "hint": "No tracing store configured"})
     try:
-        import httpx
-    except ImportError:
-        return JSONResponse({"traces": [], "hint": "Install httpx"})
-
-    where = "t.ParentSpanId = '' AND t.SpanName LIKE 'llamphouse.worker%'"
-    if assistant_id:
-        where += f" AND (t.SpanAttributes['assistant.id'] = '{assistant_id}' OR t.SpanAttributes['llamphouse.assistant.id'] = '{assistant_id}')"
-
-    query = f"""
-        SELECT
-            t.TraceId,
-            t.SpanName,
-            if(t.SpanAttributes['run.id'] != '', t.SpanAttributes['run.id'], t.SpanAttributes['llamphouse.run_id']) AS run_id,
-            if(t.SpanAttributes['session.id'] != '', t.SpanAttributes['session.id'], t.SpanAttributes['llamphouse.thread_id']) AS thread_id,
-            if(t.SpanAttributes['assistant.id'] != '', t.SpanAttributes['assistant.id'], t.SpanAttributes['llamphouse.assistant_id']) AS assistant_id,
-            t.Duration / 1000000 AS duration_ms,
-            t.StatusCode,
-            t.Timestamp,
-            counts.span_count
-        FROM otel.otel_traces AS t
-        LEFT JOIN (
-            SELECT TraceId, count() AS span_count
-            FROM otel.otel_traces
-            GROUP BY TraceId
-        ) AS counts ON t.TraceId = counts.TraceId
-        WHERE {where}
-        ORDER BY t.Timestamp DESC
-        LIMIT {limit}
-        FORMAT JSON
-    """
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(clickhouse_url, content=query)
-            resp.raise_for_status()
-            data = resp.json()
-            return JSONResponse({"traces": data.get("data", []), "total": data.get("rows", 0)})
+        traces = await store.list_traces(limit=limit, assistant_id=assistant_id)
+        return JSONResponse({"traces": traces, "total": len(traces)})
     except Exception as e:
         return JSONResponse({"traces": [], "error": str(e)}, status_code=502)
 
@@ -393,49 +501,42 @@ async def get_run_flow(req: Request, run_id: str):
     db = req.app.state.data_store
     assistants = {a.id: a for a in (req.app.state.assistants or [])}
 
-    # Collect ALL runs across every thread
-    result = await db.list_runs_all()
-    all_runs = result.data if result else []
+    # Defensive caps so a malformed cycle in metadata can't run forever.
+    _MAX_DEPTH = 64
+    _MAX_NODES = 5000
 
-    # Index runs by id
+    # ── 1. Walk up to the root ────────────────────────────────────────────
     runs_by_id: dict = {}
-    for r in all_runs:
-        rid = r.id if hasattr(r, "id") else r.get("id")
-        runs_by_id[rid] = r
-
-    # Find the root: walk parent pointers from the requested run
     root_id = run_id
-    visited = {root_id}
-    while True:
-        root_run = runs_by_id.get(root_id)
-        if not root_run:
+    for _ in range(_MAX_DEPTH):
+        if root_id in runs_by_id:
             break
-        meta = (root_run.metadata if hasattr(root_run, "metadata") else {}) or {}
+        run = await db.get_run_any_thread(root_id)
+        if not run:
+            break
+        runs_by_id[root_id] = run
+        meta = (run.metadata or {}) if hasattr(run, "metadata") else {}
         parent = meta.get("parent_run_id")
-        if parent and parent not in visited and parent in runs_by_id:
-            visited.add(parent)
-            root_id = parent
-        else:
+        if not parent or parent == root_id:
             break
+        root_id = parent
 
-    # BFS from root to collect the tree
-    from collections import deque
-    queue = deque([root_id])
-    tree_ids = set()
-    children_of: dict[str, list[str]] = {}
-
-    while queue:
-        current = queue.popleft()
-        if current in tree_ids:
-            continue
-        tree_ids.add(current)
-        # Find children of current
-        for r in all_runs:
-            rid = r.id if hasattr(r, "id") else r.get("id")
-            meta = (r.metadata if hasattr(r, "metadata") else {}) or {}
-            if meta.get("parent_run_id") == current and rid not in tree_ids:
-                children_of.setdefault(current, []).append(rid)
-                queue.append(rid)
+    # ── 2. BFS down from root, one DB call per level ──────────────────────
+    tree_ids: set[str] = {root_id} if root_id in runs_by_id else set()
+    frontier = [root_id] if root_id in runs_by_id else []
+    while frontier and len(tree_ids) < _MAX_NODES:
+        children = await db.list_runs_by_parent_ids(frontier)
+        next_frontier: list[str] = []
+        for child in children:
+            cid = child.id
+            if cid in tree_ids:
+                continue
+            runs_by_id[cid] = child
+            tree_ids.add(cid)
+            next_frontier.append(cid)
+            if len(tree_ids) >= _MAX_NODES:
+                break
+        frontier = next_frontier
 
     # Build nodes and edges
     nodes = []
@@ -494,17 +595,310 @@ async def get_run_flow(req: Request, run_id: str):
     for idx, e in enumerate(edges):
         e["sequence"] = idx + 1
 
-    # Only return flow if there's more than one node
-    if len(nodes) <= 1:
+    # Surface the workflow view for any run that has at least one node.
+    # Even single-agent runs benefit from it because each node can be
+    # expanded to inspect its @step / tool_call / message_creation timeline.
+    if not nodes:
         return JSONResponse({"nodes": [], "edges": [], "has_flow": False})
 
     return JSONResponse({"nodes": nodes, "edges": edges, "has_flow": True})
 
 
-# ── SPA catch-all (must be last) ─────────────────────────────────────────────
+# ── Dashboards ───────────────────────────────────────────────────────────────
 
+class CreateDashboardRequest(BaseModel):
+    title: str
+    description: str = ""
+
+
+class UpdateDashboardRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    charts: Optional[list] = None
+
+
+# ── Charts ────────────────────────────────────────────────────────────────────
+
+class CreateChartRequest(BaseModel):
+    title: str = "Untitled Chart"
+    sql: str = ""
+    chart_type: str = "table"
+    x_column: Optional[str] = None
+    y_columns: list = []
+
+
+class UpdateChartRequest(BaseModel):
+    title: Optional[str] = None
+    sql: Optional[str] = None
+    chart_type: Optional[str] = None
+    x_column: Optional[str] = None
+    y_columns: Optional[list] = None
+
+
+class QueryRequest(BaseModel):
+    sql: str
+
+
+# SQL safety guard — only SELECT / WITH / EXPLAIN allowed
+_BLOCKED_SQL = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|REPLACE|MERGE|GRANT|REVOKE|ATTACH|DETACH)\b",
+    re.IGNORECASE,
+)
+
+
+def _check_sql(sql: str) -> None:
+    norm = sql.strip().upper()
+    if not (norm.startswith("SELECT") or norm.startswith("WITH") or norm.startswith("EXPLAIN")):
+        raise ValueError("Only SELECT queries are permitted")
+    if _BLOCKED_SQL.search(sql):
+        raise ValueError("Query contains a disallowed keyword")
+
+
+def _sanitize_val(val):
+    """Convert a DB row value to a JSON-serialisable type."""
+    if val is None:
+        return None
+    if isinstance(val, (bool, int, float, str)):
+        return val
+    if isinstance(val, datetime):
+        return round(val.timestamp(), 3)
+    try:
+        return float(val)  # handles Decimal / Numeric
+    except (TypeError, ValueError):
+        return str(val)
+
+
+# ── Query: PostgreSQL ─────────────────────────────────────────────────────────
+
+async def _run_postgres_query(engine, sql: str, max_rows: int = 1000) -> dict:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        result = await conn.execute(text(sql))
+        cols = list(result.keys())
+        rows = [[_sanitize_val(v) for v in row] for row in result.fetchmany(max_rows)]
+        return {"columns": cols, "rows": rows}
+
+
+# ── Query: in-memory → SQLite ─────────────────────────────────────────────────
+
+def _epoch(dt) -> Optional[float]:
+    """Convert a datetime (or epoch number) to a float epoch."""
+    if dt is None:
+        return None
+    if isinstance(dt, (int, float)):
+        return float(dt)
+    if hasattr(dt, "timestamp"):
+        return round(dt.timestamp(), 3)
+    return None
+
+
+def _build_and_run_sqlite(db, sql: str, max_rows: int = 1000) -> dict:
+    """Snapshot the in-memory store into an ephemeral SQLite DB and run *sql*."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+
+    # threads
+    conn.execute("CREATE TABLE threads (id TEXT, created_at REAL, metadata TEXT)")
+    for t in (db._threads or {}).values():
+        conn.execute(
+            "INSERT INTO threads VALUES (?, ?, ?)",
+            (t.id, _epoch(t.created_at), json.dumps(t.metadata) if t.metadata else None),
+        )
+
+    # messages
+    conn.execute(
+        "CREATE TABLE messages "
+        "(id TEXT, thread_id TEXT, role TEXT, status TEXT, "
+        " assistant_id TEXT, run_id TEXT, created_at REAL, completed_at REAL, text TEXT, metadata TEXT)"
+    )
+    for msgs in (db._messages or {}).values():
+        for m in msgs:
+            # Extract plain text from parts (MessageObject.text property or fallback)
+            try:
+                msg_text = m.text if hasattr(m, 'text') else None
+            except Exception:
+                msg_text = None
+            conn.execute(
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (m.id, m.thread_id, m.role, m.status,
+                 m.assistant_id, m.run_id, _epoch(m.created_at), _epoch(m.completed_at),
+                 msg_text, json.dumps(m.metadata) if getattr(m, 'metadata', None) else None),
+            )
+
+    # runs
+    conn.execute(
+        "CREATE TABLE runs "
+        "(id TEXT, thread_id TEXT, assistant_id TEXT, status TEXT, model TEXT, "
+        " created_at REAL, started_at REAL, completed_at REAL, failed_at REAL, "
+        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, metadata TEXT)"
+    )
+    for runs_list in (db._runs or {}).values():
+        for r in runs_list:
+            u = r.usage
+            pt = getattr(u, "prompt_tokens", None) or (u.get("prompt_tokens") if isinstance(u, dict) else None)
+            ct = getattr(u, "completion_tokens", None) or (u.get("completion_tokens") if isinstance(u, dict) else None)
+            tt = getattr(u, "total_tokens", None) or (u.get("total_tokens") if isinstance(u, dict) else None)
+            conn.execute(
+                "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (r.id, r.thread_id, r.assistant_id, r.status, r.model,
+                 _epoch(r.created_at), _epoch(r.started_at),
+                 _epoch(r.completed_at), _epoch(r.failed_at), pt, ct, tt,
+                 json.dumps(r.metadata) if getattr(r, 'metadata', None) else None),
+            )
+
+    # run_steps
+    conn.execute(
+        "CREATE TABLE run_steps "
+        "(id TEXT, run_id TEXT, thread_id TEXT, assistant_id TEXT, "
+        " type TEXT, status TEXT, created_at REAL, completed_at REAL, "
+        " prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, metadata TEXT)"
+    )
+    for steps_list in (db._run_steps or {}).values():
+        for s in steps_list:
+            u = s.usage
+            pt = getattr(u, "prompt_tokens", None) or (u.get("prompt_tokens") if isinstance(u, dict) else None)
+            ct = getattr(u, "completion_tokens", None) or (u.get("completion_tokens") if isinstance(u, dict) else None)
+            tt = getattr(u, "total_tokens", None) or (u.get("total_tokens") if isinstance(u, dict) else None)
+            conn.execute(
+                "INSERT INTO run_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (s.id, s.run_id, s.thread_id, s.assistant_id,
+                 s.type, s.status, _epoch(s.created_at), _epoch(s.completed_at),
+                 pt, ct, tt,
+                 json.dumps(s.metadata) if getattr(s, 'metadata', None) else None),
+            )
+
+    conn.commit()
+    cursor = conn.execute(sql)
+    cols = [d[0] for d in cursor.description]
+    rows = [[_sanitize_val(v) for v in row] for row in cursor.fetchmany(max_rows)]
+    conn.close()
+    return {"columns": cols, "rows": rows}
+
+
+# ── Chart Library CRUD ───────────────────────────────────────────────────────
+
+@router.get("/api/charts")
+async def list_charts():
+    return JSONResponse({"data": _get_chart_store().list()})
+
+
+@router.post("/api/charts")
+async def create_chart(body: CreateChartRequest):
+    c = _get_chart_store().create(
+        title=body.title,
+        sql=body.sql,
+        chart_type=body.chart_type,
+        x_column=body.x_column,
+        y_columns=body.y_columns,
+    )
+    return JSONResponse(c, status_code=201)
+
+
+@router.get("/api/charts/{chart_id}")
+async def get_chart(chart_id: str):
+    c = _get_chart_store().get(chart_id)
+    if not c:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return JSONResponse(c)
+
+
+@router.put("/api/charts/{chart_id}")
+async def update_chart(chart_id: str, body: UpdateChartRequest):
+    c = _get_chart_store().update(chart_id, body.model_dump(exclude_none=True))
+    if not c:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return JSONResponse(c)
+
+
+@router.delete("/api/charts/{chart_id}")
+async def delete_chart(chart_id: str):
+    ok = _get_chart_store().delete(chart_id)
+    if not ok:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return JSONResponse({"deleted": True})
+
+
+# ── Dashboard CRUD ────────────────────────────────────────────────────────────
+
+@router.get("/api/dashboards")
+async def list_dashboards():
+    return JSONResponse({"data": _get_dashboard_store().list()})
+
+
+@router.post("/api/dashboards")
+async def create_dashboard(body: CreateDashboardRequest):
+    d = _get_dashboard_store().create(body.title, body.description)
+    return JSONResponse(d, status_code=201)
+
+
+@router.get("/api/dashboards/{dashboard_id}")
+async def get_dashboard(dashboard_id: str):
+    d = _get_dashboard_store().get(dashboard_id)
+    if not d:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return JSONResponse(d)
+
+
+@router.put("/api/dashboards/{dashboard_id}")
+async def update_dashboard(dashboard_id: str, body: UpdateDashboardRequest):
+    d = _get_dashboard_store().update(dashboard_id, body.model_dump(exclude_none=True))
+    if not d:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return JSONResponse(d)
+
+
+@router.delete("/api/dashboards/{dashboard_id}")
+async def delete_dashboard(dashboard_id: str):
+    ok = _get_dashboard_store().delete(dashboard_id)
+    if not ok:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return JSONResponse({"deleted": True})
+
+
+# ── Dashboard query ───────────────────────────────────────────────────────────
+
+@router.post("/api/dashboards/query")
+async def run_dashboard_query(req: Request, body: QueryRequest):
+    """Execute a SELECT query against the underlying data store.
+
+    * **PostgresDataStore**: runs against the real database in a read-only
+      transaction.
+    * **InMemoryDataStore**: snapshots the store into an ephemeral SQLite3
+      database and runs the query there.
+
+    Only SELECT / WITH / EXPLAIN statements are permitted.
+    Results are capped at 1 000 rows.
+    """
+    sql = body.sql.strip()
+    t0 = datetime.now(timezone.utc)
+
+    try:
+        _check_sql(sql)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    db = req.app.state.data_store
+    try:
+        if hasattr(db, "_engine"):
+            result = await _run_postgres_query(db._engine, sql)
+        elif hasattr(db, "_threads"):
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, _build_and_run_sqlite, db, sql, 1000
+            )
+        else:
+            return JSONResponse({"error": "No queryable data store available"}, status_code=501)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    result["duration_ms"] = round(
+        (datetime.now(timezone.utc) - t0).total_seconds() * 1000, 2
+    )
+    return JSONResponse(result)
+
+
+# ── SPA catch-all (must be last) ─────────────────────────────────────────────
 @router.get("/{full_path:path}")
-async def compass_spa_fallback(full_path: str):
+async def compass_spa_fallback(full_path: str, req: Request):
     """Serve static assets with correct MIME types, or fall back to
     index.html for Vue Router history-mode routes."""
     if full_path.startswith("api/"):
@@ -520,4 +914,10 @@ async def compass_spa_fallback(full_path: str):
     html_path = STATIC_DIR / "index.html"
     if not html_path.exists():
         return HTMLResponse("<h1>Compass UI not found</h1>", status_code=500)
-    return HTMLResponse(html_path.read_text())
+    # Derive prefix: strip the sub-path portion from the full request URL.
+    # e.g. req.url.path="/dashboard/threads", full_path="threads" → "/dashboard"
+    prefix = req.url.path[:-(len(full_path) + 1)] if full_path else req.url.path.rstrip("/")
+    prefix = prefix or "/compass"
+    html = html_path.read_text(encoding="utf-8")
+    html = re.sub(r'<base\s+href="[^"]*"', f'<base href="{prefix}/"', html, count=1)
+    return HTMLResponse(html)

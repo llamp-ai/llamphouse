@@ -7,7 +7,8 @@ from sqlalchemy import (
     DateTime,
     Float,
     Boolean,
-    Enum
+    Enum,
+    UniqueConstraint,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -40,7 +41,7 @@ run_status_enum = Enum(
     name='run_status_enum'
 )
 step_type_enum = Enum(
-    'message_creation', 'tool_calls', 
+    'message_creation', 'tool_calls', 'step',
     name='run_step_type_enum'
 )
 run_step_status_enum = Enum(
@@ -66,11 +67,11 @@ class Thread(Base):
         return {
             "id": self.id,
             "object": "thread",
-            "created_at": int(self.created_at.timestamp()) if self.created_at else None,
+            "created_at": round(self.created_at.timestamp(), 3) if self.created_at else None,
             "name": self.name,
             "tool_resources": self.tool_resources,
             "metadata": self.meta,
-            "updated_at": int(self.updated_at.timestamp()) if self.updated_at else None
+            "updated_at": round(self.updated_at.timestamp(), 3) if self.updated_at else None
         }
 
     def __repr__(self):
@@ -95,8 +96,8 @@ class Message(Base):
     run_id = Column(String)
     attachments = Column(JSONType)
     meta = Column(JSONType)
-    completed_at = Column(Integer)
-    incomplete_at = Column(Integer)
+    completed_at = Column(Float)
+    incomplete_at = Column(Float)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
@@ -106,7 +107,7 @@ class Message(Base):
         return {
             "id": self.id,
             "object": "thread.message",
-            "created_at": int(self.created_at.timestamp()) if self.created_at else None,
+            "created_at": round(self.created_at.timestamp(), 3) if self.created_at else None,
             "thread_id": self.thread_id,
             "role": self.role,
             "content": self.content,
@@ -114,11 +115,11 @@ class Message(Base):
             "run_id": self.run_id,
             "attachments": self.attachments,
             "metadata": self.meta,
-            "completed_at": int(self.completed_at) if self.completed_at else None,
-            "incomplete_at": int(self.incomplete_at) if self.incomplete_at else None,
+            "completed_at": round(float(self.completed_at), 3) if self.completed_at else None,
+            "incomplete_at": round(float(self.incomplete_at), 3) if self.incomplete_at else None,
             "status": self.status,
             "incomplete_details": self.incomplete_details,
-            "updated_at": int(self.updated_at.timestamp()) if self.updated_at else None
+            "updated_at": round(self.updated_at.timestamp(), 3) if self.updated_at else None
         }
     
     def __repr__(self):
@@ -154,11 +155,11 @@ class Run(Base):
     response_format = Column(JSONType, nullable=False, server_default='"auto"')
     thread_id = Column(String, ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
     assistant_id = Column(String, nullable=False)
-    expires_at = Column(Integer)
-    started_at = Column(Integer)
-    cancelled_at = Column(Integer)
-    failed_at = Column(Integer)
-    completed_at = Column(Integer)
+    expires_at = Column(Float)
+    started_at = Column(Float)
+    cancelled_at = Column(Float)
+    failed_at = Column(Float)
+    completed_at = Column(Float)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     reasoning_effort = Column(String, nullable=False, server_default='medium')
@@ -172,7 +173,7 @@ class Run(Base):
         return {
             "id": self.id,
             "object": "thread.run",
-            "created_at": int(self.created_at.timestamp()) if self.created_at else None,
+            "created_at": round(self.created_at.timestamp(), 3) if self.created_at else None,
             "status": self.status,
             "required_action": self.required_action,
             "last_error": self.last_error,
@@ -196,12 +197,12 @@ class Run(Base):
             "provider_config": self.provider_config,
             "thread_id": self.thread_id,
             "assistant_id": self.assistant_id,
-            "expires_at": int(self.expires_at) if self.expires_at else None,
-            "started_at": int(self.started_at) if self.started_at else None,
-            "cancelled_at": int(self.cancelled_at) if self.cancelled_at else None,
-            "failed_at": int(self.failed_at) if self.failed_at else None,
-            "completed_at": int(self.completed_at) if self.completed_at else None,
-            "updated_at": int(self.updated_at.timestamp()) if self.updated_at else None,
+            "expires_at": round(float(self.expires_at), 3) if self.expires_at else None,
+            "started_at": round(float(self.started_at), 3) if self.started_at else None,
+            "cancelled_at": round(float(self.cancelled_at), 3) if self.cancelled_at else None,
+            "failed_at": round(float(self.failed_at), 3) if self.failed_at else None,
+            "completed_at": round(float(self.completed_at), 3) if self.completed_at else None,
+            "updated_at": round(self.updated_at.timestamp(), 3) if self.updated_at else None,
         }
     
     def __repr__(self):
@@ -228,10 +229,10 @@ class RunStep(Base):
     meta = Column(JSONType)
     usage = Column(JSONType)
     last_error = Column(JSONType)
-    expired_at = Column(Integer)
-    cancelled_at = Column(Integer)
-    failed_at = Column(Integer)
-    completed_at = Column(Integer)
+    expired_at = Column(Float)
+    cancelled_at = Column(Float)
+    failed_at = Column(Float)
+    completed_at = Column(Float)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
@@ -251,12 +252,12 @@ class RunStep(Base):
             "metadata": self.meta,
             "usage": self.usage,
             "last_error": self.last_error,
-            "expired_at": int(self.expired_at) if self.expired_at else None,
-            "cancelled_at": int(self.cancelled_at) if self.cancelled_at else None,
-            "failed_at": int(self.failed_at) if self.failed_at else None,
-            "updated_at": int(self.updated_at.timestamp()) if self.updated_at else None,
-            "created_at": int(self.created_at.timestamp()) if self.created_at else None,
-            "completed_at": int(self.completed_at) if self.completed_at else None
+            "expired_at": round(float(self.expired_at), 3) if self.expired_at else None,
+            "cancelled_at": round(float(self.cancelled_at), 3) if self.cancelled_at else None,
+            "failed_at": round(float(self.failed_at), 3) if self.failed_at else None,
+            "updated_at": round(self.updated_at.timestamp(), 3) if self.updated_at else None,
+            "created_at": round(self.created_at.timestamp(), 3) if self.created_at else None,
+            "completed_at": round(float(self.completed_at), 3) if self.completed_at else None
         }
     
     def __repr__(self):
@@ -267,3 +268,23 @@ class RunStep(Base):
     
     def to_event(self, event: str) -> Event:
         return Event(event=event, data=str(self))
+
+
+class WebhookIdempotencyClaim(Base):
+    __tablename__ = "webhook_idempotency_claims"
+    __table_args__ = (
+        UniqueConstraint("scope", "key", name="uq_webhook_idempotency_scope_key"),
+    )
+
+    scope = Column(String, primary_key=True)
+    key = Column(String, primary_key=True)
+    fingerprint = Column(String, nullable=False)
+    agent_id = Column(String, nullable=False)
+    trigger_path = Column(String, nullable=False)
+    thread_id = Column(String)
+    message_id = Column(String)
+    run_id = Column(String)
+    response_json = Column(JSONType)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True))

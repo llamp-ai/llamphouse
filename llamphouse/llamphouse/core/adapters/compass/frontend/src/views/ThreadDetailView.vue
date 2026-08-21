@@ -15,6 +15,7 @@ const runs = ref<Run[]>([])
 const loading = ref(true)
 const error = ref('')
 const tab = ref<'messages' | 'runs'>('messages')
+const renderMode = ref<'plain' | 'markdown' | 'json'>('plain')
 
 onMounted(async () => {
   try {
@@ -71,12 +72,28 @@ const runCols = [
       </div>
 
       <!-- Messages tab -->
-      <div v-if="tab === 'messages'" class="message-list">
-        <div v-if="messages.length === 0" class="empty-state">
-          <div class="empty-state__icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-          <div class="empty-state__title">No messages</div>
+      <div v-if="tab === 'messages'">
+        <div class="msg-toolbar">
+          <span class="msg-toolbar__label">All messages:</span>
+          <div class="seg-control">
+            <button
+              v-for="mode in (['plain', 'markdown', 'json'] as const)"
+              :key="mode"
+              class="seg-control__btn"
+              :class="{ 'seg-control__btn--active': renderMode === mode }"
+              @click="renderMode = mode"
+            >
+              {{ mode === 'plain' ? 'Plain' : mode === 'markdown' ? 'Markdown' : 'JSON' }}
+            </button>
+          </div>
         </div>
-        <MessageBubble v-for="msg in messages" :key="msg.id" :message="msg" />
+        <div class="message-list">
+          <div v-if="messages.length === 0" class="empty-state">
+            <div class="empty-state__icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+            <div class="empty-state__title">No messages</div>
+          </div>
+          <MessageBubble v-for="msg in messages" :key="msg.id" :message="msg" :render-mode="renderMode" :thread-id="threadId" />
+        </div>
       </div>
 
       <!-- Runs tab -->
@@ -84,6 +101,7 @@ const runCols = [
         <DataTable
           :columns="runCols"
           :rows="runs"
+          table-id="thread-runs"
           clickable
           @row-click="(r) => router.push(`/threads/${threadId}/runs/${r.id}`)"
         >
@@ -106,9 +124,64 @@ const runCols = [
 </template>
 
 <style scoped>
+.msg-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.msg-toolbar__label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
 .message-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Segmented control */
+.seg-control {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-hover);
+}
+
+.seg-control__btn {
+  padding: 4px 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1.6;
+}
+
+.seg-control__btn:last-child {
+  border-right: none;
+}
+
+.seg-control__btn:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.seg-control__btn--active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.seg-control__btn--active:hover {
+  background: var(--accent);
+  color: #fff;
 }
 </style>

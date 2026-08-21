@@ -36,10 +36,10 @@ Spans include rich attributes for debugging:
 
 ## Viewing traces in Compass
 
-The [Compass dashboard](compass.md) includes a built-in **trace viewer** powered by ClickHouse. To enable it:
+The [Compass dashboard](compass.md) includes a built-in **trace viewer** backed by the configured tracing store. To enable it:
 
-1. Run ClickHouse (included in the Docker Compose setup)
-2. Set the `CLICKHOUSE_URL` environment variable
+1. Configure a tracing store (for example ClickHouse)
+2. Ensure tracing is enabled and exporters are configured for your environment
 3. Open Compass at `/compass` → navigate to the Traces tab
 
 The trace viewer shows:
@@ -48,6 +48,8 @@ The trace viewer shows:
 - **Agent badges** — which agent produced each span
 - **Timing** — duration and timeline for each operation
 - **Attributes** — all span attributes for debugging
+- **Resource metadata chips** — service name/version and deployment environment when present
+- **Status fallback** — UI can derive status from `gen_ai.task.status` when OTel status is unset
 
 ## Excluding spans
 

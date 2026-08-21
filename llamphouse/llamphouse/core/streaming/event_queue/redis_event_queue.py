@@ -99,9 +99,26 @@ class RedisEventQueue(BaseEventQueue):
         if self._pubsub is not None:
             return
 
-        self._sub_redis = redis.from_url(self.redis_url, decode_responses=True)
-        self._pubsub = self._sub_redis.pubsub()
-        await self._pubsub.subscribe(self.channel)
+        sub_redis = redis.from_url(self.redis_url, decode_responses=True)
+        pubsub = sub_redis.pubsub()
+        try:
+            await pubsub.subscribe(self.channel)
+        except Exception:
+            # subscribe() failed (e.g. Redis unreachable). Release the
+            # freshly-created client so its connection pool isn't leaked,
+            # and leave _pubsub/_sub_redis as None so close() stays a no-op.
+            try:
+                await pubsub.aclose()
+            except Exception:
+                pass
+            try:
+                await sub_redis.aclose()
+            except Exception:
+                pass
+            raise
+
+        self._sub_redis = sub_redis
+        self._pubsub = pubsub
         self._listener_task = asyncio.create_task(self._listen())
         logger.debug("Subscribed to %s", self.channel)
 

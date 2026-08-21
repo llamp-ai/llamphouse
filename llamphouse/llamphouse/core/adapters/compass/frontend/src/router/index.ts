@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 const router = createRouter({
-  history: createWebHistory('/compass/'),
+  history: createWebHistory(document.querySelector('base')?.getAttribute('href') ?? '/compass/'),
   routes: [
     {
       path: '/',
@@ -29,6 +29,11 @@ const router = createRouter({
       component: () => import('../views/AssistantsView.vue'),
     },
     {
+      path: '/runs',
+      name: 'runs',
+      component: () => import('../views/RunsView.vue'),
+    },
+    {
       path: '/traces',
       name: 'traces',
       component: () => import('../views/TracesView.vue'),
@@ -42,6 +47,22 @@ const router = createRouter({
       path: '/compare',
       name: 'compare',
       component: () => import('../views/CompareView.vue'),
+    },
+    {
+      path: '/dashboards',
+      name: 'dashboards',
+      component: () => import('../views/DashboardsView.vue'),
+    },
+    {
+      path: '/dashboards/:dashboardId',
+      name: 'dashboard',
+      component: () => import('../views/DashboardView.vue'),
+    },
+    {
+      path: '/dashboards/:dashboardId/present',
+      name: 'dashboard-present',
+      component: () => import('../views/DashboardPresentView.vue'),
+      meta: { fullscreen: true },
     },
   ],
 })

@@ -1,11 +1,13 @@
-import logging
-import uuid
+import asyncio
 import copy
 import json
+import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, List, Literal, Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
 from opentelemetry.trace import Status, StatusCode
@@ -13,7 +15,7 @@ from opentelemetry.trace import Status, StatusCode
 from .retention import RetentionPolicy, PurgeStats
 from .base_data_store import BaseDataStore
 from ..tracing import get_tracer, span_context
-from ..database.models import Message, Run, Thread, RunStep
+from ..database.models import Message, Run, Thread, RunStep, WebhookIdempotencyClaim
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..types.assistant import AgentObject, AssistantObject
 from ..types.enum import event_type, message_status, run_status, run_step_status
@@ -22,6 +24,12 @@ from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRe
 from ..types.run_step import CreateRunStepRequest, RunStepObject
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
+from ..types.webhook import (
+    WebhookCommand,
+    WebhookCommandConflict,
+    WebhookCommandResult,
+    WebhookThreadNotFound,
+)
 from .. import telemetry as _telemetry
 
 store_tracer = get_tracer("llamphouse.data_store")
@@ -70,7 +78,7 @@ class PostgresDataStore(BaseDataStore):
     pool_size : int, optional
         Number of persistent connections kept in the pool (default ``5``).
         Because the async engine releases connections back to the pool
-        between awaits, a small pool handles high concurrency well.
+        between ``await`` calls, a small pool handles high concurrency well.
     max_overflow : int, optional
         Extra connections allowed above ``pool_size`` during burst traffic
         (default ``0``).  Total connections per process =
@@ -82,6 +90,10 @@ class PostgresDataStore(BaseDataStore):
     _SYNC_PREFIXES = {
         "postgresql://": "postgresql+asyncpg://",
         "postgres://": "postgresql+asyncpg://",
+    }
+    _WEBHOOK_IDEMPOTENCY_CONSTRAINTS = {
+        "uq_webhook_idempotency_scope_key",
+        "webhook_idempotency_claims_pkey",
     }
 
     def __init__(self, database_url: str, pool_size: int = 5, max_overflow: int = 0):
@@ -107,6 +119,114 @@ class PostgresDataStore(BaseDataStore):
                 logger.info("Auto-converted database URL to asyncpg driver")
                 break
         return url
+
+    @classmethod
+    def _is_webhook_idempotency_conflict(cls, exc: IntegrityError) -> bool:
+        candidates = [
+            exc.orig,
+            getattr(exc.orig, "__cause__", None),
+            getattr(exc.orig, "__context__", None),
+        ]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            constraint_name = getattr(candidate, "constraint_name", None)
+            diag = getattr(candidate, "diag", None)
+            if constraint_name is None and diag is not None:
+                constraint_name = getattr(diag, "constraint_name", None)
+            if constraint_name in cls._WEBHOOK_IDEMPOTENCY_CONSTRAINTS:
+                return True
+
+        message = str(exc)
+        return any(
+            constraint_name in message
+            for constraint_name in cls._WEBHOOK_IDEMPOTENCY_CONSTRAINTS
+        ) and (
+            "23505" in message
+            or "UniqueViolation" in message
+            or "duplicate key" in message
+        )
+
+    def _make_thread_row(
+        self,
+        thread: CreateThreadRequest,
+        *,
+        thread_id: str | None = None,
+    ) -> Thread:
+        metadata = thread.metadata or {}
+        row_id = thread_id or metadata.get("thread_id", str(uuid.uuid4()))
+        return Thread(
+            id=row_id,
+            name=row_id,
+            tool_resources=_to_jsonable(thread.tool_resources),
+            meta=_to_jsonable(metadata),
+        )
+
+    @staticmethod
+    def _thread_object_from_row(thread: Thread) -> ThreadObject:
+        return ThreadObject(
+            id=thread.id,
+            created_at=thread.created_at,
+            tool_resources=thread.tool_resources,
+            metadata=thread.meta or {},
+        )
+
+    def _make_message_row(
+        self,
+        thread_id: str,
+        message: CreateMessageRequest,
+        *,
+        status: str = message_status.COMPLETED,
+        message_id: str | None = None,
+    ) -> Message:
+        metadata = message.metadata if message.metadata else {}
+        row_id = message_id or metadata.get("message_id", str(uuid.uuid4()))
+        return Message(
+            id=row_id,
+            role=message.role,
+            content=[_to_jsonable(part) for part in message.get_parts()],
+            attachments=_to_jsonable(message.attachments),
+            meta=_to_jsonable(metadata),
+            thread_id=thread_id,
+            status=status,
+            completed_at=round(datetime.now(timezone.utc).timestamp(), 3)
+            if status == message_status.COMPLETED
+            else None,
+        )
+
+    def _make_run_row(
+        self,
+        thread_id: str,
+        run: RunCreateRequest,
+        assistant: AgentObject,
+        *,
+        run_id: str | None = None,
+    ) -> Run:
+        metadata = run.metadata or {}
+        row_id = run_id or metadata.get("run_id", str(uuid.uuid4()))
+        return Run(
+            id=row_id,
+            thread_id=thread_id,
+            assistant_id=run.assistant_id,
+            model=run.model or getattr(assistant, "model", "") or "",
+            instructions=(run.instructions or getattr(assistant, "instructions", "") or "")
+            + (run.additional_instructions or ""),
+            tools=_to_jsonable(run.tools or getattr(assistant, "tools", []) or []),
+            meta=_to_jsonable(metadata),
+            temperature=run.temperature or getattr(assistant, "temperature", None),
+            top_p=run.top_p or getattr(assistant, "top_p", None),
+            max_prompt_tokens=run.max_prompt_tokens,
+            max_completion_tokens=run.max_completion_tokens,
+            truncation_strategy=_to_jsonable(run.truncation_strategy),
+            tool_choice=_to_jsonable(run.tool_choice),
+            parallel_tool_calls=run.parallel_tool_calls,
+            stream=bool(run.stream),
+            response_format=_to_jsonable(run.response_format),
+            reasoning_effort=run.reasoning_effort or getattr(assistant, "reasoning_effort", None),
+            config_values=_to_jsonable(run.config_values),
+            provider_config=_to_jsonable(run.provider_config),
+            status=run_status.QUEUED,
+        )
 
     # ------------------------------------------------------------------
     # Messages
@@ -515,6 +635,196 @@ class PostgresDataStore(BaseDataStore):
                     logger.exception("get_thread_by_id() failed")
                     return None
 
+    # Allowlist of filterable Thread fields: name → (column, kind).
+    _THREAD_FILTER_FIELDS = {
+        "id":         (Thread.id,         "string"),
+        "created_at": (Thread.created_at, "date"),
+        "metadata":   (Thread.meta,       "json_string"),
+    }
+
+    async def list_threads(self, limit: int = 50, order: Literal["desc", "asc"] = "desc", after: Optional[str] = None, before: Optional[str] = None, filters: Optional[List[dict]] = None, include_total: bool = True) -> ListResponse | None:
+        attrs = {
+            "store.backend": "postgres",
+            "limit": limit,
+            "order": order,
+            "gen_ai.operation.name": "threads.list",
+        }
+        if after is not None:
+            attrs["after"] = after
+        if before is not None:
+            attrs["before"] = before
+
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_threads",
+            require_parent=True,
+            attributes=attrs,
+        ) as span:
+            async with self._session_factory() as session:
+                try:
+                    span.set_attribute(
+                        "input.value",
+                        _json_dump({"limit": limit, "order": order, "after": after, "before": before}),
+                    )
+
+                    # ── Build WHERE clauses once, share with count query ─
+                    where_clauses = []
+                    if filters:
+                        from . import _filters as _fmod
+                        for f in filters:
+                            field = f.get("field")
+
+                            # Special case: agent_id is on the Run table,
+                            # not the Thread table.  Use EXISTS so a thread
+                            # matches if *any* of its runs uses the agent.
+                            if field == "agent_id":
+                                clause = _fmod.to_sqla_clause(Run.assistant_id, "string", f)
+                                if clause is not None:
+                                    where_clauses.append(
+                                        select(1)
+                                        .where(Run.thread_id == Thread.id, clause)
+                                        .exists()
+                                    )
+                                continue
+
+                            spec = self._THREAD_FILTER_FIELDS.get(field)
+                            if not spec:
+                                continue
+                            col, kind = spec
+                            clause = _fmod.to_sqla_clause(col, kind, f)
+                            if clause is not None:
+                                where_clauses.append(clause)
+
+                    # Total count, with the same filters.  Skipped when the
+                    # caller signals they don't need it — saves a full-table
+                    # scan on big tables.
+                    total: Optional[int] = None
+                    if include_total:
+                        count_stmt = select(func.count()).select_from(Thread)
+                        for c in where_clauses:
+                            count_stmt = count_stmt.where(c)
+                        total = (await session.execute(count_stmt)).scalar_one()
+
+                    stmt = select(Thread)
+                    for c in where_clauses:
+                        stmt = stmt.where(c)
+
+                    if order == "asc":
+                        stmt = stmt.order_by(Thread.created_at.asc(), Thread.id.asc())
+                    else:
+                        stmt = stmt.order_by(Thread.created_at.desc(), Thread.id.desc())
+
+                    async def _apply_cursor(stmt, cursor_id, mode):
+                        if not cursor_id:
+                            return stmt
+                        cur = await session.execute(
+                            select(Thread.id, Thread.created_at).where(Thread.id == cursor_id)
+                        )
+                        cursor = cur.first()
+                        if not cursor:
+                            return stmt
+                        c_id, c_created = cursor
+                        if mode == "after":
+                            if order == "asc":
+                                return stmt.where(
+                                    (Thread.created_at > c_created) |
+                                    ((Thread.created_at == c_created) & (Thread.id > c_id))
+                                )
+                            return stmt.where(
+                                (Thread.created_at < c_created) |
+                                ((Thread.created_at == c_created) & (Thread.id < c_id))
+                            )
+                        # mode == "before"
+                        if order == "asc":
+                            return stmt.where(
+                                (Thread.created_at < c_created) |
+                                ((Thread.created_at == c_created) & (Thread.id < c_id))
+                            )
+                        return stmt.where(
+                            (Thread.created_at > c_created) |
+                            ((Thread.created_at == c_created) & (Thread.id > c_id))
+                        )
+
+                    stmt = await _apply_cursor(stmt, after, "after")
+                    stmt = await _apply_cursor(stmt, before, "before")
+
+                    # Fetch limit + 1 to detect has_more.
+                    result = await session.execute(stmt.limit(limit + 1))
+                    rows = list(result.scalars().all())
+                    has_more = len(rows) > limit
+                    page = rows[:limit]
+
+                    data = [
+                        ThreadObject(
+                            id=t.id,
+                            created_at=t.created_at,
+                            tool_resources=t.tool_resources,
+                            metadata=t.meta or {},
+                        )
+                        for t in page
+                    ]
+
+                    response = ListResponse(
+                        data=data,
+                        first_id=data[0].id if data else None,
+                        last_id=data[-1].id if data else None,
+                        has_more=has_more,
+                        total=int(total) if total is not None else None,
+                    )
+                    span.set_status(Status(StatusCode.OK))
+                    span.set_attribute(
+                        "output.value",
+                        _json_dump({
+                            "count": len(data),
+                            "total": response.total,
+                            "first_id": response.first_id,
+                            "last_id": response.last_id,
+                            "has_more": has_more,
+                        }),
+                    )
+                    return response
+
+                except Exception as e:
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR))
+                    logger.exception("list_threads() failed")
+                    return None
+
+    async def get_first_run_assistant_ids(self, thread_ids: List[str]) -> dict[str, str]:
+        """One-query bulk lookup using ``SELECT DISTINCT ON (thread_id)``.
+
+        Returns ``{thread_id: assistant_id}`` for threads that have at least
+        one run; missing threads are omitted.
+        """
+        if not thread_ids:
+            return {}
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.get_first_run_assistant_ids",
+            require_parent=True,
+            attributes={"store.backend": "postgres", "thread_count": len(thread_ids)},
+        ) as span:
+            async with self._session_factory() as session:
+                try:
+                    stmt = (
+                        select(Run.thread_id, Run.assistant_id)
+                        .where(Run.thread_id.in_(thread_ids))
+                        .order_by(Run.thread_id, Run.created_at.asc(), Run.id.asc())
+                        .distinct(Run.thread_id)
+                    )
+                    result = await session.execute(stmt)
+                    out: dict[str, str] = {}
+                    for tid, aid in result.all():
+                        if aid:
+                            out[tid] = aid
+                    span.set_status(Status(StatusCode.OK))
+                    return out
+                except Exception as e:
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR))
+                    logger.exception("get_first_run_assistant_ids() failed")
+                    return {}
+
     async def insert_thread(self, thread: CreateThreadRequest, event_queue: BaseEventQueue = None) -> ThreadObject | None:
         with span_context(
             store_tracer,
@@ -554,23 +864,12 @@ class PostgresDataStore(BaseDataStore):
                         return None
 
                     req = thread
-
-                    new_thread = Thread(
-                        id=thread_id,
-                        name=thread_id,
-                        tool_resources=_to_jsonable(thread.tool_resources),
-                        meta=_to_jsonable(metadata),
-                    )
+                    new_thread = self._make_thread_row(thread, thread_id=thread_id)
                     session.add(new_thread)
                     await session.commit()
                     await session.refresh(new_thread)
 
-                    thread_obj = ThreadObject(
-                        id=new_thread.id,
-                        created_at=new_thread.created_at,
-                        tool_resources=new_thread.tool_resources,
-                        metadata=new_thread.meta or {},
-                    )
+                    thread_obj = self._thread_object_from_row(new_thread)
 
                     for msg in req.messages or []:
                         msg_obj = await self._insert_message_in_session(session, thread_id, msg)
@@ -745,6 +1044,58 @@ class PostgresDataStore(BaseDataStore):
                 logger.exception("get_run_by_run_id() failed")
                 return None
 
+    async def get_run_any_thread(self, run_id: str) -> RunObject | None:
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(Run).where(Run.id == run_id)
+                )
+                run = result.scalars().first()
+                if not run:
+                    return None
+                return RunObject.model_validate(run.to_dict())
+            except Exception:
+                await session.rollback()
+                logger.exception("get_run_any_thread() failed")
+                return None
+
+    async def list_runs_by_parent_ids(self, parent_ids: List[str]) -> List[RunObject]:
+        if not parent_ids:
+            return []
+        async with self._session_factory() as session:
+            try:
+                # JSON path: meta ->> 'parent_run_id' IN (...).  Works on
+                # both Postgres JSONB and SQLite via SQLAlchemy's JSONType.
+                result = await session.execute(
+                    select(Run).where(
+                        Run.meta["parent_run_id"].astext.in_(parent_ids)
+                    )
+                )
+                return [RunObject.model_validate(r.to_dict()) for r in result.scalars().all()]
+            except Exception:
+                await session.rollback()
+                logger.exception("list_runs_by_parent_ids() failed")
+                return []
+
+    async def _count(self, model) -> int:
+        """Run ``SELECT COUNT(*) FROM <model>`` and return the result."""
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(select(func.count()).select_from(model))
+                return int(result.scalar_one() or 0)
+            except Exception:
+                logger.exception("count(%s) failed", getattr(model, "__tablename__", model))
+                return 0
+
+    async def count_threads(self) -> int:
+        return await self._count(Thread)
+
+    async def count_runs(self) -> int:
+        return await self._count(Run)
+
+    async def count_messages(self) -> int:
+        return await self._count(Message)
+
     async def insert_run(self, thread_id: str, run: RunCreateRequest, assistant: AgentObject, event_queue: BaseEventQueue = None) -> RunObject | None:
         with span_context(
             store_tracer,
@@ -782,32 +1133,7 @@ class PostgresDataStore(BaseDataStore):
                         span.set_attribute("output.value", _json_dump({"run_id": None, "status": None}))
                         return None
 
-                    metadata = run.metadata or {}
-                    run_id = metadata.get("run_id", str(uuid.uuid4()))
-
-                    new_run = Run(
-                        id=run_id,
-                        thread_id=thread_id,
-                        assistant_id=run.assistant_id,
-                        model=run.model or getattr(assistant, 'model', '') or '',
-                        instructions=(run.instructions or getattr(assistant, 'instructions', '') or '') + (run.additional_instructions or ''),
-                        tools=_to_jsonable(run.tools or getattr(assistant, 'tools', []) or []),
-                        meta=_to_jsonable(metadata),
-                        temperature=run.temperature or getattr(assistant, 'temperature', None),
-                        top_p=run.top_p or getattr(assistant, 'top_p', None),
-                        max_prompt_tokens=run.max_prompt_tokens,
-                        max_completion_tokens=run.max_completion_tokens,
-                        truncation_strategy=_to_jsonable(run.truncation_strategy),
-                        tool_choice=_to_jsonable(run.tool_choice),
-                        parallel_tool_calls=run.parallel_tool_calls,
-                        stream=bool(run.stream),
-                        response_format=_to_jsonable(run.response_format),
-                        reasoning_effort=run.reasoning_effort or getattr(assistant, 'reasoning_effort', None),
-                        config_values=_to_jsonable(run.config_values),
-                        provider_config=_to_jsonable(run.provider_config),
-                        status=run_status.QUEUED,
-                    )
-
+                    new_run = self._make_run_row(thread_id, run, assistant)
                     session.add(new_run)
                     await session.commit()
                     await session.refresh(new_run)
@@ -860,6 +1186,349 @@ class PostgresDataStore(BaseDataStore):
                 await event_queue.add(run_obj.to_event(event_type.RUN_QUEUED))
 
             return run_obj
+
+    # Allowlist of filterable Run fields: name → (column, kind).
+    _RUN_FILTER_FIELDS = {
+        "id":           (Run.id,            "string"),
+        "assistant_id": (Run.assistant_id,  "string"),
+        "agent_id":     (Run.assistant_id,  "string"),  # alias
+        "thread_id":    (Run.thread_id,     "string"),
+        "status":       (Run.status,        "string"),
+        "created_at":   (Run.created_at,    "date"),
+    }
+
+    @staticmethod
+    def _webhook_result_from_response(
+        response_json: dict,
+        *,
+        deduped: bool,
+        thread_created: bool,
+    ) -> WebhookCommandResult:
+        response = dict(response_json)
+        response["deduped"] = deduped
+        response["thread_created"] = thread_created
+        return WebhookCommandResult(
+            run_id=response["run_id"],
+            thread_id=response["thread_id"],
+            message_id=response.get("message_id"),
+            deduped=deduped,
+            thread_created=thread_created,
+            response_json=response,
+        )
+
+    async def _load_webhook_command_replay(
+        self,
+        session: AsyncSession,
+        command: WebhookCommand,
+    ) -> WebhookCommandResult | None:
+        if command.idempotency_key is None:
+            return None
+        result = await session.execute(
+            select(WebhookIdempotencyClaim).where(
+                WebhookIdempotencyClaim.scope == command.scope,
+                WebhookIdempotencyClaim.key == command.idempotency_key,
+            )
+        )
+        claim = result.scalars().first()
+        if claim is None:
+            return None
+        if claim.fingerprint != command.fingerprint:
+            raise WebhookCommandConflict(
+                "Webhook idempotency key was reused for a different command."
+            )
+        if not claim.response_json:
+            raise RuntimeError("Webhook idempotency claim is not complete.")
+        return self._webhook_result_from_response(
+            claim.response_json,
+            deduped=True,
+            thread_created=False,
+        )
+
+    async def _load_webhook_command_replay_after_conflict(
+        self,
+        command: WebhookCommand,
+    ) -> WebhookCommandResult:
+        async with self._session_factory() as retry_session:
+            existing = await self._load_webhook_command_replay(retry_session, command)
+            if existing is None:
+                raise RuntimeError("Webhook idempotency claim conflict could not be replayed.")
+            return existing
+
+    async def _insert_webhook_idempotency_claim(
+        self,
+        session: AsyncSession,
+        command: WebhookCommand,
+    ) -> WebhookIdempotencyClaim | None:
+        if command.idempotency_key is None:
+            return None
+        claim = WebhookIdempotencyClaim(
+            scope=command.scope,
+            key=command.idempotency_key,
+            fingerprint=command.fingerprint or "",
+            agent_id=command.agent_id,
+            trigger_path=command.trigger_path,
+            thread_id=None,
+            message_id=None,
+            run_id=None,
+            response_json=None,
+            expires_at=None,
+        )
+        session.add(claim)
+        await session.flush()
+        return claim
+
+    async def _resolve_webhook_thread(
+        self,
+        session: AsyncSession,
+        command: WebhookCommand,
+    ) -> tuple[Thread, bool]:
+        if command.thread_id is not None:
+            result = await session.execute(
+                select(Thread).where(Thread.id == command.thread_id)
+            )
+            thread = result.scalars().first()
+            if thread is None:
+                raise WebhookThreadNotFound(
+                    f"Thread '{command.thread_id}' was not found."
+                )
+            return thread, False
+
+        thread = self._make_thread_row(
+            CreateThreadRequest(metadata=command.thread_metadata),
+            thread_id=str(uuid.uuid4()),
+        )
+        session.add(thread)
+        return thread, True
+
+    def _insert_webhook_user_message(
+        self,
+        session: AsyncSession,
+        thread_id: str,
+        command: WebhookCommand,
+    ) -> str | None:
+        if command.message_text is None:
+            return None
+        message = self._make_message_row(
+            thread_id,
+            CreateMessageRequest(
+                role="user",
+                content=command.message_text,
+            ),
+        )
+        session.add(message)
+        return message.id
+
+    def _insert_webhook_run(
+        self,
+        session: AsyncSession,
+        thread_id: str,
+        command: WebhookCommand,
+        assistant: AgentObject,
+    ) -> Run:
+        run = self._make_run_row(
+            thread_id,
+            RunCreateRequest(
+                assistant_id=command.agent_id,
+                metadata=command.run_metadata,
+                config_values=command.run_config_values or None,
+            ),
+            assistant,
+        )
+        session.add(run)
+        return run
+
+    @staticmethod
+    def _complete_webhook_idempotency_claim(
+        claim: WebhookIdempotencyClaim | None,
+        *,
+        thread_id: str,
+        message_id: str | None,
+        run_id: str,
+        response_json: dict,
+    ) -> None:
+        if claim is None:
+            return
+        claim.thread_id = thread_id
+        claim.message_id = message_id
+        claim.run_id = run_id
+        claim.response_json = _to_jsonable(response_json)
+
+    async def execute_webhook_command(self, command: WebhookCommand) -> WebhookCommandResult:
+        def _assistant() -> AgentObject:
+            assistant = next((agent for agent in self.agents if agent.id == command.agent_id), None)
+            if assistant is None:
+                raise ValueError(f"Agent '{command.agent_id}' not found")
+            return assistant
+
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    existing = await self._load_webhook_command_replay(session, command)
+                    if existing is not None:
+                        return existing
+
+                    assistant = _assistant()
+                    claim = await self._insert_webhook_idempotency_claim(session, command)
+                    thread, thread_created = await self._resolve_webhook_thread(session, command)
+                    message_id = self._insert_webhook_user_message(session, thread.id, command)
+                    run = self._insert_webhook_run(session, thread.id, command, assistant)
+
+                    response_json = {
+                        "run_id": run.id,
+                        "thread_id": thread.id,
+                        "message_id": message_id,
+                        "deduped": False,
+                        "thread_created": thread_created,
+                    }
+                    self._complete_webhook_idempotency_claim(
+                        claim,
+                        thread_id=thread.id,
+                        message_id=message_id,
+                        run_id=run.id,
+                        response_json=response_json,
+                    )
+
+                return self._webhook_result_from_response(
+                    response_json,
+                    deduped=False,
+                    thread_created=thread_created,
+                )
+        except IntegrityError as exc:
+            if not self._is_webhook_idempotency_conflict(exc):
+                raise
+            return await self._load_webhook_command_replay_after_conflict(command)
+
+    async def list_all_runs(
+        self,
+        limit: int = 50,
+        order: Literal["desc", "asc"] = "desc",
+        after: Optional[str] = None,
+        before: Optional[str] = None,
+        filters: Optional[List[dict]] = None,
+        include_total: bool = True,
+    ) -> ListResponse | None:
+        attrs = {
+            "store.backend": "postgres",
+            "limit": limit,
+            "order": order,
+            "gen_ai.operation.name": "runs.list_all",
+        }
+        if after is not None:
+            attrs["after"] = after
+        if before is not None:
+            attrs["before"] = before
+
+        with span_context(
+            store_tracer,
+            "llamphouse.data_store.list_all_runs",
+            require_parent=True,
+            attributes=attrs,
+        ) as span:
+            async with self._session_factory() as session:
+                try:
+                    span.set_attribute(
+                        "input.value",
+                        _json_dump({
+                            "limit": limit, "order": order,
+                            "after": after, "before": before,
+                            "filter_count": len(filters or []),
+                        }),
+                    )
+
+                    # Build WHERE clauses once, share with count query.
+                    where_clauses = []
+                    if filters:
+                        from . import _filters as _fmod
+                        for f in filters:
+                            spec = self._RUN_FILTER_FIELDS.get(f.get("field"))
+                            if not spec:
+                                continue
+                            col, kind = spec
+                            clause = _fmod.to_sqla_clause(col, kind, f)
+                            if clause is not None:
+                                where_clauses.append(clause)
+
+                    total: Optional[int] = None
+                    if include_total:
+                        count_stmt = select(func.count()).select_from(Run)
+                        for c in where_clauses:
+                            count_stmt = count_stmt.where(c)
+                        total = (await session.execute(count_stmt)).scalar_one()
+
+                    stmt = select(Run)
+                    for c in where_clauses:
+                        stmt = stmt.where(c)
+
+                    if order == "asc":
+                        stmt = stmt.order_by(Run.created_at.asc(), Run.id.asc())
+                    else:
+                        stmt = stmt.order_by(Run.created_at.desc(), Run.id.desc())
+
+                    async def _apply_cursor(stmt, cursor_id, mode):
+                        if not cursor_id:
+                            return stmt
+                        cur = await session.execute(
+                            select(Run.id, Run.created_at).where(Run.id == cursor_id)
+                        )
+                        cursor = cur.first()
+                        if not cursor:
+                            return stmt
+                        c_id, c_created = cursor
+                        if mode == "after":
+                            if order == "asc":
+                                return stmt.where(
+                                    (Run.created_at > c_created) |
+                                    ((Run.created_at == c_created) & (Run.id > c_id))
+                                )
+                            return stmt.where(
+                                (Run.created_at < c_created) |
+                                ((Run.created_at == c_created) & (Run.id < c_id))
+                            )
+                        if order == "asc":
+                            return stmt.where(
+                                (Run.created_at < c_created) |
+                                ((Run.created_at == c_created) & (Run.id < c_id))
+                            )
+                        return stmt.where(
+                            (Run.created_at > c_created) |
+                            ((Run.created_at == c_created) & (Run.id > c_id))
+                        )
+
+                    stmt = await _apply_cursor(stmt, after, "after")
+                    stmt = await _apply_cursor(stmt, before, "before")
+
+                    result = await session.execute(stmt.limit(limit + 1))
+                    rows = list(result.scalars().all())
+                    has_more = len(rows) > limit
+                    page = rows[:limit]
+
+                    data = [RunObject.model_validate(r.to_dict()) for r in page]
+
+                    response = ListResponse(
+                        data=data,
+                        first_id=data[0].id if data else None,
+                        last_id=data[-1].id if data else None,
+                        has_more=has_more,
+                        total=int(total) if total is not None else None,
+                    )
+                    span.set_status(Status(StatusCode.OK))
+                    span.set_attribute(
+                        "output.value",
+                        _json_dump({
+                            "count": len(data),
+                            "total": response.total,
+                            "first_id": response.first_id,
+                            "last_id": response.last_id,
+                            "has_more": has_more,
+                        }),
+                    )
+                    return response
+
+                except Exception as e:
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR))
+                    logger.exception("list_all_runs() failed")
+                    return None
 
     async def list_runs(self, thread_id: str, limit: int = 20, order: Literal["desc", "asc"] = "desc", after: Optional[str] = None, before: Optional[str] = None) -> ListResponse | None:
         attrs = {
@@ -977,38 +1646,6 @@ class PostgresDataStore(BaseDataStore):
                     logger.exception("list_runs() failed")
                     return None
 
-    async def list_threads(self, limit: int = 50, order: Literal["desc", "asc"] = "desc") -> ListResponse | None:
-        """List all threads across all sessions (used by Compass dashboard)."""
-        async with self._session_factory() as session:
-            try:
-                stmt = select(Thread)
-                if order == "asc":
-                    stmt = stmt.order_by(Thread.created_at.asc(), Thread.id.asc())
-                else:
-                    stmt = stmt.order_by(Thread.created_at.desc(), Thread.id.desc())
-                result = await session.execute(stmt.limit(limit + 1))
-                rows = result.scalars().all()
-                has_more = len(rows) > limit
-                rows = rows[:limit]
-                threads = [
-                    ThreadObject(
-                        id=row.id,
-                        created_at=row.created_at,
-                        tool_resources=row.tool_resources,
-                        metadata=row.meta or {},
-                    )
-                    for row in rows
-                ]
-                return ListResponse(
-                    data=threads,
-                    first_id=threads[0].id if threads else None,
-                    last_id=threads[-1].id if threads else None,
-                    has_more=has_more,
-                )
-            except Exception:
-                logger.exception("list_threads() failed")
-                return None
-
     async def list_runs_all(self, limit: int = 200, order: Literal["desc", "asc"] = "desc") -> ListResponse | None:
         """List runs across all threads (used by Compass dashboard)."""
         async with self._session_factory() as session:
@@ -1032,36 +1669,6 @@ class PostgresDataStore(BaseDataStore):
             except Exception:
                 logger.exception("list_runs_all() failed")
                 return None
-
-    async def count_threads(self) -> int:
-        """Return total thread count (used by Compass overview)."""
-        async with self._session_factory() as session:
-            try:
-                result = await session.execute(select(func.count()).select_from(Thread))
-                return result.scalar_one()
-            except Exception:
-                logger.exception("count_threads() failed")
-                return 0
-
-    async def count_runs(self) -> int:
-        """Return total run count across all threads (used by Compass overview)."""
-        async with self._session_factory() as session:
-            try:
-                result = await session.execute(select(func.count()).select_from(Run))
-                return result.scalar_one()
-            except Exception:
-                logger.exception("count_runs() failed")
-                return 0
-
-    async def count_messages(self) -> int:
-        """Return total message count across all threads (used by Compass overview)."""
-        async with self._session_factory() as session:
-            try:
-                result = await session.execute(select(func.count()).select_from(Message))
-                return result.scalar_one()
-            except Exception:
-                logger.exception("count_messages() failed")
-                return 0
 
     async def update_run(self, thread_id: str, run_id: str, modifications: ModifyRunRequest) -> RunObject | None:
         with span_context(
@@ -1281,7 +1888,7 @@ class PostgresDataStore(BaseDataStore):
                         status=step_status,
                         step_details=_to_jsonable(step.step_details if not hasattr(step.step_details, "model_dump") else step.step_details.model_dump()),
                         meta=_to_jsonable(step.metadata),
-                        completed_at=int(datetime.now(timezone.utc).timestamp()) if step_status == run_step_status.COMPLETED else None,
+                        completed_at=round(datetime.now(timezone.utc).timestamp(), 3) if step_status == run_step_status.COMPLETED else None,
                     )
 
                     session.add(new_step)
@@ -1588,10 +2195,10 @@ class PostgresDataStore(BaseDataStore):
                     elif status == run_status.CANCELLED:
                         run.cancelled_at = now_ts
                     elif status == run_status.EXPIRED:
-                        run.expires_at = now_ts
+                        run.expired_at = now_ts
 
                     # ── Usage ──────────────────────────────────────────
-                    if usage is not None:
+                    if usage:
                         run.usage = _to_jsonable(usage)
 
                     await session.commit()
@@ -1660,17 +2267,32 @@ class PostgresDataStore(BaseDataStore):
 
                     if output is not None and step.step_details:
                         details = copy.deepcopy(step.step_details or {})
-                        tool_calls = details.get("tool_calls", [])
-                        if tool_calls:
-                            call = tool_calls[0]
-                            call_obj = call.get("root", call)
-                            call_obj.setdefault("function", {})["output"] = output
-                            if "root" in call:
-                                call["root"] = call_obj
-                            details["type"] = "tool_calls"
-                            details["tool_calls"] = tool_calls
+                        if details.get("type") == "step":
+                            details["output"] = output
                             step.step_details = _to_jsonable(details)
                             flag_modified(step, "step_details")
+                        else:
+                            tool_calls = details.get("tool_calls", [])
+                            if tool_calls:
+                                call = tool_calls[0]
+                                call_obj = call.get("root", call)
+                                call_obj.setdefault("function", {})["output"] = output
+                                if "root" in call:
+                                    call["root"] = call_obj
+                                details["type"] = "tool_calls"
+                                details["tool_calls"] = tool_calls
+                                step.step_details = _to_jsonable(details)
+                                flag_modified(step, "step_details")
+
+                    now_ts = round(datetime.now(timezone.utc).timestamp(), 3)
+                    if status == run_step_status.COMPLETED and not step.completed_at:
+                        step.completed_at = now_ts
+                    elif status == run_step_status.FAILED and not step.failed_at:
+                        step.failed_at = now_ts
+                    elif status == run_step_status.CANCELLED and not step.cancelled_at:
+                        step.cancelled_at = now_ts
+                    elif status == run_step_status.EXPIRED and not step.expired_at:
+                        step.expired_at = now_ts
 
                     await session.commit()
                     await session.refresh(step)
@@ -1801,5 +2423,26 @@ class PostgresDataStore(BaseDataStore):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def close(self) -> None:
-        await self._engine.dispose()
+    async def close(self, timeout: float = 5.0) -> None:
+        """Dispose the engine, with a bounded timeout.
+
+        SQLAlchemy's asyncpg dispatch graceful-closes each pooled connection
+        by sending a ``Terminate`` packet and waiting for the server to
+        acknowledge.  If a connection is unhealthy (network drop, killed
+        Postgres backend, etc.) that wait can stall on a dead socket for as
+        long as the OS TCP timeout — tens of seconds — and block the entire
+        shutdown sequence.
+
+        We cap the wait at ``timeout`` and log a warning if it expires.
+        Sockets left dangling are reclaimed by OS process exit.
+        """
+        try:
+            await asyncio.wait_for(self._engine.dispose(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Postgres engine dispose timed out after %.1fs — "
+                "pooled connections will be dropped on process exit.",
+                timeout,
+            )
+        except Exception:
+            logger.exception("Postgres engine dispose failed")

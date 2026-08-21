@@ -34,6 +34,7 @@ class TextSnapshot:
 class StreamFinished:
     reason: FinishReason
     usage: Optional[Dict[str, int]] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)

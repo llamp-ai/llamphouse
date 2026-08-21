@@ -1,4 +1,4 @@
-__version__ = "1.2.4"
+__version__ = "1.3.0"
 
 # Initialize tracing before anything else so the real TracerProvider
 # is always in place — any instrumentor called later (e.g.
@@ -9,6 +9,7 @@ _setup_tracing()
 from .core.llamphouse import LLAMPHouse
 from .core.assistant import Agent, Assistant
 from .core.context import Context
+from .core.workflow import step
 from .core.adapters import BaseAPIAdapter, AssistantAPIAdapter, A2AAdapter
 from .core.auth import AuthResult, BaseAuth, KeyAuth
 from .core.types.config import (
@@ -23,6 +24,14 @@ from .core.config_store import BaseConfigStore, InMemoryConfigStore
 from .core.queue import BaseQueue, InMemoryQueue, RedisQueue
 from .core.workers import AsyncWorker, DistributedWorker
 from .core.types.message import TextPart, ImagePart, FilePart, DataPart
+from .core.wrappers import BaseAgentWrapper, LangGraphAgent
+from .core.triggers import BaseTrigger, TriggerInfo, WebhookTrigger
+from .core.tracing import (
+    BaseTracingStore,
+    InMemoryTracingStore,
+    PostgresTracingStore,
+    ClickHouseTracingStore,
+)
 
 __all__ = [
     "LLAMPHouse",
@@ -52,4 +61,14 @@ __all__ = [
     "ImagePart",
     "FilePart",
     "DataPart",
+    "BaseAgentWrapper",
+    "LangGraphAgent",
+    "BaseTracingStore",
+    "InMemoryTracingStore",
+    "PostgresTracingStore",
+    "ClickHouseTracingStore",
+    "BaseTrigger",
+    "TriggerInfo",
+    "WebhookTrigger",
+    "step",
 ]
