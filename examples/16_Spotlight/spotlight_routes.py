@@ -1,10 +1,4 @@
-"""Small Spotlight-compatible custom routes for this example.
-
-This module deliberately lives beside the example instead of inside the
-Llamphouse package. It demonstrates how an application can expose a
-read-only Spotlight surface by reusing the runtime's existing data and
-tracing stores.
-"""
+"""Small read-only observability routes for this example only."""
 
 from __future__ import annotations
 
@@ -19,7 +13,9 @@ from pydantic import BaseModel
 router = APIRouter()
 MAX_LIMIT = 100
 MAX_SPANS_PER_TRACE = 1000
-MAX_TRACES_PER_RUN = 100
+MAX_TRACE_SCAN_RUNS = 100
+MAX_STEP_RECORDS = 100
+MAX_SAFE_STRING = 256
 
 
 class AgentProjection(BaseModel):
@@ -27,32 +23,52 @@ class AgentProjection(BaseModel):
     name: str
 
 
-class RunProjection(BaseModel):
-    run_id: str
-    thread_id: str
-    runtime_agent_id: str
+class ConversationProjection(BaseModel):
+    conversation_id: str
+    created_at: str
+    name: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class MessageProjection(BaseModel):
+    message_id: str
+    conversation_id: str
+    execution_id: Optional[str]
+    agent_ref: Optional[str]
+    role: str
+    status: str
+    created_at: str
+    completed_at: Optional[str] = None
+
+
+class UsageProjection(BaseModel):
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class ExecutionProjection(BaseModel):
+    execution_id: str
+    conversation_id: str
+    agent_ref: str
     created_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     model: Optional[str] = None
     status: str
+    usage: Optional["UsageProjection"] = None
+    error_code: Optional[str] = None
 
 
-class ThreadProjection(BaseModel):
-    thread_id: str
-    runtime_agent_id: str
-    created_at: str
-
-
-class MessageProjection(BaseModel):
-    message_id: str
-    thread_id: str
-    run_id: Optional[str]
-    runtime_agent_id: str
-    role: str
+class RunStepProjection(BaseModel):
+    step_id: str
+    run_id: str
+    type: str
+    name: Optional[str] = None
     status: str
     created_at: str
     completed_at: Optional[str] = None
+    diagnostic_code: Optional[str] = None
 
 
 class SpanProjection(BaseModel):
@@ -68,9 +84,9 @@ class SpanProjection(BaseModel):
 
 class TraceProjection(BaseModel):
     trace_id: str
-    run_id: str
-    runtime_agent_id: str
-    thread_id: str
+    execution_id: str
+    agent_ref: str
+    conversation_id: str
     started_at: str
     duration_ms: float
     status: str
@@ -88,25 +104,30 @@ def _error(status_code: int, code: str, message: str) -> JSONResponse:
     )
 
 
+def _resolve_agent(req: Request, external_agent_ref: str):
+    if not any(
+        agent.id == external_agent_ref
+        for agent in (getattr(req.app.state, "assistants", None) or [])
+    ):
+        return None, _error(404, "not_found", "agent not found")
+    return external_agent_ref, None
+
+
 def _invalid_limit(limit: int) -> Optional[JSONResponse]:
     if not 1 <= limit <= MAX_LIMIT:
         return _error(400, "invalid_request", "limit must be between 1 and 100")
     return None
 
 
-def _trace_page(items: list[BaseModel]) -> dict:
-    # Trace DTOs intentionally preserve nullable fields such as
-    # parent_span_id and diagnostic_code as explicit JSON nulls.
-    return {"data": [item.model_dump() for item in items]}
-
-
-def _list_page(items: list[BaseModel], source_result: Any) -> dict:
+def _page(items: list[BaseModel], next_cursor: Optional[str] = None) -> dict:
     return {
-        "data": [item.model_dump(exclude_none=True) for item in items],
-        "first_id": getattr(source_result, "first_id", None),
-        "last_id": getattr(source_result, "last_id", None),
-        "has_more": bool(getattr(source_result, "has_more", False)),
+        "data": [item.model_dump() for item in items],
+        "next_cursor": next_cursor,
     }
+
+
+def _detail(item: BaseModel) -> dict:
+    return {"data": item.model_dump()}
 
 
 def _as_utc(value: Any) -> datetime:
@@ -118,7 +139,6 @@ def _as_utc(value: Any) -> datetime:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     else:
         raise ValueError("unsupported timestamp")
-
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
@@ -128,21 +148,57 @@ def _timestamp(value: Any) -> str:
     return _as_utc(value).isoformat().replace("+00:00", "Z")
 
 
-def _agent(req: Request, runtime_agent_id: str):
-    agents = req.app.state.assistants or []
-    return next((agent for agent in agents if agent.id == runtime_agent_id), None)
+def _bounded_string(value: Any, field: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > MAX_SAFE_STRING:
+        raise ValueError(f"invalid {field}")
+    return value
 
 
-def _agent_or_error(req: Request, runtime_agent_id: str):
-    agent = _agent(req, runtime_agent_id)
-    if agent is None:
-        return None, _error(404, "runtime_agent_not_found", "runtime agent not found")
-    return agent, None
+def _safe_nonnegative_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def _usage_projection(run: Any) -> Optional[UsageProjection]:
+    usage = getattr(run, "usage", None)
+    if usage is None:
+        return None
+    return UsageProjection(
+        prompt_tokens=_safe_nonnegative_int(getattr(usage, "prompt_tokens", None)),
+        completion_tokens=_safe_nonnegative_int(
+            getattr(usage, "completion_tokens", None)
+        ),
+        total_tokens=_safe_nonnegative_int(getattr(usage, "total_tokens", None)),
+    )
+
+
+SAFE_DIAGNOSTIC_CODES = {
+    "cancelled",
+    "provider_error",
+    "rate_limited",
+    "rate_limit_exceeded",
+    "server_error",
+    "timeout",
+    "tool_error",
+    "unknown",
+}
+
+
+def _safe_diagnostic_code(value: Any) -> Optional[str]:
+    code = getattr(value, "code", value)
+    if code is None:
+        return None
+    code = str(code)
+    return code if code in SAFE_DIAGNOSTIC_CODES else "unknown"
 
 
 def _status(value: Any) -> str:
-    raw = getattr(value, "value", value)
-    raw = str(raw or "").upper()
+    raw = str(getattr(value, "value", value) or "").upper()
     if raw in {"1", "OK", "STATUS_CODE_OK"} or raw.endswith("_OK"):
         return "ok"
     if raw in {"2", "ERROR", "STATUS_CODE_ERROR"} or raw.endswith("_ERROR"):
@@ -162,7 +218,6 @@ def _kind(value: Any) -> str:
             "PRODUCER": "producer",
             "CONSUMER": "consumer",
         }.get(raw, "unknown")
-
     return {
         0: "unspecified",
         1: "internal",
@@ -179,13 +234,12 @@ def _duration_ms(raw_span: dict) -> float:
     return float(raw_span.get("duration_ms") or 0)
 
 
-def _attributed_to(raw_span: dict, runtime_agent_id: str, run_id: str) -> bool:
-    """Keep only spans with explicit source-backed run/agent attribution."""
+def _attributed_to(raw_span: dict, internal_agent_id: str, execution_id: str) -> bool:
     attrs = raw_span.get("SpanAttributes") or {}
     if not isinstance(attrs, dict):
         return False
-    source_run_id = attrs.get("run.id") or attrs.get("llamphouse.run_id")
-    if source_run_id != run_id:
+    source_execution_id = attrs.get("run.id") or attrs.get("llamphouse.run_id")
+    if source_execution_id != execution_id:
         return False
     source_agent_id = (
         attrs.get("assistant.id")
@@ -193,7 +247,7 @@ def _attributed_to(raw_span: dict, runtime_agent_id: str, run_id: str) -> bool:
         or attrs.get("agent.id")
         or attrs.get("runtime_agent_id")
     )
-    return source_agent_id in (None, runtime_agent_id)
+    return source_agent_id in (None, internal_agent_id)
 
 
 def _project_span(raw_span: dict) -> tuple[SpanProjection, datetime, float]:
@@ -201,45 +255,38 @@ def _project_span(raw_span: dict) -> tuple[SpanProjection, datetime, float]:
     duration_ms = _duration_ms(raw_span)
     if duration_ms < 0:
         raise ValueError("negative span duration")
-
-    span = SpanProjection(
-        span_id=str(raw_span["SpanId"]),
-        parent_span_id=str(raw_span.get("ParentSpanId") or "") or None,
-        operation_name=str(raw_span.get("SpanName") or "unknown"),
-        started_at=started.isoformat().replace("+00:00", "Z"),
-        duration_ms=duration_ms,
-        kind=_kind(raw_span.get("SpanKind", 0)),
-        status=_status(raw_span.get("StatusCode")),
-        # StatusMessage is intentionally not exposed. The example keeps
-        # diagnostics nullable rather than leaking backend/error details.
-        diagnostic_code=None,
+    return (
+        SpanProjection(
+            span_id=str(raw_span["SpanId"]),
+            parent_span_id=str(raw_span.get("ParentSpanId") or "") or None,
+            operation_name=str(raw_span.get("SpanName") or "unknown"),
+            started_at=_timestamp(started),
+            duration_ms=duration_ms,
+            kind=_kind(raw_span.get("SpanKind", 0)),
+            status=_status(raw_span.get("StatusCode")),
+            diagnostic_code=_safe_diagnostic_code(raw_span.get("DiagnosticCode")),
+        ),
+        started,
+        started.timestamp() + duration_ms / 1000,
     )
-    return span, started, started.timestamp() + duration_ms / 1000
-
-
-def _trace_status(spans: list[SpanProjection]) -> str:
-    if any(span.status == "error" for span in spans):
-        return "error"
-    if any(span.status == "ok" for span in spans):
-        return "ok"
-    return "unset"
 
 
 def _trace_detail(
     raw_spans: list[dict],
     trace_id: str,
-    run_id: str,
-    runtime_agent_id: str,
-    thread_id: str,
+    execution_id: str,
+    internal_agent_id: str,
+    external_agent_ref: str,
+    conversation_id: str,
 ) -> TraceDetailProjection:
     selected = [
         span
         for span in raw_spans
         if str(span.get("TraceId")) == trace_id
-        and _attributed_to(span, runtime_agent_id, run_id)
+        and _attributed_to(span, internal_agent_id, execution_id)
     ]
     if not selected:
-        raise ValueError("trace has no spans")
+        raise ValueError("trace has no attributed spans")
     if len(selected) > MAX_SPANS_PER_TRACE:
         raise ValueError("trace span bound exceeded")
 
@@ -253,205 +300,224 @@ def _trace_detail(
         ends.append(end_timestamp)
 
     started = min(starts)
-    duration_ms = (max(ends) - started.timestamp()) * 1000
+    status = "error" if any(span.status == "error" for span in projected) else (
+        "ok" if any(span.status == "ok" for span in projected) else "unset"
+    )
     return TraceDetailProjection(
         trace_id=trace_id,
-        run_id=run_id,
-        runtime_agent_id=runtime_agent_id,
-        thread_id=thread_id,
-        started_at=started.isoformat().replace("+00:00", "Z"),
-        duration_ms=duration_ms,
-        status=_trace_status(projected),
+        execution_id=execution_id,
+        agent_ref=external_agent_ref,
+        conversation_id=conversation_id,
+        started_at=_timestamp(started),
+        duration_ms=(max(ends) - started.timestamp()) * 1000,
+        status=status,
         span_count=len(projected),
         spans=projected,
     )
 
 
-def _run_projection(run: Any, runtime_agent_id: str) -> RunProjection:
-    return RunProjection(
-        run_id=str(run.id),
-        thread_id=str(run.thread_id),
-        runtime_agent_id=runtime_agent_id,
+def _conversation_projection(thread: Any) -> ConversationProjection:
+    return ConversationProjection(
+        conversation_id=str(thread.id),
+        created_at=_timestamp(thread.created_at),
+        name=_bounded_string(getattr(thread, "name", None), "conversation name"),
+        updated_at=(
+            _timestamp(thread.updated_at)
+            if getattr(thread, "updated_at", None) is not None
+            else None
+        ),
+    )
+
+
+def _execution_projection(run: Any, external_agent_ref: str) -> ExecutionProjection:
+    return ExecutionProjection(
+        execution_id=str(run.id),
+        conversation_id=str(run.thread_id),
+        agent_ref=external_agent_ref,
         created_at=_timestamp(run.created_at),
         started_at=_timestamp(run.started_at) if run.started_at is not None else None,
         completed_at=_timestamp(run.completed_at) if run.completed_at is not None else None,
         model=getattr(run, "model", None),
         status=str(getattr(run.status, "value", run.status)),
+        usage=_usage_projection(run),
+        error_code=_safe_diagnostic_code(getattr(run, "last_error", None)),
     )
 
 
-async def _owned_run(req: Request, runtime_agent_id: str, run_id: str):
-    db = req.app.state.data_store
-    run = await db.get_run_by_run_id(run_id)
-    if run is None or run.assistant_id != runtime_agent_id:
+def _step_name(step: Any) -> Optional[str]:
+    details = getattr(step, "step_details", None)
+    return _bounded_string(getattr(details, "name", None), "step name")
+
+
+def _step_projection(step: Any) -> RunStepProjection:
+    return RunStepProjection(
+        step_id=str(step.id),
+        run_id=str(step.run_id),
+        type=str(step.type),
+        name=_step_name(step),
+        status=str(getattr(step.status, "value", step.status)),
+        created_at=_timestamp(step.created_at),
+        completed_at=(
+            _timestamp(step.completed_at)
+            if step.completed_at is not None
+            else None
+        ),
+        diagnostic_code=_safe_diagnostic_code(getattr(step, "last_error", None)),
+    )
+
+
+async def _owned_execution(req: Request, execution_id: str, internal_agent_id: str):
+    run = await req.app.state.data_store.get_run_by_run_id(execution_id)
+    if run is None or run.assistant_id != internal_agent_id:
         return None
     return run
 
 
+async def _message_is_owned(
+    message: Any, internal_agent_id: str, thread_agent_ids: set[str], db: Any
+) -> bool:
+    explicit_agent = getattr(message, "assistant_id", None)
+    if explicit_agent:
+        return explicit_agent == internal_agent_id
+    execution_id = getattr(message, "run_id", None)
+    if execution_id:
+        run = await db.get_run_by_run_id(execution_id)
+        return bool(run and run.assistant_id == internal_agent_id)
+    return getattr(message, "role", None) == "user" and thread_agent_ids == {internal_agent_id}
+
+
+async def _trace_candidates(req: Request, internal_agent_id: str):
+    runs = await req.app.state.data_store.list_all_runs(
+        limit=MAX_TRACE_SCAN_RUNS,
+        order="desc",
+        after=None,
+        before=None,
+        filters=[
+            {"field": "assistant_id", "operator": "eq", "value": internal_agent_id}
+        ],
+        include_total=False,
+    )
+    if runs is None:
+        return
+    store = req.app.state.tracing_store
+    for run in runs.data:
+        raw_spans = await store.get_trace(str(run.id))
+        trace_ids: list[str] = []
+        for raw_span in raw_spans or []:
+            trace_id = str(raw_span.get("TraceId") or "")
+            if (
+                trace_id
+                and trace_id not in trace_ids
+                and _attributed_to(raw_span, internal_agent_id, str(run.id))
+            ):
+                trace_ids.append(trace_id)
+        for trace_id in trace_ids:
+            yield run, raw_spans, trace_id
+
+
 @router.get("/agents")
-async def list_agents(
-    req: Request,
-):
-    return {"data": [
-        AgentProjection(runtime_agent_id=a.id, name=a.name or a.id).model_dump()
-        for a in (req.app.state.assistants or [])
-    ]}
+async def list_agents(req: Request):
+    try:
+        return {
+            "data": [
+                AgentProjection(
+                    runtime_agent_id=str(agent.id),
+                    name=_bounded_string(getattr(agent, "name", None), "agent name")
+                    or str(agent.id),
+                ).model_dump()
+                for agent in (getattr(req.app.state, "assistants", None) or [])
+            ]
+        }
+    except Exception:
+        return _error(500, "read_failed", "observability read failed")
 
 
-@router.get("/agents/{runtime_agent_id}/runs")
-async def list_runs(
-    runtime_agent_id: str,
+@router.get("/agents/{external_agent_ref}/conversations")
+async def list_conversations(
+    external_agent_ref: str,
     req: Request,
     limit: int = Query(50),
-    after: Optional[str] = None,
-    before: Optional[str] = None,
+    cursor: Optional[str] = None,
 ):
     invalid = _invalid_limit(limit)
     if invalid:
         return invalid
-    _, missing = _agent_or_error(req, runtime_agent_id)
-    if missing:
-        return missing
-
-    try:
-        result = await req.app.state.data_store.list_all_runs(
-            limit=limit,
-            order="desc",
-            after=after,
-            before=before,
-            filters=[{"field": "assistant_id", "operator": "eq", "value": runtime_agent_id}],
-            include_total=False,
-        )
-        if result is None:
-            return _error(503, "runtime_unavailable", "runtime data is unavailable")
-        data = [_run_projection(run, runtime_agent_id) for run in result.data]
-        return _list_page(data, result)
-    except Exception:
-        return _error(500, "runtime_read_failed", "runtime read failed")
-
-
-@router.get("/agents/{runtime_agent_id}/runs/{run_id}")
-async def get_run(runtime_agent_id: str, run_id: str, req: Request):
-    _, missing = _agent_or_error(req, runtime_agent_id)
-    if missing:
-        return missing
-    try:
-        run = await _owned_run(req, runtime_agent_id, run_id)
-        if run is None:
-            return _error(404, "runtime_record_not_found", "run not found")
-        return _run_projection(run, runtime_agent_id).model_dump()
-    except Exception:
-        return _error(500, "runtime_read_failed", "runtime read failed")
-
-
-@router.get("/agents/{runtime_agent_id}/threads")
-async def list_threads(
-    runtime_agent_id: str,
-    req: Request,
-    limit: int = Query(50),
-    after: Optional[str] = None,
-    before: Optional[str] = None,
-):
-    invalid = _invalid_limit(limit)
-    if invalid:
-        return invalid
-    _, missing = _agent_or_error(req, runtime_agent_id)
-    if missing:
-        return missing
-
+    internal_agent_id, error = _resolve_agent(req, external_agent_ref)
+    if error:
+        return error
     try:
         result = await req.app.state.data_store.list_threads(
             limit=limit,
             order="desc",
-            after=after,
-            before=before,
-            filters=[{"field": "agent_id", "operator": "eq", "value": runtime_agent_id}],
+            after=cursor,
+            before=None,
+            filters=[
+                {"field": "agent_id", "operator": "eq", "value": internal_agent_id}
+            ],
             include_total=False,
         )
         if result is None:
-            return _error(503, "runtime_unavailable", "runtime data is unavailable")
-        data = [
-            ThreadProjection(
-                thread_id=str(thread.id),
-                runtime_agent_id=runtime_agent_id,
-                created_at=_timestamp(thread.created_at),
-            )
-            for thread in result.data
-        ]
-        return _list_page(data, result)
+            return _error(503, "unavailable", "data is unavailable")
+        return _page(
+            [_conversation_projection(thread) for thread in result.data],
+            result.last_id if result.has_more else None,
+        )
     except Exception:
-        return _error(500, "runtime_read_failed", "runtime read failed")
+        return _error(500, "read_failed", "observability read failed")
 
 
-async def _message_is_owned(message: Any, runtime_agent_id: str, thread_agent_ids: set[str], db: Any) -> bool:
-    explicit_agent = getattr(message, "assistant_id", None)
-    if explicit_agent:
-        return explicit_agent == runtime_agent_id
-
-    message_run_id = getattr(message, "run_id", None)
-    if message_run_id:
-        run = await db.get_run_by_run_id(message_run_id)
-        return bool(run and run.assistant_id == runtime_agent_id)
-
-    # User messages created before a run has been stamped have no direct
-    # owner. They are safe only when the thread has exactly one agent.
-    return getattr(message, "role", None) == "user" and thread_agent_ids == {runtime_agent_id}
-
-
-@router.get("/agents/{runtime_agent_id}/threads/{thread_id}/messages")
+@router.get("/agents/{external_agent_ref}/conversations/{conversation_id}/messages")
 async def list_messages(
-    runtime_agent_id: str,
-    thread_id: str,
+    external_agent_ref: str,
+    conversation_id: str,
     req: Request,
     limit: int = Query(50),
-    after: Optional[str] = None,
-    before: Optional[str] = None,
+    cursor: Optional[str] = None,
 ):
     invalid = _invalid_limit(limit)
     if invalid:
         return invalid
-    _, missing = _agent_or_error(req, runtime_agent_id)
-    if missing:
-        return missing
-
+    internal_agent_id, error = _resolve_agent(req, external_agent_ref)
+    if error:
+        return error
     db = req.app.state.data_store
     try:
-        thread = await db.get_thread_by_id(thread_id)
+        thread = await db.get_thread_by_id(conversation_id)
         if thread is None:
-            return _error(404, "runtime_record_not_found", "thread not found")
-
-        run_page = await db.list_runs(thread_id, limit=1000, order="asc", after=None, before=None)
+            return _error(404, "not_found", "conversation not found")
+        run_page = await db.list_runs(
+            conversation_id, limit=1000, order="asc", after=None, before=None
+        )
         thread_agent_ids = {
             str(run.assistant_id)
             for run in (run_page.data if run_page else [])
             if getattr(run, "assistant_id", None)
         }
-
         selected: list[MessageProjection] = []
-        source_after = after
-        source_before = before
-        next_cursor = None
+        source_cursor = cursor
         result = None
         while len(selected) < limit:
             result = await db.list_messages(
-                thread_id,
+                conversation_id,
                 limit=limit,
                 order="desc",
-                after=source_after,
-                before=source_before,
+                after=source_cursor,
+                before=None,
             )
             if result is None:
-                return _error(503, "runtime_unavailable", "runtime data is unavailable")
-
+                return _error(503, "unavailable", "data is unavailable")
             for message in result.data:
-                if not await _message_is_owned(message, runtime_agent_id, thread_agent_ids, db):
+                if not await _message_is_owned(
+                    message, internal_agent_id, thread_agent_ids, db
+                ):
                     continue
+                execution_id = getattr(message, "run_id", None)
                 selected.append(
                     MessageProjection(
                         message_id=str(message.id),
-                        thread_id=thread_id,
-                        run_id=getattr(message, "run_id", None),
-                        runtime_agent_id=runtime_agent_id,
+                        conversation_id=conversation_id,
+                        execution_id=str(execution_id) if execution_id else None,
+                        agent_ref=external_agent_ref if execution_id else None,
                         role=str(getattr(message.role, "value", message.role)),
                         status=str(getattr(message.status, "value", message.status)),
                         created_at=_timestamp(message.created_at),
@@ -464,115 +530,149 @@ async def list_messages(
                 )
                 if len(selected) == limit:
                     break
-
             if not result.has_more or not result.data:
                 break
-            next_cursor = result.last_id
-            source_after = result.last_id
-            if source_before:
-                break
-
-        return {
-            "data": [item.model_dump(exclude_none=True) for item in selected],
-            "first_id": selected[0].message_id if selected else None,
-            "last_id": next_cursor,
-            "has_more": bool(result and result.has_more and len(selected) == limit),
-        }
+            source_cursor = result.last_id
+        return _page(selected, result.last_id if result and result.has_more else None)
     except Exception:
-        return _error(500, "runtime_read_failed", "runtime read failed")
+        return _error(500, "read_failed", "observability read failed")
 
 
-def _summary_from_row(
-    row: dict,
-    run: Any,
-    runtime_agent_id: str,
-    span_count: int = 0,
-) -> TraceProjection:
-    return TraceProjection(
-        trace_id=str(row["TraceId"]),
-        run_id=str(run.id),
-        runtime_agent_id=runtime_agent_id,
-        thread_id=str(run.thread_id),
-        started_at=_timestamp(row["Timestamp"]),
-        duration_ms=float(row.get("duration_ms") or 0),
-        status=_status(row.get("StatusCode")),
-        span_count=span_count,
-    )
-
-
-@router.get("/agents/{runtime_agent_id}/traces")
-async def list_traces(runtime_agent_id: str, req: Request, limit: int = Query(50)):
+@router.get("/agents/{external_agent_ref}/executions")
+@router.get("/agents/{external_agent_ref}/runs")
+async def list_executions(
+    external_agent_ref: str,
+    req: Request,
+    limit: int = Query(50),
+    cursor: Optional[str] = None,
+):
     invalid = _invalid_limit(limit)
     if invalid:
         return invalid
-    _, missing = _agent_or_error(req, runtime_agent_id)
-    if missing:
-        return missing
-
+    internal_agent_id, error = _resolve_agent(req, external_agent_ref)
+    if error:
+        return error
     try:
-        store = req.app.state.tracing_store
-        rows = await store.list_traces(limit=limit, assistant_id=runtime_agent_id)
-        result: list[TraceProjection] = []
-        seen: set[str] = set()
-        for row in rows:
-            trace_id = str(row.get("TraceId") or "")
-            run_id = str(row.get("run_id") or "")
-            if not trace_id or not run_id or trace_id in seen:
-                continue
-            run = await _owned_run(req, runtime_agent_id, run_id)
-            if run is None:
-                continue
-
-            raw_spans = await store.get_trace(run.id)
-            try:
-                detail = _trace_detail(raw_spans, trace_id, run.id, runtime_agent_id, run.thread_id)
-                result.append(TraceProjection(**detail.model_dump(exclude={"spans"})))
-            except ValueError as exc:
-                if str(exc) != "trace has no spans":
-                    raise
-                # A summary row can exist before safe detail rows are visible.
-                # Keep the authoritative identity, and make its count agree
-                # with the empty safe detail projection.
-                result.append(_summary_from_row(row, run, runtime_agent_id, 0))
-            seen.add(trace_id)
-        return _trace_page(result)
+        result = await req.app.state.data_store.list_all_runs(
+            limit=limit,
+            order="desc",
+            after=cursor,
+            before=None,
+            filters=[
+                {"field": "assistant_id", "operator": "eq", "value": internal_agent_id}
+            ],
+            include_total=False,
+        )
+        if result is None:
+            return _error(503, "unavailable", "data is unavailable")
+        return _page(
+            [_execution_projection(run, external_agent_ref) for run in result.data],
+            result.last_id if result.has_more else None,
+        )
     except Exception:
-        return _error(500, "runtime_read_failed", "runtime read failed")
+        return _error(500, "read_failed", "observability read failed")
 
 
-@router.get("/agents/{runtime_agent_id}/traces/{run_id}")
-async def get_trace(runtime_agent_id: str, run_id: str, req: Request):
-    _, missing = _agent_or_error(req, runtime_agent_id)
-    if missing:
-        return missing
+@router.get("/agents/{external_agent_ref}/runs/{run_id}")
+async def get_run(external_agent_ref: str, run_id: str, req: Request):
+    internal_agent_id, error = _resolve_agent(req, external_agent_ref)
+    if error:
+        return error
     try:
-        run = await _owned_run(req, runtime_agent_id, run_id)
+        run = await _owned_execution(req, run_id, internal_agent_id)
         if run is None:
-            return _error(404, "runtime_record_not_found", "run not found")
-
-        raw_spans = await req.app.state.tracing_store.get_trace(run.id)
-        if not raw_spans:
-            return _trace_page([])
-
-        trace_ids: list[str] = []
-        for raw_span in raw_spans:
-            trace_id = str(raw_span.get("TraceId") or "")
-            if (
-                trace_id
-                and trace_id not in trace_ids
-                and _attributed_to(raw_span, runtime_agent_id, run.id)
-            ):
-                trace_ids.append(trace_id)
-        if len(trace_ids) > MAX_TRACES_PER_RUN:
-            return _error(500, "runtime_read_failed", "trace detail bound exceeded")
-
-        if not trace_ids:
-            return _trace_page([])
-
-        details = [
-            _trace_detail(raw_spans, trace_id, run.id, runtime_agent_id, run.thread_id)
-            for trace_id in trace_ids
-        ]
-        return _trace_page(details)
+            return _error(404, "not_found", "run not found")
+        return _detail(_execution_projection(run, external_agent_ref))
     except Exception:
-        return _error(500, "runtime_read_failed", "runtime read failed")
+        return _error(500, "read_failed", "observability read failed")
+
+
+@router.get("/agents/{external_agent_ref}/runs/{run_id}/steps")
+async def list_run_steps(
+    external_agent_ref: str,
+    run_id: str,
+    req: Request,
+    limit: int = Query(50),
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+):
+    invalid = _invalid_limit(limit)
+    if invalid:
+        return invalid
+    internal_agent_id, error = _resolve_agent(req, external_agent_ref)
+    if error:
+        return error
+    try:
+        run = await _owned_execution(req, run_id, internal_agent_id)
+        if run is None:
+            return _error(404, "not_found", "run not found")
+        result = await req.app.state.data_store.list_run_steps(
+            str(run.thread_id),
+            run_id,
+            limit=limit,
+            order="desc",
+            after=after,
+            before=before,
+        )
+        if result is None:
+            return _error(503, "unavailable", "data is unavailable")
+        if len(result.data) > MAX_STEP_RECORDS:
+            raise ValueError("run step bound exceeded")
+        return _page(
+            [_step_projection(step) for step in result.data],
+            result.last_id if result.has_more else None,
+        )
+    except Exception:
+        return _error(500, "read_failed", "observability read failed")
+
+
+@router.get("/agents/{external_agent_ref}/traces")
+async def list_traces(external_agent_ref: str, req: Request, limit: int = Query(50)):
+    invalid = _invalid_limit(limit)
+    if invalid:
+        return invalid
+    internal_agent_id, error = _resolve_agent(req, external_agent_ref)
+    if error:
+        return error
+    try:
+        result: list[TraceProjection] = []
+        async for run, raw_spans, trace_id in _trace_candidates(req, internal_agent_id):
+            detail = _trace_detail(
+                raw_spans,
+                trace_id,
+                str(run.id),
+                internal_agent_id,
+                external_agent_ref,
+                str(run.thread_id),
+            )
+            result.append(TraceProjection(**detail.model_dump(exclude={"spans"})))
+            if len(result) == limit:
+                break
+        return _page(result)
+    except Exception:
+        return _error(500, "read_failed", "observability read failed")
+
+
+@router.get("/agents/{external_agent_ref}/traces/{trace_id}")
+async def get_trace(external_agent_ref: str, trace_id: str, req: Request):
+    internal_agent_id, error = _resolve_agent(req, external_agent_ref)
+    if error:
+        return error
+    try:
+        async for run, raw_spans, candidate_trace_id in _trace_candidates(
+            req, internal_agent_id
+        ):
+            if candidate_trace_id != trace_id:
+                continue
+            detail = _trace_detail(
+                raw_spans,
+                trace_id,
+                str(run.id),
+                internal_agent_id,
+                external_agent_ref,
+                str(run.thread_id),
+            )
+            return _detail(detail)
+        return _error(404, "not_found", "trace not found")
+    except Exception:
+        return _error(500, "read_failed", "observability read failed")

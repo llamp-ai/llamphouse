@@ -10,16 +10,24 @@ The server exposes:
 
 ```text
 GET /spotlight/agents
-GET /spotlight/agents/{runtime_agent_id}/runs
-GET /spotlight/agents/{runtime_agent_id}/runs/{run_id}
-GET /spotlight/agents/{runtime_agent_id}/threads
-GET /spotlight/agents/{runtime_agent_id}/threads/{thread_id}/messages
-GET /spotlight/agents/{runtime_agent_id}/traces
-GET /spotlight/agents/{runtime_agent_id}/traces/{run_id}
+GET /spotlight/agents/{external_agent_ref}/conversations
+GET /spotlight/agents/{external_agent_ref}/conversations/{conversation_id}/messages
+GET /spotlight/agents/{external_agent_ref}/executions
+GET /spotlight/agents/{external_agent_ref}/runs
+GET /spotlight/agents/{external_agent_ref}/runs/{run_id}
+GET /spotlight/agents/{external_agent_ref}/runs/{run_id}/steps
+GET /spotlight/agents/{external_agent_ref}/traces
+GET /spotlight/agents/{external_agent_ref}/traces/{trace_id}
 ```
 
-The responses contain bounded projections only. Message content, metadata,
-usage, raw OTel attributes/events and backend objects are not exposed.
+List responses use `{ "data": [...], "next_cursor": null }`. The trace
+detail response uses `{ "data": {...} }`. All responses contain bounded
+projections only. Message content, metadata, raw OTel attributes/events and
+backend objects are not exposed.
+
+Spotlight routes do not require an additional credential. The
+`external_agent_ref` path value is the exact registered `Agent.id` exposed by
+the example's agent configuration/Agent Card.
 
 ## Run
 
@@ -41,7 +49,7 @@ To exercise the Spotlight error responses:
 uv run client_error.py
 ```
 
-Spotlight connects directly to the routes above; there is no separate
-Spotlight client process. The A2A card and A2A JSON-RPC routes remain provided by the existing
-`A2AAdapter`; Spotlight is only the additional custom route mounted by
-`server.py`.
+The example connects directly to the routes above; there is no separate
+Spotlight client process. The A2A card and A2A JSON-RPC routes remain
+provided by the existing `A2AAdapter`; observability is only the additional
+custom route mounted by `server.py`.

@@ -69,7 +69,10 @@ def main():
     # Custom application route: this is intentionally mounted outside the
     # Llamphouse package. It reuses app.state.data_store/tracing_store and
     # leaves the core and A2A adapter unchanged.
-    llamphouse.fastapi.include_router(spotlight_router, prefix="/spotlight")
+    llamphouse.fastapi.include_router(
+        spotlight_router,
+        prefix="/spotlight",
+    )
 
     llamphouse.ignite(host="127.0.0.1", port=8000)
 
