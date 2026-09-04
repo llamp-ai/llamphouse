@@ -97,6 +97,20 @@ class TraceDetailProjection(TraceProjection):
     spans: list[SpanProjection]
 
 
+class SummaryBucket(BaseModel):
+    total: int
+    passed: int
+    failed: int
+    unclassified: int
+
+
+class SummaryProjection(BaseModel):
+    conversations: SummaryBucket
+    executions: SummaryBucket
+    traces: SummaryBucket
+    as_of: str
+
+
 def _error(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         {"error": {"code": code, "message": message}},
@@ -128,6 +142,37 @@ def _page(items: list[BaseModel], next_cursor: Optional[str] = None) -> dict:
 
 def _detail(item: BaseModel) -> dict:
     return {"data": item.model_dump()}
+
+
+def _summary_bucket(statuses: list[str]) -> SummaryBucket:
+    passed = sum(status == "passed" for status in statuses)
+    failed = sum(status == "failed" for status in statuses)
+    unclassified = sum(status == "unclassified" for status in statuses)
+    return SummaryBucket(
+        total=len(statuses),
+        passed=passed,
+        failed=failed,
+        unclassified=unclassified,
+    )
+
+
+def _run_summary_status(run: Any) -> str:
+    raw_status = getattr(run, "status", None)
+    status = str(getattr(raw_status, "value", raw_status) or "").lower()
+    if status == "completed":
+        return "passed"
+    if status in {"failed", "cancelled", "expired"}:
+        return "failed"
+    return "unclassified"
+
+
+def _conversation_summary_status(runs: list[Any]) -> str:
+    statuses = {_run_summary_status(run) for run in runs}
+    if "failed" in statuses:
+        return "failed"
+    if "unclassified" in statuses or not statuses:
+        return "unclassified"
+    return "passed"
 
 
 def _as_utc(value: Any) -> datetime:
@@ -415,6 +460,31 @@ async def _trace_candidates(req: Request, internal_agent_id: str):
             yield run, raw_spans, trace_id
 
 
+async def _list_all_agent_runs(req: Request, internal_agent_id: str) -> list[Any]:
+    runs: list[Any] = []
+    cursor = None
+    while True:
+        result = await req.app.state.data_store.list_all_runs(
+            limit=MAX_LIMIT,
+            order="desc",
+            after=cursor,
+            before=None,
+            filters=[
+                {"field": "assistant_id", "operator": "eq", "value": internal_agent_id}
+            ],
+            include_total=False,
+        )
+        if result is None:
+            raise RuntimeError("run source unavailable")
+        runs.extend(result.data)
+        if not result.has_more:
+            return runs
+        next_cursor = result.last_id
+        if not next_cursor or next_cursor == cursor:
+            raise ValueError("invalid run source cursor")
+        cursor = next_cursor
+
+
 @router.get("/agents")
 async def list_agents(req: Request):
     try:
@@ -430,6 +500,67 @@ async def list_agents(req: Request):
         }
     except Exception:
         return _error(500, "read_failed", "observability read failed")
+
+
+@router.get("/agents/{external_agent_ref}/summary")
+async def get_summary(external_agent_ref: str, req: Request):
+    """Return bounded aggregate counts sourced from this example's runtime data."""
+    internal_agent_id, error = _resolve_agent(req, external_agent_ref)
+    if error:
+        return error
+
+    try:
+        runs = await _list_all_agent_runs(req, internal_agent_id)
+        runs_by_thread: dict[str, list[Any]] = {}
+        for run in runs:
+            runs_by_thread.setdefault(str(run.thread_id), []).append(run)
+
+        conversation_statuses = [
+            _conversation_summary_status(thread_runs)
+            for thread_runs in runs_by_thread.values()
+        ]
+        execution_statuses = [_run_summary_status(run) for run in runs]
+
+        trace_statuses: list[str] = []
+        trace_ids: set[str] = set()
+        store = req.app.state.tracing_store
+        for run in runs:
+            raw_spans = await store.get_trace(str(run.id))
+            for raw_span in raw_spans or []:
+                trace_id = str(raw_span.get("TraceId") or "")
+                if not trace_id or trace_id in trace_ids:
+                    continue
+                if not _attributed_to(raw_span, internal_agent_id, str(run.id)):
+                    continue
+                detail = _trace_detail(
+                    raw_spans,
+                    trace_id,
+                    str(run.id),
+                    internal_agent_id,
+                    external_agent_ref,
+                    str(run.thread_id),
+                )
+                trace_ids.add(trace_id)
+                trace_statuses.append(
+                    "passed"
+                    if detail.status == "ok"
+                    else "failed"
+                    if detail.status == "error"
+                    else "unclassified"
+                )
+
+        return _detail(
+            SummaryProjection(
+                conversations=_summary_bucket(conversation_statuses),
+                executions=_summary_bucket(execution_statuses),
+                traces=_summary_bucket(trace_statuses),
+                as_of=_timestamp(datetime.now(timezone.utc)),
+            )
+        )
+    except RuntimeError:
+        return _error(503, "unavailable", "observability source unavailable")
+    except Exception:
+        return _error(500, "read_failed", "observability summary failed")
 
 
 @router.get("/agents/{external_agent_ref}/conversations")
