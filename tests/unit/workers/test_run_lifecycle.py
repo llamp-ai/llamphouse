@@ -254,3 +254,23 @@ def test_the_cancel_route_stops_running_runs_and_refuses_finished_ones():
     assert stopped.status_code == 200 and stopped.json()["status"] == run_status.CANCELLING
     refused = client.post(f"/threads/{done[0]}/runs/{done[1]}/cancel")
     assert refused.status_code == 400 and "already completed" in refused.json()["detail"]
+
+
+async def test_a_run_can_start_other_runs_through_its_runtime():
+    """context.runtime: what an app's own state holds, from inside a run."""
+    ds, agent = InMemoryDataStore(), Recorder()
+    queue = _AckQueue()
+    seen = {}
+
+    class Starter(Agent):
+        async def run(self, context: Context):
+            seen["runtime"] = context.runtime
+
+    starter = Starter(id="starter")
+    thread_id, run_id = await new_run(ds, starter)
+    message = QueueMessage(run_id=run_id, thread_id=thread_id, assistant_id="starter")
+    await AsyncWorker(heartbeat=BEAT)._execute_run((run_id, message), ds, queue, [starter, agent], _State())
+
+    runtime = seen["runtime"]
+    assert runtime.data_store is ds and runtime.run_queue is queue
+    assert [a.id for a in runtime.assistants] == ["starter", "agent-1"]

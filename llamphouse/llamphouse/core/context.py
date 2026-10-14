@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import asyncio
 import uuid
 import traceback
@@ -130,6 +131,19 @@ class Context:
         self._run_usage: Dict[str, int] = {}
         # Populated when this run was started by a trigger; None for human runs.
         self.trigger: Optional[TriggerInfo] = self._resolve_trigger()
+
+    @property
+    def runtime(self) -> SimpleNamespace:
+        """What this run needs to start other runs: the data store, the run
+        queue and the agents - the same an app's own state holds, wherever
+        the run executes (the API's worker, or a distributed one)."""
+        return SimpleNamespace(
+            data_store=self.data_store,
+            run_queue=self._run_queue,
+            assistants=self._assistants,
+            event_queues=self._event_queues,
+            queue_class=self._queue_class,
+        )
 
     def _resolve_trigger(self) -> Optional[TriggerInfo]:
         """Extract TriggerInfo from run metadata, if present."""
