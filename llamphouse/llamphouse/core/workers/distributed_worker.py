@@ -42,6 +42,7 @@ from ..data_stores.base_data_store import BaseDataStore
 from ..queue.base_queue import BaseQueue
 from ..queue.types import QueueMessage
 from ..queue.exceptions import QueueRetryExceeded
+from .run_lifecycle import HEARTBEAT_SECONDS, RunCancelled, cancelled_before_start, run_supervised
 
 logger = logging.getLogger("llamphouse.worker.distributed")
 tracer = get_tracer("llamphouse.worker")
@@ -79,6 +80,7 @@ class DistributedWorker(BaseWorker):
         *,
         assistants: Sequence[Agent] = None,  # backward-compat alias
         time_out: float = 30.0,
+        heartbeat: float = HEARTBEAT_SECONDS,
         concurrency: int = 10,
     ) -> None:
         self.redis_url = redis_url
@@ -88,6 +90,7 @@ class DistributedWorker(BaseWorker):
         self.assistants = self.agents  # backward-compat alias
         self.run_queue = run_queue
         self.time_out = time_out
+        self.heartbeat = heartbeat
         self.concurrency = concurrency
 
         self._running = False
@@ -214,6 +217,13 @@ class DistributedWorker(BaseWorker):
                         span.set_status(Status(StatusCode.ERROR))
                         return
 
+                    # Cancelled while it waited in the queue: never started.
+                    if await cancelled_before_start(self.data_store, thread_id, run_id):
+                        await self.data_store.update_run_status(thread_id, run_id, run_status.CANCELLED)
+                        span.add_event("run.cancelled_before_start")
+                        await self.run_queue.ack(receipt)
+                        return
+
                     # Create Redis event queue if streaming was requested
                     if run_object.stream:
                         output_queue = RedisEventQueue(
@@ -252,11 +262,21 @@ class DistributedWorker(BaseWorker):
                         assistants=self.assistants,
                     )
 
-                    # Execute the assistant
-                    if inspect.iscoroutinefunction(assistant.run):
-                        await asyncio.wait_for(assistant.run(context), timeout=self.time_out)
-                    else:
-                        await asyncio.wait_for(asyncio.to_thread(assistant.run, context), timeout=self.time_out)
+                    # Execute the assistant: within its time out, with a
+                    # heartbeat, stopped if a cancel is requested.
+                    work = (
+                        assistant.run(context)
+                        if inspect.iscoroutinefunction(assistant.run)
+                        else asyncio.to_thread(assistant.run, context)
+                    )
+                    await run_supervised(
+                        work,
+                        data_store=self.data_store,
+                        thread_id=thread_id,
+                        run_id=run_id,
+                        time_out=self.time_out,
+                        heartbeat=self.heartbeat,
+                    )
 
                     # Success
                     await self.data_store.update_run_status(thread_id, run_id, run_status.COMPLETED)
@@ -269,6 +289,16 @@ class DistributedWorker(BaseWorker):
 
                     span.set_attribute("gen_ai.response.status", "completed")
                     span.set_status(Status(StatusCode.OK))
+
+                except RunCancelled:
+                    span.add_event("run.cancelled")
+                    span.set_attribute("gen_ai.response.status", "cancelled")
+                    await self.data_store.update_run_status(thread_id, run_id, run_status.CANCELLED)
+                    if output_queue and run_object:
+                        run_object = await self.data_store.get_run_by_id(thread_id, run_id) or run_object
+                        await output_queue.add(run_object.to_event(event_type.RUN_CANCELLED))
+                        await output_queue.add(DoneEvent())
+                    await self.run_queue.ack(receipt)
 
                 except asyncio.TimeoutError as e:
                     error = {"code": "server_error", "message": "Run timeout"}

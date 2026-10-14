@@ -14,7 +14,7 @@ from .auth.base_auth import BaseAuth
 from .streaming.event_queue.base_event_queue import BaseEventQueue
 from .streaming.event_queue.in_memory_event_queue import InMemoryEventQueue
 from .data_stores.retention import RetentionPolicy
-from .data_stores.base_data_store import BaseDataStore
+from .data_stores.base_data_store import BaseDataStore, RunStatusListener
 from .data_stores.in_memory_store import InMemoryDataStore
 from .queue.base_queue import BaseQueue
 from .queue.in_memory_queue import InMemoryQueue
@@ -189,6 +189,7 @@ class LLAMPHouse:
                  exclude_spans: Optional[list[str]] = None,
                  tracing_store: Optional[BaseTracingStore] = None,
                  compass: bool = True,
+                 on_run_status: Optional[RunStatusListener] = None,
                  ):
         # Accept either 'agents' (new) or 'assistants' (legacy) parameter
         resolved = agents or assistants or []
@@ -209,6 +210,11 @@ class LLAMPHouse:
         self.fastapi.state.event_queues = {}
         self.fastapi.state.queue_class = event_queue_class or InMemoryEventQueue
         self.fastapi.state.data_store = data_store or InMemoryDataStore()
+        # Told of every change of a run's status made in this process:
+        # await on_run_status(run, previous_status). A worker in another
+        # process registers its own on its data store.
+        if on_run_status is not None:
+            self.fastapi.state.data_store.add_run_status_listener(on_run_status)
         self.fastapi.state.run_queue = run_queue or InMemoryQueue()
         self.fastapi.state.config_store = config_store or InMemoryConfigStore()
         self.retention_policy = retention_policy or DEFAULT_RETENTION_POLICY

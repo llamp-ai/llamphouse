@@ -1,5 +1,8 @@
+import contextvars
+import functools
+import logging
 from abc import ABC, abstractmethod
-from typing import Optional, List, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Optional, List, TYPE_CHECKING
 from .retention import RetentionPolicy, PurgeStats
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
@@ -14,7 +17,65 @@ from ..streaming.event_queue.base_event_queue import BaseEventQueue
 if TYPE_CHECKING:
     from ..assistant import Agent
 
+logger = logging.getLogger("llamphouse.data_store")
+
+# Told of every change of a run's status: (the run as it is now, the status
+# it had - None for a new run).
+RunStatusListener = Callable[[RunObject, Optional[str]], Awaitable[None]]
+
+
+# Set while a wrapped write runs: a store built on another store (calling
+# super()) is wrapped twice, and only the outermost write notifies.
+_NOTIFYING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "llamphouse_notifying", default=False
+)
+
+
+def _notifying(method: Callable, *, created: bool) -> Callable:
+    """Wrap a store's status write so its listeners hear about the change."""
+
+    @functools.wraps(method)
+    async def wrapper(self: "BaseDataStore", *args: Any, **kwargs: Any) -> Any:
+        if _NOTIFYING.get():  # inside another store's wrapped write
+            return await method(self, *args, **kwargs)
+        listeners = list(getattr(self, "_run_status_listeners", None) or [])
+        previous = None
+        if listeners and not created:
+            thread_id, run_id = _ids(args, kwargs)
+            before = await self.get_run_by_id(thread_id, run_id)
+            previous = before.status if before is not None else None
+        token = _NOTIFYING.set(True)
+        try:
+            result = await method(self, *args, **kwargs)
+        finally:
+            _NOTIFYING.reset(token)
+        # Outside the guard: a status a listener writes is heard too.
+        if listeners and result is not None and (created or result.status != previous):
+            for listener in listeners:
+                try:
+                    await listener(result, previous)
+                except Exception:  # a listener never breaks the store
+                    logger.exception("Run status listener failed for %s", result.id)
+        return result
+
+    return wrapper
+
+
+def _ids(args: tuple, kwargs: dict) -> tuple[str, str]:
+    thread_id = kwargs.get("thread_id", args[0] if args else None)
+    run_id = kwargs.get("run_id", args[1] if len(args) > 1 else None)
+    return thread_id, run_id
+
+
 class BaseDataStore(ABC):
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Every store's status writes notify, without each store having to.
+        if "update_run_status" in cls.__dict__:
+            cls.update_run_status = _notifying(cls.__dict__["update_run_status"], created=False)
+        if "insert_run" in cls.__dict__:
+            cls.insert_run = _notifying(cls.__dict__["insert_run"], created=True)
 
     def __init__(self):
         self.agents: list["Agent"] = []
@@ -237,3 +298,38 @@ class BaseDataStore(ABC):
     async def close(self) -> None:
         """Close any underlying resources (default: no-op)."""
         return None
+
+    # ── Run lifecycle ────────────────────────────────────────────────────
+
+    def add_run_status_listener(self, listener: RunStatusListener) -> None:
+        """Be told of every change of a run's status made through this store
+        (in this process): ``await listener(run, previous_status)``."""
+        if not hasattr(self, "_run_status_listeners"):
+            self._run_status_listeners: list[RunStatusListener] = []
+        self._run_status_listeners.append(listener)
+
+    def remove_run_status_listener(self, listener: RunStatusListener) -> None:
+        if listener in getattr(self, "_run_status_listeners", []):
+            self._run_status_listeners.remove(listener)
+
+    async def heartbeat_run(self, thread_id: str, run_id: str) -> str | None:
+        """Record that a running run is alive; returns its status, so the
+        worker sees a cancel requested meanwhile. Stores that keep a
+        heartbeat override this; by default it only reads the status."""
+        run = await self.get_run_by_id(thread_id, run_id)
+        return run.status if run is not None else None
+
+    async def request_cancel(self, thread_id: str, run_id: str) -> RunObject | None:
+        """Ask for a run to stop: a queued one is cancelled at once (its
+        worker skips it), a running one becomes 'cancelling' and its worker
+        stops it at the next heartbeat. A finished run is left as it is."""
+        from ..types.enum import run_status
+
+        run = await self.get_run_by_id(thread_id, run_id)
+        if run is None:
+            return None
+        if run.status == run_status.QUEUED:
+            return await self.update_run_status(thread_id, run_id, run_status.CANCELLED)
+        if run.status in (run_status.IN_PROGRESS, run_status.AWAITING_TOOLS):
+            return await self.update_run_status(thread_id, run_id, run_status.CANCELLING)
+        return run

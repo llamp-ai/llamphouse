@@ -160,6 +160,7 @@ class Run(Base):
     cancelled_at = Column(Float)
     failed_at = Column(Float)
     completed_at = Column(Float)
+    heartbeat_at = Column(Float)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     reasoning_effort = Column(String, nullable=False, server_default='medium')
@@ -202,6 +203,7 @@ class Run(Base):
             "cancelled_at": round(float(self.cancelled_at), 3) if self.cancelled_at else None,
             "failed_at": round(float(self.failed_at), 3) if self.failed_at else None,
             "completed_at": round(float(self.completed_at), 3) if self.completed_at else None,
+            "heartbeat_at": round(float(self.heartbeat_at), 3) if self.heartbeat_at else None,
             "updated_at": round(self.updated_at.timestamp(), 3) if self.updated_at else None,
         }
     

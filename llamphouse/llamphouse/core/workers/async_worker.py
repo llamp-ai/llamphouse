@@ -16,16 +16,20 @@ from ..data_stores.base_data_store import BaseDataStore
 from ..queue.base_queue import BaseQueue
 from ..queue.types import QueueMessage
 from ..queue.exceptions import QueueRateLimitError, QueueRetryExceeded
+from .run_lifecycle import HEARTBEAT_SECONDS, RunCancelled, cancelled_before_start, run_supervised
 
 logger = logging.getLogger("llamphouse.worker")
 tracer = get_tracer("llamphouse.worker")
 
 class AsyncWorker(BaseWorker):
-    def __init__(self, time_out: float = 30.0):
+    def __init__(self, time_out: float = 30.0, heartbeat: float = HEARTBEAT_SECONDS):
 
         self.time_out = time_out
+        self.heartbeat = heartbeat
         self.task: Optional[asyncio.Task] = None
         self._running = True
+        # The runs in flight: held so none is garbage-collected mid-run.
+        self._runs: set[asyncio.Task] = set()
 
     async def process_run_queue(self, data_store: BaseDataStore, run_queue: BaseQueue, assistants: Sequence[Agent], fastapi_state):
         assistant_ids = [assistant.id for assistant in assistants] or None
@@ -42,9 +46,11 @@ class AsyncWorker(BaseWorker):
                 # allows one agent to call another agent on the same server via A2A
                 # without deadlocking: while task A awaits a specialist run to
                 # complete, the dequeue loop picks up that specialist run immediately.
-                asyncio.create_task(
+                run_task = asyncio.create_task(
                     self._execute_run(item, data_store, run_queue, assistants, fastapi_state)
                 )
+                self._runs.add(run_task)
+                run_task.add_done_callback(self._runs.discard)
 
             except asyncio.CancelledError:
                 break
@@ -102,6 +108,13 @@ class AsyncWorker(BaseWorker):
                             await data_store.update_run_status(thread_id, run_id, run_status.FAILED, {
                                 "code": "server_error", "message": "Assistant not found"
                             })
+                        return
+
+                    # Cancelled while it waited in the queue: never started.
+                    if thread_id and run_id and await cancelled_before_start(data_store, thread_id, run_id):
+                        await data_store.update_run_status(thread_id, run_id, run_status.CANCELLED)
+                        span.add_event("run.cancelled_before_start")
+                        await run_queue.ack(receipt)
                         return
 
                     # Resolve event queue (if streaming).
@@ -171,10 +184,19 @@ class AsyncWorker(BaseWorker):
                         assistants=assistants,
                     )
 
-                    if inspect.iscoroutinefunction(assistant.run):
-                        await asyncio.wait_for(assistant.run(context), timeout=self.time_out)
-                    else:
-                        await asyncio.wait_for(asyncio.to_thread(assistant.run, context), timeout=self.time_out)
+                    work = (
+                        assistant.run(context)
+                        if inspect.iscoroutinefunction(assistant.run)
+                        else asyncio.to_thread(assistant.run, context)
+                    )
+                    await run_supervised(
+                        work,
+                        data_store=data_store,
+                        thread_id=thread_id,
+                        run_id=run_id,
+                        time_out=self.time_out,
+                        heartbeat=self.heartbeat,
+                    )
                     await context.flush()
 
                     output_payload = {"status": "completed", "run_id": run_id}
@@ -197,6 +219,17 @@ class AsyncWorker(BaseWorker):
                         if run_object:
                             await output_queue.add(run_object.to_event(event_type.RUN_COMPLETED))
                             await output_queue.add(DoneEvent())
+                    await run_queue.ack(receipt)
+
+                except RunCancelled:
+                    span.add_event("run.cancelled")
+                    span.set_attribute("gen_ai.response.status", "cancelled")
+                    if thread_id and run_id:
+                        await data_store.update_run_status(thread_id, run_id, run_status.CANCELLED)
+                    if output_queue and run_object:
+                        run_object = await data_store.get_run_by_id(thread_id, run_id) or run_object
+                        await output_queue.add(run_object.to_event(event_type.RUN_CANCELLED))
+                        await output_queue.add(DoneEvent())
                     await run_queue.ack(receipt)
 
                 except QueueRateLimitError as e:

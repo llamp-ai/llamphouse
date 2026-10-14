@@ -510,12 +510,18 @@ async def cancel_run(thread_id: str, run_id: str, req: Request):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.not_found")
                 raise HTTPException(status_code=404, detail="Run not found.")
-            if run.status != run_status.QUEUED:
+            # Queued: cancelled at once, its worker skips it. Running: it
+            # becomes 'cancelling', and its worker stops it at the next
+            # heartbeat (workers/run_lifecycle.py).
+            if run.status not in (run_status.QUEUED, run_status.IN_PROGRESS, run_status.AWAITING_TOOLS):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.invalid_state")
-                raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Run cannot be cancelled: it is already {run.status}.",
+                )
 
-            run = await db.update_run_status(thread_id, run_id, run_status.CANCELLED)
+            run = await db.request_cancel(thread_id, run_id)
             if not run:
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.not_found_after_update")

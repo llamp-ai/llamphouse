@@ -635,6 +635,14 @@ class InMemoryDataStore(BaseDataStore):
             return None
         return next((r for r in self._runs[thread_id] if r.id == run_id), None)
 
+    async def heartbeat_run(self, thread_id: str, run_id: str) -> str | None:
+        """Record that a running run is alive; returns its status."""
+        run = next((r for r in self._runs.get(thread_id, []) if r.id == run_id), None)
+        if run is None:
+            return None
+        run.heartbeat_at = datetime.now(timezone.utc)
+        return run.status
+
     async def get_run_by_run_id(self, run_id: str) -> RunObject | None:
         for runs in self._runs.values():
             run = next((r for r in runs if r.id == run_id), None)

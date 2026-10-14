@@ -164,16 +164,29 @@ def test_list_runs_pagination(client, assistant_id):
     assert run3.id in ids_after
 
 def test_cancel_run_wrong_status(client, data_store, assistant_id):
-    """Rejects cancel when run is not in queued status."""
+    """Rejects cancel once the run has finished."""
+    thread = _create_thread(client)
+    run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant_id)
+    data_store._runs[thread.id] = [
+        r if r.id != run.id else r.model_copy(update={"status": run_status.COMPLETED})
+        for r in data_store._runs[thread.id]
+    ]
+    with pytest.raises(BadRequestError) as exc:
+        client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
+    assert "already completed" in str(exc.value)
+
+
+def test_cancel_run_waiting_for_tool_outputs(client, data_store, assistant_id):
+    """A run that is not finished can be cancelled: it becomes 'cancelling',
+    and its worker stops it (as in OpenAI's Assistants API)."""
     thread = _create_thread(client)
     run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant_id)
     data_store._runs[thread.id] = [
         r if r.id != run.id else r.model_copy(update={"status": run_status.AWAITING_TOOLS})
         for r in data_store._runs[thread.id]
     ]
-    with pytest.raises(BadRequestError) as exc:
-        client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
-    assert "queued" in str(exc.value)
+    cancelled = client.beta.threads.runs.cancel(thread_id=thread.id, run_id=run.id)
+    assert cancelled.status == run_status.CANCELLING
 
 def test_submit_tool_outputs_wrong_status(client, assistant_id):
     """Rejects submit_tool_outputs when run is not requires_action."""

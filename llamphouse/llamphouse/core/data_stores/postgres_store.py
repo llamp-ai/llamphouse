@@ -1031,6 +1031,24 @@ class PostgresDataStore(BaseDataStore):
                 logger.exception("get_run_by_id() failed")
                 return None
 
+    async def heartbeat_run(self, thread_id: str, run_id: str) -> str | None:
+        """Record that a running run is alive; returns its status."""
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(Run).where(Run.thread_id == thread_id, Run.id == run_id)
+                )
+                run = result.scalars().first()
+                if not run:
+                    return None
+                run.heartbeat_at = round(datetime.now(timezone.utc).timestamp(), 3)
+                await session.commit()
+                return run.status
+            except Exception:
+                await session.rollback()
+                logger.exception("heartbeat_run() failed")
+                return None
+
     async def get_run_by_run_id(self, run_id: str) -> RunObject | None:
         async with self._session_factory() as session:
             try:

@@ -86,6 +86,9 @@ class RunObject(BaseModel):
     cancelled_at: Optional[datetime] = None
     failed_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    # When its worker last showed it was alive (running runs; see
+    # workers/run_lifecycle.py).
+    heartbeat_at: Optional[datetime] = None
     incomplete_details: Optional[IncompleteDetails] = None
     usage: Optional[UsageStatistics] = None
 
