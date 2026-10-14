@@ -412,7 +412,7 @@ ______[===]______{_R}"""
             f"    {_DIM}▸{_R} {'Run queue':<28} {type(self.fastapi.state.run_queue).__name__}"
         )
         llamphouse_logger.info(
-            f"    {_DIM}▸{_R} {'Event queue':<28} {self.fastapi.state.queue_class.__name__}"
+            f"    {_DIM}▸{_R} {'Event queue':<28} {_callable_name(self.fastapi.state.queue_class)}"
         )
         llamphouse_logger.info(
             f"    {_DIM}▸{_R} {'Config store':<28} {type(self.fastapi.state.config_store).__name__}"
