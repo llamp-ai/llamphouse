@@ -6,17 +6,25 @@ finishes with an interrupt, answers it with a resume entry on a new run.
 import argparse
 import asyncio
 import json
+import os
 import uuid
 
 import httpx
 
-URL = "http://127.0.0.1:8000/ag-ui/agents/trip-planner"
+BASE_URL = os.getenv("LLAMPHOUSE_URL", "http://127.0.0.1:8000")
+URL = f"{BASE_URL}/ag-ui/agents/trip-planner"
 
 
 async def run(client: httpx.AsyncClient, body: dict) -> dict:
     """Stream one run; returns its RUN_FINISHED / RUN_ERROR event."""
     last = {}
     async with client.stream("POST", URL, json=body, headers={"accept": "text/event-stream"}) as resp:
+        if resp.status_code != 200:
+            detail = (await resp.aread()).decode(errors="replace")[:200]
+            raise SystemExit(
+                f"POST {URL} answered {resp.status_code}: {detail}\n"
+                "Is this example's server running there? Set LLAMPHOUSE_URL to its address."
+            )
         async for line in resp.aiter_lines():
             if not line.startswith("data: "):
                 continue

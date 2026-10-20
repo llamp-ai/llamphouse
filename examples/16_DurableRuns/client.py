@@ -7,11 +7,12 @@
 """
 import argparse
 import asyncio
+import os
 import uuid
 
 import httpx
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.getenv("LLAMPHOUSE_URL", "http://127.0.0.1:8000")
 
 
 def rpc(method: str, params: dict) -> dict:

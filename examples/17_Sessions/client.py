@@ -4,11 +4,12 @@ Watch the agent's view of the thread: the recent messages grow, then the
 oldest are folded into the summary.
 """
 import asyncio
+import os
 import uuid
 
 import httpx
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.getenv("LLAMPHOUSE_URL", "http://127.0.0.1:8000")
 
 TURNS = [
     "Hi, I'm planning a trip to Lisbon in May.",

@@ -12,6 +12,7 @@ front-end's answer resumes it.
 - How replies, `@step`s, `context.emit_state()` and `emit_state_delta()` become AG-UI events
 - How `context.wait_for_input()` becomes an AG-UI interrupt, and how a `resume` entry answers it
 - How the front-end's state reaches the agent (`ag_ui_input(context)`)
+- How a web front-end on `@ag-ui/client` streams the reply, answers the interrupt and shares state
 
 ## Prerequisites
 
@@ -19,6 +20,7 @@ front-end's answer resumes it.
 |---|---|
 | Python 3.10+ | Check with `python --version` |
 | `llamphouse[ag-ui]` | Installs the `ag-ui-protocol` package |
+| Node.js 20+ | For the front-end (`frontend/`) |
 
 ## Quick start
 
@@ -38,19 +40,55 @@ python client.py --yes    # approves without asking
 > User: Find me a train.
   [step_started] TripPlanner.find_trains
   [step_finished] TripPlanner.find_trains
-The cheapest train to Lyon is IC 512 at 49 EUR.
+I found 3 trains to Lyon. The cheapest is IC 539 at 08:12, for 39 EUR.
   [state] {"city": "Lyon", "options": [...], "chosen": {...}, "booking": null}
-? Book IC 512 for 49 EUR?
+? Book IC 539 to Lyon for 39 EUR?
   [step_started] TripPlanner.book
   [step_finished] TripPlanner.book
-Booked: BK-IC512.
-  [state delta] [{"op": "replace", "path": "/booking", "value": "BK-IC512"}]
+Booked IC 539 to Lyon: BK-IC539.
+  [state delta] [{"op": "replace", "path": "/booking", "value": "BK-IC539"}]
   run finished: success
 ```
 
 `client.py` is a minimal AG-UI client: what a front-end does, in a
-terminal. With CopilotKit, point an `HttpAgent` at
-`http://127.0.0.1:8000/ag-ui/agents/trip-planner`.
+terminal. Set `LLAMPHOUSE_URL` if the server runs elsewhere
+(`LLAMPHOUSE_URL=http://127.0.0.1:8765 python client.py`).
+
+## The front-end
+
+`frontend/` is a web app (Vue 3 + Vite) on the official AG-UI client,
+[`@ag-ui/client`](https://www.npmjs.com/package/@ag-ui/client) — the same
+`HttpAgent` CopilotKit uses:
+
+- **Chat** — the reply streams in as the agent writes it.
+- **Approval** — when the run waits, its question shows in the chat as a
+  form built from the interrupt's `responseSchema` (a required yes/no field
+  becomes Approve / Reject; other fields, inputs). The answer resumes the
+  same run; *Cancel the run* cancels it.
+- **Trip** — the shared state: the agent's options and booking, and the
+  front-end's half, a default destination sent with the next message.
+- **Activity** — the run's steps as they start and finish.
+- The conversation, its state and an open question survive a reload
+  (kept in `localStorage`; *New conversation* starts over).
+
+With the server running (`llamphouse up`), in a second terminal:
+
+```sh
+cd frontend
+npm install
+npm run dev               # http://localhost:5173
+```
+
+The dev server proxies `/ag-ui` to the LLAMPHouse server
+(`LLAMPHOUSE_URL`, default `http://127.0.0.1:8000`), so the browser sees one
+origin. `npm run build` type-checks and builds `frontend/dist`;
+`npm run preview` serves it with the same proxy.
+
+| File | |
+|---|---|
+| `src/useAgent.ts` | the AG-UI agent as Vue state: messages, state, activity, interrupts; `send`, `answer`, `dismiss`, `setState` |
+| `src/components/InterruptForm.vue` | a waiting run's question, as a form from its JSON Schema |
+| `src/App.vue` | the page: chat, trip, activity |
 
 ## How it works
 
