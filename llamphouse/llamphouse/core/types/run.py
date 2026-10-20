@@ -89,6 +89,12 @@ class RunObject(BaseModel):
     # When its worker last showed it was alive (running runs; see
     # workers/run_lifecycle.py).
     heartbeat_at: Optional[datetime] = None
+    # Durable runs: the worker holding the run, until when, and the claim
+    # count (bumped by every claim); when a suspended run is due to wake.
+    worker_id: Optional[str] = None
+    lease_expires_at: Optional[datetime] = None
+    lease_epoch: int = 0
+    wake_at: Optional[datetime] = None
     incomplete_details: Optional[IncompleteDetails] = None
     usage: Optional[UsageStatistics] = None
 

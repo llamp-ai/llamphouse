@@ -32,6 +32,7 @@ else:
 
 try:
     from langgraph.graph import END, START, StateGraph
+    from langgraph.types import interrupt
 except ImportError as exc:
     raise RuntimeError(
         "This example requires langgraph. Install dependencies with: pip install -r requirements.txt"
@@ -86,6 +87,8 @@ def _build_graph():
         facts: str
         risks: str
         general_answer: str
+        refund_draft: str
+        refund_approved: bool
         output: str
 
     def _extract_text(parts_or_text: Any) -> str:
@@ -110,7 +113,9 @@ def _build_graph():
 
     def route_intent(state: GraphState) -> GraphState:
         text = state.get("user_text", "").lower()
-        if any(tok in text for tok in ["solve", "equation", "calculate", "math"]):
+        if "refund" in text:
+            intent = "refund"
+        elif any(tok in text for tok in ["solve", "equation", "calculate", "math"]):
             intent = "math"
         elif any(tok in text for tok in ["compare", "plan", "research", "analyze"]):
             intent = "research"
@@ -199,6 +204,30 @@ def _build_graph():
             "output": "[general branch]\n" + f"Response: {llm_reply}",
         }
 
+    async def draft_refund(state: GraphState) -> GraphState:
+        text = state.get("user_text", "")
+        draft = await _call_llm(
+            system_prompt="Draft a one-sentence refund proposal for a support agent to approve.",
+            user_prompt=text,
+            fallback="Refund 25 EUR for order A-1042 (item arrived broken).",
+        )
+        return {"refund_draft": draft}
+
+    def human_approval(state: GraphState) -> GraphState:
+        # Human in the loop: the run parks here - holding no worker - until
+        # someone answers. Over A2A the task is `input-required` with this
+        # prompt; the answer resumes this node, with `answer` set to it.
+        answer = interrupt({
+            "prompt": f"Approve this refund? {state.get('refund_draft', '')}",
+            "schema": {"type": "object", "properties": {"approved": {"type": "boolean"}}},
+        })
+        approved = answer.get("approved") if isinstance(answer, dict) else str(answer).strip().lower() in {"y", "yes", "approve"}
+        return {"refund_approved": bool(approved)}
+
+    def finalize_refund(state: GraphState) -> GraphState:
+        verdict = "approved and paid" if state.get("refund_approved") else "rejected"
+        return {"output": f"[refund branch]\nDraft: {state.get('refund_draft', '')}\nDecision: {verdict}"}
+
     graph = StateGraph(GraphState)
     graph.add_node("ingest_user_input", ingest_user_input)
     graph.add_node("route_intent", route_intent)
@@ -209,6 +238,9 @@ def _build_graph():
     graph.add_node("collect_risks", collect_risks)
     graph.add_node("synthesize_research", synthesize_research)
     graph.add_node("general_reply", general_reply)
+    graph.add_node("draft_refund", draft_refund)
+    graph.add_node("human_approval", human_approval)
+    graph.add_node("finalize_refund", finalize_refund)
 
     graph.add_edge(START, "ingest_user_input")
     graph.add_edge("ingest_user_input", "route_intent")
@@ -220,6 +252,7 @@ def _build_graph():
             "math": "solve_math",
             "research": "make_research_plan",
             "general": "general_reply",
+            "refund": "draft_refund",
         },
     )
 
@@ -233,6 +266,10 @@ def _build_graph():
     graph.add_edge("synthesize_research", END)
 
     graph.add_edge("general_reply", END)
+
+    graph.add_edge("draft_refund", "human_approval")
+    graph.add_edge("human_approval", "finalize_refund")
+    graph.add_edge("finalize_refund", END)
     return graph.compile()
 
 

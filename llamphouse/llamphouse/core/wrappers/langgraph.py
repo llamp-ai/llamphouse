@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, Optional
 
 from .base import BaseAgentWrapper
 from ..context import Context
+from ..data_stores.base_data_store import BaseDataStore
+
+logger = logging.getLogger("llamphouse.wrappers.langgraph")
+
+# LangGraph's channel for the answers a task's interrupts got so far.
+_RESUME = "__resume__"
+# The graph already ran to its end in an earlier attempt of the run.
+_FINISHED = object()
 
 
 class LangGraphAgent(BaseAgentWrapper):
@@ -16,6 +25,29 @@ class LangGraphAgent(BaseAgentWrapper):
     Expected graph capabilities:
     - async `ainvoke(state)` for final response
     - optional async `astream(state)` for incremental chunks
+
+    Durable runs: a LangGraph graph runs with a checkpointer - LangGraph's
+    own persistence - keyed by the run, so a run that runs again (resumed,
+    retried, taken over after its worker died) carries on from the graph's
+    last checkpoint instead of from ``START``. A node that calls LangGraph's
+    ``interrupt(value)`` parks the run until a human answers - exactly like
+    ``context.wait_for_input``: an ``input-required`` task over A2A, a
+    signal over ``POST .../signals`` - and the graph then resumes inside
+    that node with the answer (``Command(resume=...)``). An interrupt value
+    ``{"prompt": ..., "schema": ...}`` is shown as such; any other value is
+    shown as the prompt, and passed on as ``request["interrupt"]``.
+
+    :param checkpointer: ``"llamphouse"`` (default): checkpoints in the
+        LLAMPHouse data store (``LLAMPHouseCheckpointSaver``); a LangGraph
+        checkpointer of your own (e.g. ``PostgresSaver``); or ``None``: no
+        checkpoints, the graph runs as a whole each time (and ``interrupt``
+        cannot be used). A graph compiled with a checkpointer keeps it.
+    :param checkpoint_scope: ``"run"`` (default): one LangGraph thread per
+        run. ``"thread"``: one per LLAMPHouse thread, so the graph's state
+        carries over from run to run (LangGraph memory); each new run then
+        passes the mapped state as new input.
+    :param interrupt_signal: the signal name an interrupt waits for
+        (``"human_input"``, as ``context.wait_for_input``).
     """
 
     def __init__(
@@ -25,52 +57,211 @@ class LangGraphAgent(BaseAgentWrapper):
         stream: bool = True,
         map_nodes_to_steps: bool = True,
         persist_step_state: bool = True,
+        checkpointer: Any = "llamphouse",
+        checkpoint_scope: str = "run",
+        interrupt_signal: str = "human_input",
+        durable: Optional[bool] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if checkpoint_scope not in ("run", "thread"):
+            raise ValueError("checkpoint_scope must be 'run' or 'thread'")
         self.graph = graph
         self.stream = stream
         self.map_nodes_to_steps = map_nodes_to_steps
         self.persist_step_state = persist_step_state
+        self.checkpointer = checkpointer
+        self.checkpoint_scope = checkpoint_scope
+        self.interrupt_signal = interrupt_signal
+        # A run whose worker died resumes from its last checkpoint.
+        self.durable = (checkpointer is not None) if durable is None else durable
+        self._graphs: dict[int, Any] = {}  # data store -> graph with its checkpointer
 
-    async def invoke_framework(self, context: Context, state: Dict[str, Any]) -> Any:
+    # ── Durable runs ─────────────────────────────────────────────────────
+
+    def _durable_graph(self, context: Context) -> Any:
+        """The graph to run with checkpoints, or None to run it as before."""
+        graph = self.graph
+        if not (hasattr(graph, "aget_state") and hasattr(graph, "copy")):
+            return None  # not a compiled LangGraph graph
+        if not getattr(context, "durable", False):
+            return None
+        if getattr(graph, "checkpointer", None) not in (None, False):
+            return graph  # compiled with a checkpointer of its own
+        if self.checkpointer is None:
+            return None
+        data_store = context.data_store
+        cached = self._graphs.get(id(data_store))
+        if cached is not None:
+            return cached
+        saver = self.checkpointer
+        if saver == "llamphouse":
+            if type(data_store).kv_put is BaseDataStore.kv_put:
+                logger.warning(
+                    "%s keeps no key-value records: LangGraph agent %s runs without checkpoints.",
+                    type(data_store).__name__, self.id,
+                )
+                return None
+            from .langgraph_checkpoint import LLAMPHouseCheckpointSaver
+
+            saver = LLAMPHouseCheckpointSaver(data_store)
+        cached = graph.copy(update={"checkpointer": saver})
+        self._graphs[id(data_store)] = cached
+        return cached
+
+    def _graph_thread_id(self, context: Context) -> str:
+        return context.thread_id if self.checkpoint_scope == "thread" else context.run_id
+
+    async def run(self, context: Context):
+        graph = self._durable_graph(context)
+        if graph is None:
+            return await super().run(context)
+
+        config = {"configurable": {"thread_id": self._graph_thread_id(context)}}
+        saver = graph.checkpointer
+        forget = getattr(saver, "forget", None)
+        if forget is not None:
+            forget(config["configurable"]["thread_id"])  # read what the store holds now
+            saver.bind(config["configurable"]["thread_id"], context.thread_id)
+        try:
+            output = await self._run_durable(context, graph, config)
+        finally:
+            if forget is not None:
+                forget(config["configurable"]["thread_id"])
+        reply = self.output_mapper(output)
+        if reply:
+            await context.reply(reply)
+
+    async def _run_durable(self, context: Context, graph: Any, config: dict) -> Any:
+        start_key = self._call_key_started(context)
+        started = context._replayed(start_key)
+        if started is None:
+            step = await context.start_step("langgraph.start", call_key=start_key)
+            await context.complete_step(step.id)
+            graph_input: Any = self.state_mapper(context)
+        else:
+            graph_input = await self._resume_input(context, graph, config)
+
+        output = None
+        while True:
+            if graph_input is not _FINISHED:
+                output = await self.invoke_framework(context, graph_input, config=config)
+            snapshot = await graph.aget_state(config)
+            if not self._interrupts(snapshot):
+                break
+            graph_input = await self._answers(context, graph, config, snapshot)
+        if graph_input is _FINISHED or not self._has_text(output):
+            output = self._values(snapshot.values)
+        return output
+
+    def _call_key_started(self, context: Context) -> str:
+        return context._call_key("langgraph.start")
+
+    async def _resume_input(self, context: Context, graph: Any, config: dict) -> Any:
+        """Where an earlier attempt of this run left the graph."""
+        snapshot = await graph.aget_state(config)
+        if snapshot.created_at is None:
+            return self.state_mapper(context)  # stopped before its first checkpoint
+        if self._interrupts(snapshot):
+            return await self._answers(context, graph, config, snapshot)
+        if snapshot.next:
+            return None  # carry on from the last checkpoint
+        return _FINISHED
+
+    @staticmethod
+    def _interrupts(snapshot: Any) -> list:
+        return [(task, intr) for task in (snapshot.tasks or ()) for intr in (getattr(task, "interrupts", ()) or ())]
+
+    async def _answers(self, context: Context, graph: Any, config: dict, snapshot: Any) -> Any:
+        """Wait for the answer to each interrupt the graph stopped at (the
+        run parks at the first one unanswered); the input resuming it."""
+        from langgraph.types import Command
+
+        resumed: dict[str, list] = {}
+        saved = await graph.checkpointer.aget_tuple(config)
+        for task_id, channel, value in (saved.pending_writes if saved else ()):
+            if channel == _RESUME and isinstance(value, list):
+                resumed[task_id] = value
+        answers = {}
+        for task, intr in self._interrupts(snapshot):
+            # The n-th interrupt of a task: the answers it got so far, plus one.
+            n = len(resumed.get(task.id, [])) + 1
+            answers[intr.id] = await context.wait_for_signal(
+                self.interrupt_signal,
+                request=self._interrupt_request(intr.value),
+                key=f"langgraph:{intr.id}#{n}",
+            )
+        return Command(resume=answers)
+
+    def _interrupt_request(self, value: Any) -> Dict[str, Any]:
+        safe = self._to_json_safe(value)
+        if isinstance(value, dict):
+            prompt = value.get("prompt") or value.get("question") or json.dumps(safe, default=str)
+            return {"prompt": prompt, "schema": value.get("schema"), "interrupt": safe}
+        return {"prompt": value if isinstance(value, str) else json.dumps(safe, default=str), "interrupt": safe}
+
+    def _values(self, values: Any) -> Any:
+        if isinstance(values, dict):
+            return {k: v for k, v in values.items() if k != "__interrupt__"}
+        return values
+
+    @staticmethod
+    def _has_text(output: Any) -> bool:
+        return isinstance(output, dict) and isinstance(output.get("output"), str) and set(output) == {"output"}
+
+    # ── Running the graph ────────────────────────────────────────────────
+
+    async def invoke_framework(self, context: Context, state: Dict[str, Any], config: Optional[dict] = None) -> Any:
         step_ids: dict[str, str] = {}
+        extra = (config,) if config is not None else ()
 
         if self.map_nodes_to_steps and hasattr(self.graph, "astream_events"):
-            stream_output = await self._stream_via_events(context, state, step_ids)
-            if stream_output is not None:
+            stream_output = await self._stream_via_events(context, state, step_ids, config)
+            if stream_output is not None or (config is not None and self.stream):
+                # With checkpoints the graph runs once: no text streamed, the
+                # caller reads the result from the checkpoint.
                 return stream_output
 
+        graph = self._graphs_for(context, config)
         # Optional streaming path for better UX over A2A/SSE clients.
-        if self.stream and hasattr(self.graph, "astream"):
+        if self.stream and hasattr(graph, "astream"):
             chunks = []
-            async for evt in self.graph.astream(state):
+            async for evt in graph.astream(state, *extra):
                 if self.map_nodes_to_steps:
                     await self._handle_stream_update_steps(context, evt, step_ids)
                 text = self._extract_text_delta(evt)
                 if text:
                     chunks.append(text)
                     context.send_chunk(text)
-            if chunks:
-                return {"output": "".join(chunks)}
+            if chunks or config is not None:
+                return {"output": "".join(chunks)} if chunks else None
 
-        if not hasattr(self.graph, "ainvoke"):
+        if not hasattr(graph, "ainvoke"):
             raise RuntimeError("LangGraph wrapper requires an object with async `ainvoke(state)`")
 
-        return await self.graph.ainvoke(state)
+        return await graph.ainvoke(state, *extra)
+
+    def _graphs_for(self, context: Context, config: Optional[dict]) -> Any:
+        """The graph a call runs: with its checkpointer when it has a config."""
+        if config is None:
+            return self.graph
+        return self._durable_graph(context) or self.graph
 
     async def _stream_via_events(
         self,
         context: Context,
         state: Dict[str, Any],
         step_ids: dict[str, str],
+        config: Optional[dict] = None,
     ) -> Dict[str, Any] | None:
         if not self.stream:
             return None
 
+        graph = self._graphs_for(context, config)
+        extra = (config,) if config is not None else ()
         chunks: list[str] = []
         # LangGraph/LangChain event stream contains node-level start/end hooks.
-        async for event in self.graph.astream_events(state, version="v2"):
+        async for event in graph.astream_events(state, *extra, version="v2"):
             await self._handle_astream_event_steps(context, event, step_ids)
             text = self._extract_text_delta(event)
             if text:

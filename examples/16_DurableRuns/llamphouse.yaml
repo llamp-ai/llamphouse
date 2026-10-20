@@ -1,0 +1,23 @@
+version: "0.1"
+
+project:
+  name: durable-runs-demo
+
+definitions:
+  - name: refund-agent
+    entrypoint: agents.py:RefundAgent
+
+agents:
+  - name: refund-agent
+    definition: refund-agent
+
+adapters:
+  - a2a:
+  - compass:
+
+# Durable runs work with the in-memory store too, but only Postgres keeps a
+# waiting run across a restart:
+#   data_store:
+#     postgres:        # reads DATABASE_URL
+data_store:
+  in_memory:

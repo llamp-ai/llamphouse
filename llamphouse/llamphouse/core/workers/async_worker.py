@@ -16,17 +16,42 @@ from ..data_stores.base_data_store import BaseDataStore
 from ..queue.base_queue import BaseQueue
 from ..queue.types import QueueMessage
 from ..queue.exceptions import QueueRateLimitError, QueueRetryExceeded
-from .run_lifecycle import HEARTBEAT_SECONDS, RunCancelled, cancelled_before_start, run_supervised
+from .run_lifecycle import (
+    HEARTBEAT_SECONDS,
+    LEASE_TTL_SECONDS,
+    RECOVER_INTERVAL_SECONDS,
+    LeaseLost,
+    RunCancelled,
+    RunRecovery,
+    WorkflowSuspended,
+    cancelled_before_start,
+    default_worker_id,
+    resume_message,
+    run_supervised,
+)
 
 logger = logging.getLogger("llamphouse.worker")
 tracer = get_tracer("llamphouse.worker")
 
 class AsyncWorker(BaseWorker):
-    def __init__(self, time_out: float = 30.0, heartbeat: float = HEARTBEAT_SECONDS):
+    def __init__(
+        self,
+        time_out: float = 30.0,
+        heartbeat: float = HEARTBEAT_SECONDS,
+        *,
+        worker_id: Optional[str] = None,
+        lease_ttl: float = LEASE_TTL_SECONDS,
+        recover_interval: Optional[float] = RECOVER_INTERVAL_SECONDS,
+    ):
 
         self.time_out = time_out
         self.heartbeat = heartbeat
+        self.worker_id = worker_id or default_worker_id()
+        self.lease_ttl = lease_ttl
+        # Seconds between looks for runs to recover (RunRecovery); None: never.
+        self.recover_interval = recover_interval
         self.task: Optional[asyncio.Task] = None
+        self.recovery_task: Optional[asyncio.Task] = None
         self._running = True
         # The runs in flight: held so none is garbage-collected mid-run.
         self._runs: set[asyncio.Task] = set()
@@ -126,9 +151,13 @@ class AsyncWorker(BaseWorker):
                         or fastapi_state.event_queues.get(f"{assistant_id}:{thread_id}")
                     )
 
-                    # Mark IN_PROGRESS
-                    if thread_id and run_id:
-                        await data_store.update_run_status(thread_id, run_id, run_status.IN_PROGRESS)
+                    # Claim it: IN_PROGRESS, held by this worker. Not
+                    # claimable: another worker holds it, or it finished.
+                    lease = await data_store.claim_run(thread_id, run_id, self.worker_id, self.lease_ttl)
+                    if lease is None:
+                        span.add_event("run.not_claimed")
+                        await run_queue.ack(receipt)
+                        return
 
                     # Build context
                     run_object = await data_store.get_run_by_id(thread_id, run_id)
@@ -182,6 +211,7 @@ class AsyncWorker(BaseWorker):
                         event_queues=fastapi_state.event_queues,
                         queue_class=fastapi_state.queue_class,
                         assistants=assistants,
+                        lease=lease,
                     )
 
                     work = (
@@ -196,6 +226,8 @@ class AsyncWorker(BaseWorker):
                         run_id=run_id,
                         time_out=self.time_out,
                         heartbeat=self.heartbeat,
+                        worker_id=self.worker_id,
+                        lease_ttl=self.lease_ttl,
                     )
                     await context.flush()
 
@@ -219,6 +251,26 @@ class AsyncWorker(BaseWorker):
                         if run_object:
                             await output_queue.add(run_object.to_event(event_type.RUN_COMPLETED))
                             await output_queue.add(DoneEvent())
+                    await run_queue.ack(receipt)
+
+                except WorkflowSuspended as suspended:
+                    # The run waits: parked, holding no worker, until it is due.
+                    await context.flush()
+                    span.add_event("run.suspended", {"wait.type": suspended.required_action.get("type")})
+                    span.set_attribute("gen_ai.response.status", "requires_action")
+                    run_object = await data_store.suspend_run(
+                        thread_id, run_id, self.worker_id, suspended.required_action, suspended.wake_at,
+                    ) or run_object
+                    if suspended.wake_at is not None:
+                        await run_queue.enqueue(resume_message(run_object), schedule_at=suspended.wake_at)
+                    if output_queue and run_object:
+                        await output_queue.add(run_object.to_event(event_type.RUN_REQUIRES_ACTION))
+                        await output_queue.add(DoneEvent())
+                    await run_queue.ack(receipt)
+
+                except LeaseLost:
+                    # Another worker runs it now: nothing here to record.
+                    span.add_event("run.lease_lost")
                     await run_queue.ack(receipt)
 
                 except RunCancelled:
@@ -292,13 +344,20 @@ class AsyncWorker(BaseWorker):
                     span.set_attribute("output.value", json.dumps(output_payload, ensure_ascii=True))
                     span.set_attribute("gen_ai.response.status", "failed")
                     span.set_status(Status(StatusCode.ERROR))
+                    retry = max(message.attempts, 1) < run_queue.retry_policy.max_attempts
                     if thread_id and run_id:
-                        await data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)
-                    if output_queue and run_object:
+                        if retry:
+                            # Queued again: the next attempt claims it, and
+                            # skips the steps this one completed.
+                            await data_store.update_run_status(thread_id, run_id, run_status.QUEUED, error)
+                            await data_store.release_lease(thread_id, run_id, self.worker_id)
+                        else:
+                            await data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)
+                    if output_queue and run_object and not retry:
                         await output_queue.add(run_object.to_event(event_type.RUN_FAILED))
                         await output_queue.add(ErrorEvent(error))
 
-                    if message.attempts < run_queue.retry_policy.max_attempts:
+                    if retry:
                         await run_queue.requeue(receipt, message)
                     else:
                         await run_queue.ack(receipt)
@@ -323,9 +382,17 @@ class AsyncWorker(BaseWorker):
                 fastapi_state=self.fastapi_state,
             )
         )
+        if self.recover_interval is not None:
+            recovery = RunRecovery(
+                data_store, run_queue, self.assistants,
+                worker_id=self.worker_id, interval=self.recover_interval, lease_ttl=self.lease_ttl,
+            )
+            self.recovery_task = self.loop.create_task(recovery.run_forever())
 
     def stop(self):
         logger.info("Stopping async worker...")
         self._running = False
         if self.task:
             self.task.cancel()
+        if self.recovery_task:
+            self.recovery_task.cancel()
