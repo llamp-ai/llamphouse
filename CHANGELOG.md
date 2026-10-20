@@ -6,7 +6,6 @@
 
 - **Durable runs, what remains** — releasing leases on graceful shutdown, Postgres `NOTIFY` wake-ups, fencing step writes by `lease_epoch`, replaying `call_agent`. See `docs/DURABLE_RUNS_PLAN.md` §0 (P5).
 - **Lifecycle events & subscribers** — transactional outbox, `subscribers = [...]` / `@on_event`, retry and dead-letter; also notifies humans when a run waits for input. See `docs/PLAN_LIFECYCLE_EVENTS.md`.
-- **Sessions & session manager** — a session is the view of a thread an agent uses on a new run; the manager handles summarization of older messages, compaction, and context windows.
 - **One active run per thread** — a rule (reject, queue or interrupt) for a new run on a thread that already has one, so retries, resumed runs and sessions never write to a thread at the same time.
 - **Run policies** — retries and backoff, step and run time outs, and token budgets, configurable per agent in `llamphouse.yaml`.
 - **AG-UI integration** — an AG-UI adapter, with human-in-the-loop mapped onto AG-UI interrupts and session state onto state snapshots / deltas, plus an example.
@@ -28,6 +27,8 @@
 - **Durable LangGraph runs** — `LangGraphAgent` runs the graph with a checkpointer keyed by the run (`checkpointer="llamphouse"` by default: `LLAMPHouseCheckpointSaver` in the data store; or your own LangGraph checkpointer; or `None`). A node's `interrupt()` parks the run like `wait_for_input` (A2A `input-required`, `/signals`) and the answer resumes the graph inside that node; a retried or taken-over run carries on from the last checkpoint. `checkpoint_scope="thread"` keeps the graph state across runs. Example 15 gains a refund branch with human approval.
 - **Key-value records** — `BaseDataStore.kv_put` / `kv_get_all` / `kv_delete`: small JSON records by namespace, deleted with their thread (migration `d4e9f2a3b5c6`, `kv_entries`). Used for LangGraph checkpoints.
 - `context.wait_for_signal(..., key=)` — a stable identity for a wait whose position may differ between attempts.
+- **Sessions** (`docs/concepts/sessions.md`) — `context.session` is an agent's view of a thread for a run: a summary of the older messages and the recent ones as they are (`to_messages()` for a chat-completion API). `Agent.session_manager = SessionManager(summarizer=..., max_messages=..., keep_messages=..., max_tokens=..., count_tokens=...)` folds the oldest messages into the summary past its limits; the summary is kept per thread and agent (key-value records), so each run folds only what is new. The summarizer is any `async (previous_summary, messages) -> str`; without one the session is a sliding window. A compaction is a `session.compact` step, replayed by a run that runs again. `LangGraphAgent(session_manager=...)` passes the session's `messages` and `summary` to the graph.
+- **Sessions example** (`examples/17_Sessions`).
 - **DurableRuns example** (`examples/16_DurableRuns`) — a refund agent that asks a human over A2A, sleeps through a cool-off and retries a flaky payment API, surviving a restart.
 - **Run lifecycle, the same for every worker** (`workers/run_lifecycle.py`, used by `AsyncWorker` and `DistributedWorker`):
   - a run cancelled while queued is not started: it ends `cancelled`;
@@ -46,6 +47,7 @@
 
 ### Fixed
 
+- `context.messages` holds a thread's **latest** 100 messages (oldest first); it held the first 100, so an agent on a long thread never saw what was said last. It also no longer prints "No messages found" for an empty thread.
 - `LangGraphAgent` with checkpoints runs the graph once per attempt (without them, a stream with no text still falls back to `astream` and `ainvoke`, running the graph again).
 - `InMemoryQueue.dequeue(timeout=...)` no longer returns empty when a scheduled message comes due while it waits.
 - `PostgresDataStore.update_run_status` stores `expires_at` for expired runs (it set a non-existent `expired_at`), and no longer turns an error dict that has a `code` into a string.

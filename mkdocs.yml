@@ -36,6 +36,7 @@ nav:
     - Adapters: concepts/adapters.md
     - Multi-Agent: concepts/multi-agent.md
     - Durable Runs: concepts/durable-runs.md
+    - Sessions: concepts/sessions.md
   - Guides:
     - Streaming: guides/streaming.md
     - Tool Calls: guides/tool-calls.md

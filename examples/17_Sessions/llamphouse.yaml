@@ -1,0 +1,19 @@
+version: "0.1"
+
+project:
+  name: sessions-demo
+
+definitions:
+  - name: session-agent
+    entrypoint: agents.py:SessionAgent
+
+agents:
+  - name: session-agent
+    definition: session-agent
+
+adapters:
+  - a2a:
+  - compass:
+
+data_store:
+  in_memory:

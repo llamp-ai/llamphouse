@@ -141,6 +141,11 @@ class Context:
         self._lease = lease
         self._replay: Dict[str, RunStepObject] = {}
         self._ordinals: Dict[str, int] = {}
+        # Messages this run said in an earlier attempt (replayed, not new input).
+        self._said_ids: set[str] = set()
+        # The agent's view of the thread (see sessions.py); None without a
+        # session manager.
+        self.session = None
 
     @property
     def runtime(self) -> SimpleNamespace:
@@ -183,6 +188,9 @@ class Context:
         self.thread = await self._get_thread_by_id(self.thread_id)
         self.messages = await self._list_messages_by_thread_id(self.thread_id)
         await self._load_replay()
+        manager = getattr(self.assistant, "session_manager", None)
+        if manager is not None and self.data_store is not None and self.thread_id:
+            self.session = await manager.load(self)
         return self
 
     # ── Durable runs ─────────────────────────────────────────────────────
@@ -228,13 +236,13 @@ class Context:
             await self._finish_wait(self._lease.resumed)
         # What this run said already is not new input to it: an agent that
         # reads context.messages sees the thread as its first attempt did.
-        said = {
+        self._said_ids = {
             step.step_details.message_creation.message_id
             for step in self._replay.values()
             if step.type == "message_creation"
         }
-        if said:
-            self.messages = [m for m in self.messages if m.id not in said]
+        if self._said_ids:
+            self.messages = [m for m in self.messages if m.id not in self._said_ids]
 
     async def _finish_wait(self, action: Dict[str, Any]) -> None:
         """Complete the wait this run was woken from, before it runs again."""
@@ -558,10 +566,10 @@ class Context:
     async def _list_messages_by_thread_id(self, thread_id):
         if not thread_id:
             return []
-        resp = await self.data_store.list_messages(thread_id=thread_id, limit=100, order="asc", after=None, before=None)
-        if not resp or not resp.data:
-            print(f"No messages found in thread {thread_id}.")
-        return resp.data if resp else []
+        # The latest 100, oldest first (a thread's first 100 would miss what
+        # was said last). context.session holds a whole thread's view.
+        resp = await self.data_store.list_messages(thread_id=thread_id, limit=100, order="desc", after=None, before=None)
+        return list(reversed(resp.data)) if resp and resp.data else []
     
     def _get_function_from_tools(self, function_name: str):
         for tool in self.assistant.tools:

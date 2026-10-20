@@ -95,7 +95,8 @@ async def test_an_expired_lease_is_recovered_and_taken_over(data_store):
 async def test_a_parked_run_wakes_at_its_time(data_store):
     thread_id, run_id = await _run(data_store)
     await data_store.claim_run(thread_id, run_id, "w1", 30)
-    wake_at = time.time() + 0.1
+    # Due in 0.5 s: room for the not-yet-due checks below on a busy machine.
+    wake_at = time.time() + 0.5
     action = {"type": WAIT_UNTIL, "details": {"step_id": "s", "call_key": "sleep#1", "wake_at": wake_at}}
 
     assert await data_store.suspend_run(thread_id, run_id, "other", action, wake_at) is None  # not its lease
@@ -106,7 +107,7 @@ async def test_a_parked_run_wakes_at_its_time(data_store):
     assert await data_store.claim_run(thread_id, run_id, "w2", 30) is None  # not due
     assert not _recovering(await data_store.list_runs_to_recover(time.time()), run_id)
 
-    await asyncio.sleep(0.15)
+    await asyncio.sleep(max(0.0, wake_at - time.time()) + 0.05)
 
     assert _recovering(await data_store.list_runs_to_recover(time.time()), run_id)
     lease = await data_store.claim_run(thread_id, run_id, "w2", 30)

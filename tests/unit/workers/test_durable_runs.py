@@ -346,7 +346,7 @@ class _Sleeper(Agent):
 
 @WORKERS
 async def test_sleep_parks_the_run_and_it_resumes_when_due(kind):
-    ds, agent = InMemoryDataStore(), _Sleeper(0.1)
+    ds, agent = InMemoryDataStore(), _Sleeper(0.3)
     thread_id, run_id = await new_run(ds, agent)
     queue = InMemoryQueue()
     await queue.enqueue(first(thread_id, run_id, agent))

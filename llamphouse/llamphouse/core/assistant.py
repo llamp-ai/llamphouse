@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from .context import Context
 from .types.config import BaseParam
+from .sessions import SessionManager
 
 class Agent(ABC):
     """Base class for all LLAMPHouse agents.
@@ -23,6 +24,9 @@ class Agent(ABC):
     # written for replay - what may differ between attempts kept in @step
     # (see Context's notes on durable runs). False: such a run fails.
     durable: bool = False
+    # The agent's view of a thread on each run - a summary of older
+    # messages and the recent ones - as context.session (see sessions.py).
+    session_manager: Optional["SessionManager"] = None
     def __init__(
         self,
         id: str,

@@ -23,6 +23,7 @@ Each example includes an `agents.py` (or `server.py`), `client.py`, and `README.
 | [14_WorkflowSteps](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_WorkflowSteps) | Demonstrates the experimental @step decorator — the first piece of a | `@step`, `How input/output is capture…` |
 | [15_LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_LangGraph) | This example shows a non-trivial LangGraph workflow running behind the LLAMPHouse runtime contract. |  |
 | [16_DurableRuns](https://github.com/llamp-ai/llamphouse/tree/main/examples/16_DurableRuns) | A refund agent that asks a human before it pays: the run waits for the | `context.wait_for_input()`, `How a reply to that task an…` |
+| [17_Sessions](https://github.com/llamp-ai/llamphouse/tree/main/examples/17_Sessions) | An agent that works with a session — its view of the thread: a summary | `SessionManager`, `context.session` |
 
 ## Running an example
 
@@ -64,6 +65,7 @@ If you're new to LLAMPHouse, we recommend working through the examples in this o
 15. **[14_WorkflowSteps](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_WorkflowSteps)** — 🪜 Workflow Steps
 16. **[15_LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_LangGraph)** — LangGraph Branching Wrapper Example
 17. **[16_DurableRuns](https://github.com/llamp-ai/llamphouse/tree/main/examples/16_DurableRuns)** — ⏸️ Durable Runs
+18. **[17_Sessions](https://github.com/llamp-ai/llamphouse/tree/main/examples/17_Sessions)** — 🧵 Sessions
 
 ## Next steps
 

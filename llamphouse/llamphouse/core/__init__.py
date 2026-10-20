@@ -4,6 +4,7 @@ from .context import Context
 from .adapters.a2a.types import AgentSkill
 from .triggers import BaseTrigger, TriggerInfo, WebhookTrigger
 from .workflow import step
+from .sessions import Session, SessionManager
 from .wrappers import BaseAgentWrapper, LangGraphAgent
 
 __all__ = [
@@ -16,6 +17,8 @@ __all__ = [
     "TriggerInfo",
     "WebhookTrigger",
     "step",
+    "Session",
+    "SessionManager",
     "BaseAgentWrapper",
     "LangGraphAgent",
 ]
