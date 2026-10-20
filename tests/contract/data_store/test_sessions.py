@@ -5,7 +5,9 @@ Coverage:
 - Under the limits the session is the thread as it is
 - Past max_messages the oldest are folded into the summary, once: the next
   run folds only what is new, on top of the summary so far
-- Without a summarizer the session is a sliding window
+- FullHistory, SlidingWindow (messages, tokens, keep_first) and Summarizing
+- A manager of your own: build() with a memory, recorded and replayed
+- llm_summarizer / openai_summarizer; max_message_tokens shortens long messages
 - A token limit compacts too
 - to_messages(): summary first, then the recent messages
 - A run that runs again (durable) gets the same session without
@@ -14,7 +16,6 @@ Coverage:
 - context.messages holds a thread's latest messages
 """
 
-import time
 import uuid
 from datetime import datetime, timezone
 
@@ -25,7 +26,17 @@ from llamphouse.core.assistant import Agent
 from llamphouse.core.context import Context
 from llamphouse.core.queue.in_memory_queue import InMemoryQueue
 from llamphouse.core.queue.types import QueueMessage
-from llamphouse.core.sessions import NAMESPACE_PREFIX, Session, SessionManager
+from llamphouse.core.sessions import (
+    NAMESPACE_PREFIX,
+    FullHistory,
+    Session,
+    SessionManager,
+    SlidingWindow,
+    Summarizing,
+    llm_summarizer,
+    openai_summarizer,
+    thread_messages,
+)
 from llamphouse.core.streaming.event_queue.in_memory_event_queue import InMemoryEventQueue
 from llamphouse.core.types.assistant import AssistantObject
 from llamphouse.core.types.enum import run_status
@@ -108,7 +119,7 @@ def texts(session: Session) -> list[str]:
 
 async def test_under_the_limits_the_session_is_the_thread(data_store):
     summaries = Summaries()
-    agent = Viewer(SessionManager(summarizer=summaries, max_messages=10))
+    agent = Viewer(Summarizing(summaries, max_messages=10))
     thread_id = await thread_with(data_store, 3)
 
     await run_once(data_store, agent, thread_id)
@@ -120,7 +131,7 @@ async def test_under_the_limits_the_session_is_the_thread(data_store):
 
 async def test_the_oldest_messages_are_folded_into_the_summary_once(data_store):
     summaries = Summaries()
-    agent = Viewer(SessionManager(summarizer=summaries, max_messages=6, keep_messages=3))
+    agent = Viewer(Summarizing(summaries, max_messages=6, keep_messages=3))
     thread_id = await thread_with(data_store, 8)
 
     await run_once(data_store, agent, thread_id)
@@ -143,8 +154,8 @@ async def test_the_oldest_messages_are_folded_into_the_summary_once(data_store):
     await data_store.delete_thread(thread_id)
 
 
-async def test_without_a_summarizer_the_session_is_a_sliding_window(data_store):
-    agent = Viewer(SessionManager(max_messages=4, keep_messages=2))
+async def test_a_sliding_window_is_the_latest_messages(data_store):
+    agent = Viewer(SlidingWindow(max_messages=2))
     thread_id = await thread_with(data_store, 5)
 
     await run_once(data_store, agent, thread_id)
@@ -157,7 +168,7 @@ async def test_without_a_summarizer_the_session_is_a_sliding_window(data_store):
 async def test_a_token_limit_compacts_too(data_store):
     summaries = Summaries()
     words = lambda text: len(text.split())  # noqa: E731
-    agent = Viewer(SessionManager(summarizer=summaries, max_messages=None, max_tokens=6, keep_tokens=3, count_tokens=words))
+    agent = Viewer(Summarizing(summaries, max_messages=None, max_tokens=6, keep_tokens=3, count_tokens=words))
     thread_id = (await data_store.insert_thread(CreateThreadRequest(metadata={}))).id
     for text in ["one two three", "four five", "six", "seven eight"]:
         await data_store.insert_message(thread_id, CreateMessageRequest(role="user", content=text))
@@ -175,7 +186,7 @@ async def test_a_token_limit_compacts_too(data_store):
 
 async def test_a_run_that_runs_again_gets_the_same_session_without_summarizing_twice(data_store):
     summaries = Summaries()
-    agent = Viewer(SessionManager(summarizer=summaries, max_messages=4, keep_messages=2), sleep_after=True)
+    agent = Viewer(Summarizing(summaries, max_messages=4, keep_messages=2), sleep_after=True)
     thread_id = await thread_with(data_store, 6)
 
     run_id, queue = await run_once(data_store, agent, thread_id)
@@ -191,8 +202,8 @@ async def test_a_run_that_runs_again_gets_the_same_session_without_summarizing_t
 
 
 async def test_sessions_are_per_agent_and_go_with_their_thread(data_store):
-    one = Viewer(SessionManager(summarizer=Summaries(), max_messages=2, keep_messages=1), agent_id="one")
-    other = Viewer(SessionManager(max_messages=50), agent_id="other")
+    one = Viewer(Summarizing(Summaries(), max_messages=2, keep_messages=1), agent_id="one")
+    other = Viewer(FullHistory(), agent_id="other")
     thread_id = await thread_with(data_store, 4)
 
     await run_once(data_store, one, thread_id)
@@ -220,7 +231,7 @@ async def test_context_messages_holds_the_latest_messages_of_a_long_thread(data_
 
 
 async def test_compact_folds_a_session_now():
-    manager = SessionManager(summarizer=Summaries(), max_messages=100, keep_messages=1)
+    manager = Summarizing(Summaries(), max_messages=100, keep_messages=1)
     from llamphouse.core.types.message import MessageObject
 
     def msg(i):
@@ -229,4 +240,147 @@ async def test_compact_folds_a_session_now():
     session = await manager.compact(Session(messages=[msg(0), msg(1), msg(2)]))
 
     assert session.summary == "m0, m1" and texts(session) == ["m2"] and session.folded == 2
-    assert time.time()  # no store needed
+    assert session.memory == {"summary": "m0, m1", "folded_until": "m1", "folded": 2}
+
+
+async def test_full_history_is_the_whole_thread(data_store):
+    agent = Viewer(FullHistory())
+    thread_id = await thread_with(data_store, 130)
+
+    await run_once(data_store, agent, thread_id)
+
+    assert len(agent.seen[0].messages) == 130 and agent.seen[0].summary is None
+    await data_store.delete_thread(thread_id)
+
+
+async def test_a_sliding_window_can_keep_the_first_messages_and_a_token_budget(data_store):
+    words = lambda text: len(text.split())  # noqa: E731
+    pinned = Viewer(SlidingWindow(max_messages=2, keep_first=1))
+    budget = Viewer(SlidingWindow(max_messages=None, max_tokens=3, count_tokens=words), agent_id="budget")
+    thread_id = (await data_store.insert_thread(CreateThreadRequest(metadata={}))).id
+    for text in ["the task", "one two", "three", "four five six", "seven"]:
+        await data_store.insert_message(thread_id, CreateMessageRequest(role="user", content=text))
+
+    await run_once(data_store, pinned, thread_id)
+    await run_once(data_store, budget, thread_id)
+
+    assert texts(pinned.seen[0]) == ["the task", "four five six", "seven"]
+    # the budget counts the first run's reply too: "I see 3 messages" is 4 words, over 3
+    assert texts(budget.seen[0]) == ["I see 3 messages"]
+    await data_store.delete_thread(thread_id)
+
+
+class KeyFacts(SessionManager):
+    """A manager of its own: the latest 2 messages, and every fact ("FACT: ...")
+    ever said, kept in its memory."""
+
+    def __init__(self):
+        super().__init__()
+        self.builds = 0
+
+    async def messages(self, context, memory):
+        return await thread_messages(context, after=memory.get("folded_until"))
+
+    async def build(self, messages, memory):
+        self.builds += 1
+        facts = list(memory.get("facts", []))
+        new = [m.text[5:].strip() for m in messages if m.text.startswith("FACT:")]
+        if not new:
+            return Session(summary="; ".join(facts) or None, messages=messages[-2:])
+        facts += new
+        return Session(
+            summary="; ".join(facts),
+            messages=messages[-2:],
+            memory={"facts": facts, "folded_until": messages[-1].id},
+        )
+
+
+async def test_a_manager_of_your_own_keeps_its_memory_and_is_replayed(data_store):
+    manager = KeyFacts()
+    agent = Viewer(manager, sleep_after=True)
+    thread_id = (await data_store.insert_thread(CreateThreadRequest(metadata={}))).id
+    for text in ["hi", "FACT: budget is 1500", "FACT: travels in May", "ok"]:
+        await data_store.insert_message(thread_id, CreateMessageRequest(role="user", content=text))
+
+    run_id, queue = await run_once(data_store, agent, thread_id)
+    receipt, message = await queue.dequeue(timeout=2)  # woken after its sleep
+    await AsyncWorker(time_out=10)._execute_run((receipt, message), data_store, queue, [agent], _State())
+
+    first, resumed = agent.seen
+    assert first.summary == "budget is 1500; travels in May" and texts(first) == ["FACT: travels in May", "ok"]
+    assert resumed.summary == first.summary and texts(resumed) == texts(first)
+    assert manager.builds == 1  # the resumed attempt replayed the recorded session
+
+    # The next run reads only what came after; the facts are remembered.
+    await data_store.insert_message(thread_id, CreateMessageRequest(role="user", content="thanks"))
+    agent.sleep_after = False
+    await run_once(data_store, agent, thread_id)
+    assert agent.seen[-1].summary == "budget is 1500; travels in May"
+    assert texts(agent.seen[-1]) == ["I see 2 messages", "thanks"]
+    await data_store.delete_thread(thread_id)
+
+
+async def test_long_messages_are_shortened_in_the_view_only(data_store):
+    agent = Viewer(FullHistory(max_message_tokens=5))
+    thread_id = (await data_store.insert_thread(CreateThreadRequest(metadata={}))).id
+    await data_store.insert_message(thread_id, CreateMessageRequest(role="user", content="x" * 400))
+    await data_store.insert_message(thread_id, CreateMessageRequest(role="user", content="short"))
+
+    await run_once(data_store, agent, thread_id)
+
+    long, short = agent.seen[0].messages
+    assert long.text == "x" * 20 + " … [shortened]" and short.text == "short"
+    page = await data_store.list_messages(thread_id, 10, "asc", None, None)
+    assert page.data[0].text == "x" * 400
+    await data_store.delete_thread(thread_id)
+
+
+def _messages(*texts_):
+    from llamphouse.core.types.message import MessageObject
+
+    return [
+        MessageObject(id=f"m{i}", created_at=datetime.now(timezone.utc), thread_id="t", role=role, content=text)
+        for i, (role, text) in enumerate(texts_)
+    ]
+
+
+async def test_llm_summarizer_wraps_any_llm_call():
+    prompts = []
+
+    def complete(prompt):  # a sync call works too
+        prompts.append(prompt)
+        return "  user plans Lisbon in May  "
+
+    summarize = llm_summarizer(complete, max_words=50)
+    summary = await summarize("user plans a trip", _messages(("user", "Lisbon, in May"), ("assistant", "Nice!")))
+
+    assert summary == "user plans Lisbon in May"
+    assert "at most 50 words" in prompts[0]
+    assert "Summary so far:\nuser plans a trip" in prompts[0]
+    assert "user: Lisbon, in May\nassistant: Nice!" in prompts[0]
+
+
+async def test_openai_summarizer_calls_chat_completions():
+    calls = []
+
+    class Completions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+
+            class Choice:
+                class message:
+                    content = "the summary"
+
+            class Response:
+                choices = [Choice]
+
+            return Response
+
+    class Client:
+        class chat:
+            completions = Completions()
+
+    summarize = openai_summarizer("gpt-x", client=Client(), temperature=0)
+    assert await summarize(None, _messages(("user", "hello"))) == "the summary"
+    assert calls[0]["model"] == "gpt-x" and calls[0]["temperature"] == 0
+    assert "(none yet)" in calls[0]["messages"][0]["content"]

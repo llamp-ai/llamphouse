@@ -1,8 +1,10 @@
-"""Client for the sessions example: one conversation, eight turns, over A2A.
+"""Client for the sessions example: one conversation, eight turns, over A2A,
+with each of the example's agents (or the one given with --agent).
 
-Watch the agent's view of the thread: the recent messages grow, then the
-oldest are folded into the summary.
+Watch each agent's view of the thread: what stays in view, and what the
+summary keeps.
 """
+import argparse
 import asyncio
 import os
 import uuid
@@ -23,23 +25,36 @@ TURNS = [
 ]
 
 
-async def main() -> None:
+AGENTS = ["summarizing-agent", "window-agent", "facts-agent"]
+
+
+async def converse(client: httpx.AsyncClient, agent: str) -> None:
+    print(f"\n======== {agent} ========")
     context_id = None
+    for turn in TURNS:
+        message = {"kind": "message", "messageId": uuid.uuid4().hex, "role": "user",
+                   "parts": [{"kind": "text", "text": turn}]}
+        if context_id:
+            message["contextId"] = context_id
+        task = (await client.post("/", json={
+            "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "message/send",
+            "params": {"message": message, "metadata": {"assistant_id": agent}},
+        })).json()["result"]
+        context_id = task["contextId"]
+        print(f"\n> User: {turn}")
+        for artifact in task.get("artifacts") or []:
+            for part in artifact["parts"]:
+                print(f"> Agent: {part.get('text')}")
+
+
+async def main(agents: list[str]) -> None:
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=60) as client:
-        for turn in TURNS:
-            message = {"kind": "message", "messageId": uuid.uuid4().hex, "role": "user",
-                       "parts": [{"kind": "text", "text": turn}]}
-            if context_id:
-                message["contextId"] = context_id
-            task = (await client.post("/", json={
-                "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "message/send", "params": {"message": message},
-            })).json()["result"]
-            context_id = task["contextId"]
-            print(f"\n> User: {turn}")
-            for artifact in task.get("artifacts") or []:
-                for part in artifact["parts"]:
-                    print(f"> Agent: {part.get('text')}")
+        for agent in agents:
+            await converse(client, agent)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--agent", choices=AGENTS, help="talk to one agent only")
+    args = parser.parse_args()
+    asyncio.run(main([args.agent] if args.agent else AGENTS))

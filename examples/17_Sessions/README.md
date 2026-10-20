@@ -1,16 +1,15 @@
 # 🧵 Sessions
 
-An agent that works with a **session** — its view of the thread: a summary
-of the older messages and the recent ones as they are. The session manager
-folds the oldest messages into the summary when the thread grows past its
-limits, so long conversations stay within an LLM's context.
+Three agents, three **session managers** — each agent's view of the same
+kind of conversation: a running summary, a sliding window, and a manager of
+your own that remembers the numbers the user mentioned.
 
 ## What you'll learn
 
-- How `SessionManager` keeps an agent's view of a thread within limits
-- How `context.session` gives a run its summary and recent messages
-- How `session.to_messages()` feeds a chat-completion API
-- How to bring your own summarizer (any LLM, any prompt)
+- How `context.session` gives a run its messages and summary
+- The built-in managers: `Summarizing`, `SlidingWindow` (and `FullHistory`)
+- How a summarizer is made from an LLM call (`openai_summarizer`, `llm_summarizer`)
+- How to write a session manager of your own (`SessionManager.build`)
 
 ## Prerequisites
 
@@ -29,41 +28,54 @@ llamphouse up
 In a second terminal:
 
 ```sh
-python client.py
+python client.py                          # all three agents
+python client.py --agent facts-agent      # one of them
 ```
 
+Set `LLAMPHOUSE_URL` if the server runs elsewhere.
+
 ```
-> User: I'll travel with my partner, who loves museums.
-> Agent: I see 3 recent messages (4 folded into the summary).
+======== summarizing-agent ========
+> Agent: I see 3 messages (4 folded into the summary).
 Summary: Hi, I'm planning a; I like food markets
-...
+======== window-agent ========
+> Agent: I see 5 messages (0 folded into the summary).
+======== facts-agent ========
+> Agent: I see 2 messages (0 folded into the summary).
+Summary: Numbers the user mentioned: 1500
 ```
 
-The session grows to 6 messages, then the oldest are folded into the
-summary, down to the latest 3. The thread itself keeps every message —
-look at it in Compass (<http://127.0.0.1:8000/compass>), where each
-compaction is a `session.compact` step of the run that did it.
+The threads keep every message — look at them in Compass
+(<http://127.0.0.1:8000/compass>), where each compaction is a
+`session.compact` step of the run that did it.
 
 ## How it works
 
 ```python
-async def summarize(previous: str | None, messages) -> str:
-    ...  # your LLM call: fold `messages` into `previous`
+summarizing = Summarizing(openai_summarizer("gpt-4o-mini"), max_messages=6, keep_messages=3)
+window = SlidingWindow(max_messages=4, keep_first=1)
 
-class SessionAgent(Agent):
-    session_manager = SessionManager(summarizer=summarize, max_messages=6, keep_messages=3)
 
-    async def run(self, context):
-        session = context.session
-        reply = await llm(messages=session.to_messages())   # summary first, then recent messages
-        await context.reply(reply)
+class KeyFacts(SessionManager):
+    async def build(self, messages, memory):
+        facts = memory.get("facts", []) + numbers_in(messages)
+        return Session(
+            summary=f"Numbers the user mentioned: {', '.join(facts)}",
+            messages=messages[-2:],
+            memory={"facts": facts, "folded_until": messages[-1].id},   # kept for the next run
+        )
 ```
 
-- The summary is kept per thread and agent, so each run folds only what is
-  new since the last compaction, on top of the summary so far.
-- Limits by tokens work too: `SessionManager(max_tokens=8000, count_tokens=...)`.
-- Without a summarizer, the session is a sliding window.
-- A run that runs again (durable runs) gets the same session, without
-  summarizing twice.
+- **`Summarizing`** folds the oldest messages into a running summary once
+  the session passes 6 messages, down to the latest 3. The summary is kept
+  per thread and agent, so each compaction folds only what is new.
+- **`SlidingWindow`** shows the latest 4 messages, and the conversation's
+  first one (the request it started with).
+- **`KeyFacts`** implements `build(messages, memory)`: the view from the
+  new messages and what it remembered. Its memory says to read only what
+  came after the last message it saw (`folded_until`).
+
+An agent hands the session to its LLM with `context.session.to_messages()`
+(the summary first, then the messages).
 
 See [Sessions](../../docs/concepts/sessions.md).

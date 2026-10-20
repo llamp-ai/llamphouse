@@ -4,12 +4,20 @@ project:
   name: sessions-demo
 
 definitions:
-  - name: session-agent
-    entrypoint: agents.py:SessionAgent
+  - name: summarizing-agent
+    entrypoint: agents.py:summarizing_agent
+  - name: window-agent
+    entrypoint: agents.py:window_agent
+  - name: facts-agent
+    entrypoint: agents.py:facts_agent
 
 agents:
-  - name: session-agent
-    definition: session-agent
+  - name: summarizing-agent
+    definition: summarizing-agent
+  - name: window-agent
+    definition: window-agent
+  - name: facts-agent
+    definition: facts-agent
 
 adapters:
   - a2a:
