@@ -143,6 +143,9 @@ class Context:
         self._ordinals: Dict[str, int] = {}
         # Messages this run said in an earlier attempt (replayed, not new input).
         self._said_ids: set[str] = set()
+        # Completed calls of an earlier attempt not replayed yet: while there
+        # are some, the run redoes what the client already saw.
+        self._ahead: set[str] = set()
         # The agent's view of the thread (see sessions.py); None without a
         # session manager.
         self.session = None
@@ -218,7 +221,16 @@ class Context:
 
     def _replayed(self, call_key: str) -> Optional[RunStepObject]:
         """The step an earlier attempt recorded under ``call_key``, if any."""
+        self._ahead.discard(call_key)
         return self._replay.get(call_key)
+
+    @property
+    def replaying(self) -> bool:
+        """True while the run redoes what an earlier attempt did: until it
+        has replayed every call that attempt completed. Events sent meanwhile
+        (``send_chunk``, ``emit``, ``emit_state``) are not sent again - the
+        client saw them the first time."""
+        return bool(self._ahead)
 
     async def _load_replay(self) -> None:
         if not getattr(self.data_store, "supports_durable_runs", False):
@@ -234,6 +246,10 @@ class Context:
                 self._replay[key] = step
         if self._lease is not None and self._lease.resumed:
             await self._finish_wait(self._lease.resumed)
+        self._ahead = {
+            key for key, step in self._replay.items()
+            if step.status == run_step_status.COMPLETED and not key.startswith("session.")
+        }
         # What this run said already is not new input to it: an agent that
         # reads context.messages sees the thread as its first attempt did.
         self._said_ids = {
@@ -604,7 +620,7 @@ class Context:
         }
     
     def _send_event(self, event):
-        if not self.__queue:
+        if not self.__queue or self.replaying:
             return
         if self.__loop:
             # run_coroutine_threadsafe is for cross-thread calls.  When we are
@@ -679,6 +695,16 @@ class Context:
         else:
             payload = _json.dumps(data, ensure_ascii=True, default=str)
         self._send_event(Event(event=event_name, data=payload))
+
+    def emit_state(self, state: Any) -> None:
+        """Send the agent's whole shared state to the client (AG-UI:
+        ``STATE_SNAPSHOT``)."""
+        self.emit("state.snapshot", state)
+
+    def emit_state_delta(self, patch: List[Dict[str, Any]]) -> None:
+        """Send a change of the shared state as a JSON Patch (RFC 6902)
+        list of operations (AG-UI: ``STATE_DELTA``)."""
+        self.emit("state.delta", patch)
 
     # ── Internal agent dispatch helpers ─────────────────────────────────
 
@@ -1049,9 +1075,9 @@ class Context:
 
         :param text: The text fragment to send.
         """
-        events = self._build_chunk_events(text)
-        if not self.__queue:
+        if not self.__queue or self.replaying:
             return
+        events = self._build_chunk_events(text)
         for evt in events:
             await self.__queue.add(evt)
 

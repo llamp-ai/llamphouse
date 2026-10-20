@@ -577,3 +577,45 @@ class _Slow(Agent):
         except asyncio.CancelledError:
             self.stopped = True
             raise
+
+
+class _Chatty(Agent):
+    """Streams and emits before and after a wait."""
+
+    def __init__(self):
+        super().__init__(id="chatty")
+
+    async def run(self, context: Context):
+        await context.asend_chunk("before ")
+        context.emit("progress", {"at": "before"})
+        await context.wait_for_input("Go on?")
+        await context.asend_chunk("after")
+        context.emit("progress", {"at": "after"})
+
+
+async def test_a_resumed_run_does_not_send_again_what_the_client_saw():
+    ds, agent = InMemoryDataStore(), _Chatty()
+    thread_id, run_id = await new_run(ds, agent)
+    queue = InMemoryQueue()
+    await queue.enqueue(first(thread_id, run_id, agent))
+
+    async def deliver_streamed():
+        events = InMemoryEventQueue()
+        state = _State()
+        state.event_queues[f"{agent.id}:{thread_id}"] = events
+        receipt, message = await queue.dequeue(timeout=2)
+        await AsyncWorker(time_out=5)._execute_run((receipt, message), ds, queue, [agent], state)
+        out = []
+        while not events.empty():
+            evt = await events.get_nowait()
+            if evt is not None and evt.event in ("message.delta", "progress"):
+                out.append(evt.data)
+        return out
+
+    first_attempt = await deliver_streamed()
+    await signal_run(ds, queue, thread_id, run_id, "human_input", True)
+    second_attempt = await deliver_streamed()
+
+    assert any("before" in e for e in first_attempt) and not any("after" in e for e in first_attempt)
+    assert not any("before" in e for e in second_attempt)
+    assert any("after" in e for e in second_attempt)

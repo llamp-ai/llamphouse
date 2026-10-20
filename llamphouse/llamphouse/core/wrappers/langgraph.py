@@ -141,6 +141,9 @@ class LangGraphAgent(BaseAgentWrapper):
             graph_input: Any = self.state_mapper(context)
         else:
             graph_input = await self._resume_input(context, graph, config)
+        # The graph carries on from its checkpoint: what it does from here is
+        # new, nothing of it a replay (see Context.replaying).
+        context._ahead.clear()
 
         output = None
         while True:

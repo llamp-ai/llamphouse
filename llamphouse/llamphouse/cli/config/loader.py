@@ -38,7 +38,7 @@ import yaml
 
 from ...core.assistant import Agent
 from ...core.context import Context
-from ...core.adapters import AssistantAPIAdapter, A2AAdapter, CompassAdapter
+from ...core.adapters import AssistantAPIAdapter, A2AAdapter, CompassAdapter, AGUIAdapter
 from ...core.data_stores import InMemoryDataStore, PostgresDataStore
 from ...core.triggers import WebhookTrigger
 from ...core.workers import AsyncWorker
@@ -64,6 +64,7 @@ ADAPTER_REGISTRY: Dict[str, type] = {
     "assistant_api": AssistantAPIAdapter,
     "a2a": A2AAdapter,
     "compass": CompassAdapter,
+    "ag_ui": AGUIAdapter,
 }
 
 WORKER_REGISTRY: Dict[str, type] = {

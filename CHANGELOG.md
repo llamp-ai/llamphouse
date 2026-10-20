@@ -8,7 +8,7 @@
 - **Lifecycle events & subscribers** — transactional outbox, `subscribers = [...]` / `@on_event`, retry and dead-letter; also notifies humans when a run waits for input. See `docs/PLAN_LIFECYCLE_EVENTS.md`.
 - **One active run per thread** — a rule (reject, queue or interrupt) for a new run on a thread that already has one, so retries, resumed runs and sessions never write to a thread at the same time.
 - **Run policies** — retries and backoff, step and run time outs, and token budgets, configurable per agent in `llamphouse.yaml`.
-- **AG-UI integration** — an AG-UI adapter, with human-in-the-loop mapped onto AG-UI interrupts and session state onto state snapshots / deltas, plus an example.
+- **AG-UI frontend tools** — calling the tools an AG-UI client declares (`tools`), and taking their results from the next input's tool messages.
 - **Compass** — durable run timeline (steps, retries, replayed vs re-executed), a human-in-the-loop inbox to approve or reject waiting runs, and a session view (what the agent saw next to the full thread).
 - **Upgrade guide** for the 1.4.0 migrations.
 
@@ -29,6 +29,10 @@
 - `context.wait_for_signal(..., key=)` — a stable identity for a wait whose position may differ between attempts.
 - **Sessions** (`docs/concepts/sessions.md`) — `context.session` is an agent's view of a thread for a run: a summary of the older messages and the recent ones as they are (`to_messages()` for a chat-completion API). `Agent.session_manager = SessionManager(summarizer=..., max_messages=..., keep_messages=..., max_tokens=..., count_tokens=...)` folds the oldest messages into the summary past its limits; the summary is kept per thread and agent (key-value records), so each run folds only what is new. The summarizer is any `async (previous_summary, messages) -> str`; without one the session is a sliding window. A compaction is a `session.compact` step, replayed by a run that runs again. `LangGraphAgent(session_manager=...)` passes the session's `messages` and `summary` to the graph.
 - **Sessions example** (`examples/17_Sessions`).
+- **AG-UI adapter** (`AGUIAdapter`, YAML `ag_ui`, `pip install llamphouse[ag-ui]`) — serves the agents over AG-UI 1.0 (`POST /ag-ui`, `POST /ag-ui/agents/{agent_id}`): replies and streamed text as `TEXT_MESSAGE_*`, `@step`s as `STEP_*`, tool calls as `TOOL_CALL_*`, `context.emit_state()` / `emit_state_delta()` as `STATE_SNAPSHOT` / `STATE_DELTA`, `context.emit()` as `CUSTOM`. A run waiting for input (`wait_for_input`, `wait_for_signal`, LangGraph `interrupt()`) finishes with an `interrupt` outcome carrying the prompt and response schema; the next input's `resume` entries answer it and the same run carries on (or `cancelled` cancels it). The AG-UI thread and message ids are the thread's; the input's state, context, tools and forwarded props reach the agent through `ag_ui_input(context)`.
+- **`context.emit_state(state)` / `context.emit_state_delta(patch)`** — share the agent's state with the client.
+- **`context.replaying`** — while a run redoes what an earlier attempt did, the events it sends (`send_chunk`, `emit`, `emit_state`) are not sent again.
+- **AG-UI example** (`examples/18_AGUI`).
 - **DurableRuns example** (`examples/16_DurableRuns`) — a refund agent that asks a human over A2A, sleeps through a cool-off and retries a flaky payment API, surviving a restart.
 - **Run lifecycle, the same for every worker** (`workers/run_lifecycle.py`, used by `AsyncWorker` and `DistributedWorker`):
   - a run cancelled while queued is not started: it ends `cancelled`;
@@ -55,6 +59,8 @@
 - The ignite banner no longer raises `AttributeError` when `event_queue_class` is a factory instance (e.g. `RedisEventQueueFactory`), so distributed mode starts again.
 
 ### Known issues
+
+- Streamed text (`send_chunk`, `asend_chunk`, `process_stream`) is not stored as a message of the thread unless the agent also stores it (`reply` / `insert_message`): a client that reloads the thread does not see it, and an AG-UI client's next input carries it as an assistant message the thread does not have.
 
 - A signal delivered while its run is about to park (between `wait_for_signal` finding none and the run being parked) wakes the run only at the next recovery look, up to `recover_interval` (10 s) later.
 - `call_agent` / `handover_to_agent` are not replayed: a resumed run calls its sub-agent again.
