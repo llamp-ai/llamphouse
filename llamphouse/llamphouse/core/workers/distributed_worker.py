@@ -36,6 +36,7 @@ from ..types.enum import run_status, event_type
 from .base_worker import BaseWorker
 from ..assistant import Agent, Assistant
 from ..context import Context
+from ..sessions import SessionManager, apply_default_session_manager
 from ..streaming.event_queue.redis_event_queue import RedisEventQueue, RedisEventQueueFactory
 from ..streaming.event import DoneEvent, ErrorEvent
 from ..data_stores.base_data_store import BaseDataStore
@@ -97,11 +98,14 @@ class DistributedWorker(BaseWorker):
         worker_id: Optional[str] = None,
         lease_ttl: float = LEASE_TTL_SECONDS,
         recover_interval: Optional[float] = RECOVER_INTERVAL_SECONDS,
+        session_manager: Optional[SessionManager] = None,
     ) -> None:
         self.redis_url = redis_url
         self.data_store = data_store
         resolved = agents or assistants or []
         self.agents = list(resolved)
+        # The session manager of every agent that has none of its own.
+        apply_default_session_manager(self.agents, session_manager)
         self.assistants = self.agents  # backward-compat alias
         self.run_queue = run_queue
         self.time_out = time_out

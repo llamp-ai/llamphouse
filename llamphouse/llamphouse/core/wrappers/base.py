@@ -54,8 +54,9 @@ class BaseAgentWrapper(Agent, ABC):
         """Map LLAMPHouse context -> generic framework state.
 
         Default shape follows common chat-style state with a `messages` list.
-        With a session manager (``session_manager``), `messages` are the
-        session's recent messages and `summary` the summary of the older ones.
+        `messages` are the session's messages (``context.session``; by default
+        the latest 20 - ``session_manager=FullHistory()`` for all) and
+        `summary` the summary of older ones.
         """
         session = getattr(context, "session", None)
         if session is not None:

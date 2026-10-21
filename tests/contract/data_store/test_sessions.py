@@ -384,3 +384,31 @@ async def test_openai_summarizer_calls_chat_completions():
     assert await summarize(None, _messages(("user", "hello"))) == "the summary"
     assert calls[0]["model"] == "gpt-x" and calls[0]["temperature"] == 0
     assert "(none yet)" in calls[0]["messages"][0]["content"]
+
+
+async def test_an_agent_without_a_session_manager_sees_the_latest_20_messages(data_store):
+    class Plain(Agent):
+        async def run(self, context):
+            self.session = context.session
+
+    agent = Plain(id="plain")
+    thread_id = await thread_with(data_store, 25)
+
+    await run_once(data_store, agent, thread_id)
+
+    assert texts(agent.session) == [f"m{i}" for i in range(5, 25)] and agent.session.summary is None
+    await data_store.delete_thread(thread_id)
+
+
+def test_a_server_default_goes_to_agents_without_their_own():
+    from llamphouse.core import LLAMPHouse
+    from llamphouse.core.workers.distributed_worker import DistributedWorker
+
+    plain, own = Viewer(None, agent_id="plain"), Viewer(FullHistory(), agent_id="own")
+    default = SlidingWindow(max_messages=3)
+    LLAMPHouse(agents=[plain, own], session_manager=default, compass=False)
+    assert plain.session_manager is default and isinstance(own.session_manager, FullHistory)
+
+    other = Viewer(None, agent_id="other")
+    DistributedWorker(redis_url="redis://localhost:6379/0", data_store=None, agents=[other], session_manager=default)
+    assert other.session_manager is default

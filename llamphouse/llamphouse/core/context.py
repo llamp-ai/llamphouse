@@ -146,8 +146,8 @@ class Context:
         # Completed calls of an earlier attempt not replayed yet: while there
         # are some, the run redoes what the client already saw.
         self._ahead: set[str] = set()
-        # The agent's view of the thread (see sessions.py); None without a
-        # session manager.
+        # The agent's view of the thread (see sessions.py): its session
+        # manager's, by default the latest 20 messages.
         self.session = None
 
     @property
@@ -191,9 +191,10 @@ class Context:
         self.thread = await self._get_thread_by_id(self.thread_id)
         self.messages = await self._list_messages_by_thread_id(self.thread_id)
         await self._load_replay()
-        manager = getattr(self.assistant, "session_manager", None)
-        if manager is not None and self.data_store is not None and self.thread_id:
-            self.session = await manager.load(self)
+        if self.data_store is not None and self.thread_id:
+            from .sessions import session_manager_of
+
+            self.session = await session_manager_of(self.assistant).load(self)
         return self
 
     # ── Durable runs ─────────────────────────────────────────────────────

@@ -286,9 +286,10 @@ class SlidingWindow(SessionManager):
         *,
         max_tokens: Optional[int] = None,
         keep_first: int = 0,
-        **kwargs: Any,
+        count_tokens: TokenCounter = estimate_tokens,
+        max_message_tokens: Optional[int] = None,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(count_tokens=count_tokens, max_message_tokens=max_message_tokens)
         if max_messages is None and max_tokens is None:
             raise ValueError("SlidingWindow needs max_messages or max_tokens")
         self.max_messages = max_messages
@@ -296,6 +297,9 @@ class SlidingWindow(SessionManager):
         self.keep_first = keep_first
 
     async def messages(self, context: "Context", memory: Dict[str, Any]) -> List[MessageObject]:
+        if self.max_tokens is None and not self.keep_first and self.max_messages <= 100:
+            # The context holds the thread's latest 100 messages already.
+            return list(context.messages[-self.max_messages:]) if self.max_messages else []
         if self.max_tokens is None:
             recent = await thread_messages(context, latest=self.max_messages + self.keep_first)
         else:
@@ -352,9 +356,10 @@ class Summarizing(SessionManager):
         keep_messages: Optional[int] = None,
         max_tokens: Optional[int] = None,
         keep_tokens: Optional[int] = None,
-        **kwargs: Any,
+        count_tokens: TokenCounter = estimate_tokens,
+        max_message_tokens: Optional[int] = None,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(count_tokens=count_tokens, max_message_tokens=max_message_tokens)
         if max_messages is None and max_tokens is None:
             raise ValueError("Summarizing needs max_messages or max_tokens")
         self.summarizer = summarizer
@@ -476,7 +481,29 @@ def openai_summarizer(
     return llm_summarizer(complete, instructions=instructions, max_words=max_words)
 
 
+# ── The default ──────────────────────────────────────────────────────────
+
+#: The session manager of an agent that sets none, on a server that sets none.
+DEFAULT_SESSION_MANAGER: SessionManager = SlidingWindow(max_messages=20)
+
+
+def session_manager_of(agent: Any) -> SessionManager:
+    """The manager of ``agent``'s sessions: its own, else the default."""
+    return getattr(agent, "session_manager", None) or DEFAULT_SESSION_MANAGER
+
+
+def apply_default_session_manager(agents: Any, manager: Optional[SessionManager]) -> None:
+    """Give ``manager`` to every agent of ``agents`` that has none of its own
+    (a server's default); None leaves them to ``DEFAULT_SESSION_MANAGER``."""
+    if manager is None:
+        return
+    for agent in agents or []:
+        if getattr(agent, "session_manager", None) is None:
+            agent.session_manager = manager
+
+
 __all__ = [
+    "DEFAULT_SESSION_MANAGER",
     "Session",
     "SessionManager",
     "FullHistory",

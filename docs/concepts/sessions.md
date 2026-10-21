@@ -27,8 +27,44 @@ class SupportAgent(Agent):
 | `session.to_messages(summary_role="system")` | `[{"role", "content"}]`: the summary first, then the messages |
 | `session.text()` | the session as one text |
 
-`context.session` is `None` for an agent without a session manager;
-`context.messages` is still there: the thread's latest 100 messages.
+`context.messages` is still there too: the thread's latest 100 messages.
+
+## Which manager an agent gets
+
+Every agent has a session. Without anything configured, it is a
+**sliding window of the latest 20 messages**. In order, the first that is
+set wins:
+
+1. the agent's own entry in `llamphouse.yaml` (`agents[].session_manager`);
+2. the agent's own `session_manager` (class attribute, or
+   `LangGraphAgent(session_manager=...)`);
+3. the server's default: `LLAMPHouse(session_manager=...)`
+   (`DistributedWorker(session_manager=...)`), or `session_manager:` at the
+   top of `llamphouse.yaml`;
+4. `SlidingWindow(max_messages=20)` (`sessions.DEFAULT_SESSION_MANAGER`).
+
+```yaml
+session_manager:              # the default of every agent that sets none
+  summarizing:
+    summarizer: openai        # or {openai: {model: gpt-4o-mini}}, or file.py:callable
+    max_messages: 40
+    keep_messages: 20
+
+agents:
+  - name: router
+    definition: router
+    session_manager:          # this agent's own
+      sliding_window:
+        max_messages: 4
+  - name: reviewer
+    definition: reviewer
+    session_manager:
+      full_history:
+```
+
+The YAML names are `full_history`, `sliding_window` and `summarizing`,
+with the constructor arguments below; callables (`summarizer`,
+`count_tokens`) are given as `file.py:name` or `module:name`.
 
 ## Built-in managers
 
@@ -121,7 +157,8 @@ same view for the same messages and memory. See [Durable Runs](durable-runs.md).
 
 ## LangGraph
 
-`LangGraphAgent(session_manager=...)`: the default state mapper passes the
-session's `messages` and its `summary` to the graph.
+The default state mapper passes the session's `messages` and its `summary`
+to the graph: by default the latest 20 messages. Give the agent
+`session_manager=FullHistory()` to pass the whole thread.
 
 See the [Sessions example](https://github.com/llamp-ai/llamphouse/tree/main/examples/17_Sessions).

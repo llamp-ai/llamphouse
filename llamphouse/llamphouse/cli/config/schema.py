@@ -41,6 +41,11 @@ A llamphouse.yaml file has this top-level structure:
       - asyncworker:
           time_out: 90
 
+    session_manager: # what agents see of a thread (default: the latest 20 messages)
+      summarizing:   # or: sliding_window / full_history (with their kwargs)
+        summarizer: openai           # or {openai: {model: ...}} / file.py:callable
+        max_messages: 40
+
     data_store:      # data store (single entry; omit for in-memory)
       in_memory:     # or: postgres (with constructor kwargs)
 
@@ -165,6 +170,10 @@ class DeploymentConfig(StrictConfigModel):
     # Each entry is a single-key mapping ``{trigger_name: {kwargs}}``.
     triggers: Optional[List[Dict[str, Any]]] = None
 
+    # This agent's session manager, as the top-level ``session_manager``;
+    # overrides the agent's own and the default.
+    session_manager: Optional[Dict[str, Any]] = None
+
 
 # ── Globals & secret stores ──────────────────────────────────────────────────
 
@@ -209,6 +218,11 @@ class LLAMPHouseConfig(StrictConfigModel):
     # or ``{postgres: {database_url: ...}}``.
     # ``None`` means use LLAMPHouse's default in-memory data store.
     data_store: Optional[Dict[str, Any]] = None
+
+    # Single-key mapping ``{manager_name: {kwargs}}``: the session manager of
+    # every agent that sets none (``full_history``, ``sliding_window``,
+    # ``summarizing``). ``None`` → the latest 20 messages.
+    session_manager: Optional[Dict[str, Any]] = None
 
     globals: Optional[GlobalsConfig] = None
     secrets_store: Optional[Dict[str, SecretProviderConfig]] = None

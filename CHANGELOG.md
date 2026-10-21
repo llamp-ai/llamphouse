@@ -31,7 +31,8 @@
   - **Built in:** `FullHistory()` (the whole thread); `SlidingWindow(max_messages=, max_tokens=, keep_first=)` (the latest messages, optionally the first ones too); `Summarizing(summarizer, max_messages=, keep_messages=, max_tokens=, keep_tokens=)` (past a limit, the oldest messages are folded into a running summary, kept per thread and agent so each compaction folds only what is new). All take `count_tokens=` and `max_message_tokens=` (shorten a long message in the view only).
   - **Summarizers:** `llm_summarizer(complete)` from any LLM call (`prompt -> text`, sync or async), `openai_summarizer(model, client=)` on an OpenAI-compatible API; any `async (previous_summary, messages) -> str` works.
   - **Your own:** subclass `SessionManager` and implement `build(messages, memory) -> Session`; the memory (a JSON dict per thread and agent) changes when `Session.memory` is set; override `messages()` to read less of the thread (`thread_messages(context, after=, latest=, first=)`).
-  - A session whose memory changed is a `session.compact` step, replayed by a run that runs again (no second summarizer call). `LangGraphAgent(session_manager=...)` passes the session's `messages` and `summary` to the graph.
+  - **Default: a rolling window.** Every agent has a session: an agent that sets no manager gets the server's default — `LLAMPHouse(session_manager=...)` / `DistributedWorker(session_manager=...)`, or `session_manager:` at the top of `llamphouse.yaml` — else `SlidingWindow(max_messages=20)`. An agent's entry in `llamphouse.yaml` (`agents[].session_manager`) overrides its own; YAML names `full_history`, `sliding_window`, `summarizing`, with `summarizer: openai` / `{openai: {model: ...}}` / `file.py:name`. `llamphouse check` validates them.
+  - A session whose memory changed is a `session.compact` step, replayed by a run that runs again (no second summarizer call). `LangGraphAgent` passes the session's `messages` and `summary` to the graph.
 - **Sessions example** (`examples/17_Sessions`) — three agents, three managers: `Summarizing`, `SlidingWindow`, and a manager of its own.
 - **AG-UI adapter** (`AGUIAdapter`, YAML `ag_ui`, `pip install llamphouse[ag-ui]`) — serves the agents over AG-UI 1.0 (`POST /ag-ui`, `POST /ag-ui/agents/{agent_id}`): replies and streamed text as `TEXT_MESSAGE_*`, `@step`s as `STEP_*`, tool calls as `TOOL_CALL_*`, `context.emit_state()` / `emit_state_delta()` as `STATE_SNAPSHOT` / `STATE_DELTA`, `context.emit()` as `CUSTOM`. A run waiting for input (`wait_for_input`, `wait_for_signal`, LangGraph `interrupt()`) finishes with an `interrupt` outcome carrying the prompt and response schema; the next input's `resume` entries answer it and the same run carries on (or `cancelled` cancels it). The AG-UI thread and message ids are the thread's; the input's state, context, tools and forwarded props reach the agent through `ag_ui_input(context)`.
 - **`context.emit_state(state)` / `context.emit_state_delta(patch)`** — share the agent's state with the client.
@@ -48,6 +49,8 @@
 - `runs.heartbeat_at` column (migration `b7e2c9a4d1f3`, which also joins the two migration heads into one).
 
 ### Changed
+
+- `LangGraphAgent`'s default state mapper passes the session's messages - by default the latest 20 - instead of `context.messages` (the latest 100); `session_manager=FullHistory()` passes the whole thread.
 
 - A run waiting for a signal is cancelled at once by `request_cancel` (it has no worker to stop it); `submit_tool_outputs` refuses it.
 - A2A `tasks/get` and `tasks/cancel` find a task's run after a restart too; `tasks/cancel` now stops running tasks as well (`request_cancel`).
