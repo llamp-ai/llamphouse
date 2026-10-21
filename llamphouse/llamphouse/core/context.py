@@ -186,16 +186,57 @@ class Context:
         return {p.key: p.default_value() for p in params}
 
     @classmethod
-    async def create(cls, **kwargs) -> "Context":
+    async def create(cls, load_session: bool = True, **kwargs) -> "Context":
+        """A run's context. ``load_session=False``: load ``session`` later,
+        with ``load_session()`` (the workers do, under the run's heartbeat
+        and time out - a compaction may take a while)."""
         self = cls(**kwargs)
         self.thread = await self._get_thread_by_id(self.thread_id)
         self.messages = await self._list_messages_by_thread_id(self.thread_id)
         await self._load_replay()
+        if load_session:
+            await self.load_session()
+        return self
+
+    async def load_session(self) -> None:
+        """Set ``session``: the agent's view of the thread, compacted first
+        if its session manager says so."""
         if self.data_store is not None and self.thread_id:
             from .sessions import session_manager_of
 
             self.session = await session_manager_of(self.assistant).load(self)
-        return self
+
+    async def compact(self, messages: List[Any], *, policy: Any = None, summary_role: str = "user") -> List[Any]:
+        """Compact an agent's own working transcript - the messages of its
+        tool loop, say - when it has grown past its budget; else return it as
+        it is. For agents whose context grows within a run (coding agents,
+        long-running agents)::
+
+            while not done:
+                messages = await context.compact(messages)
+                response = await llm(messages=messages, tools=tools)
+                ...
+
+        The policy is ``policy`` or the agent's session manager, a
+        ``Compacting`` (its budget, ``compact_at``, ``compact_to`` and
+        summarizer). Leading system messages stay; the latest messages that
+        fit stay as they are, never starting with a tool result whose call
+        would be gone; the rest becomes one summary message (``summary_role``,
+        ``"user"`` by default - accepted by every chat API) - folding in an
+        earlier one. Recorded as a step (a run that runs again replays it)
+        and told to the client (``session.compaction.*`` events). Messages:
+        dicts or objects with ``role`` / ``content`` (OpenAI, Anthropic and
+        LangChain shapes, tool calls included).
+        """
+        from .sessions import Compacting, session_manager_of
+
+        policy = policy or session_manager_of(self.assistant)
+        if not isinstance(policy, Compacting):
+            raise TypeError(
+                "context.compact() needs a Compacting policy: give the agent a Compacting session "
+                "manager, or pass policy=Compacting(summarizer, max_tokens=...)."
+            )
+        return await policy.compact_messages(self, messages, summary_role=summary_role)
 
     # ── Durable runs ─────────────────────────────────────────────────────
     #

@@ -27,6 +27,7 @@ from .run_lifecycle import (
     cancelled_before_start,
     default_worker_id,
     resume_message,
+    run_agent,
     run_supervised,
 )
 
@@ -212,13 +213,11 @@ class AsyncWorker(BaseWorker):
                         queue_class=fastapi_state.queue_class,
                         assistants=assistants,
                         lease=lease,
+                        load_session=False,
                     )
 
-                    work = (
-                        assistant.run(context)
-                        if inspect.iscoroutinefunction(assistant.run)
-                        else asyncio.to_thread(assistant.run, context)
-                    )
+                    # The session too loads under the heartbeat and time out.
+                    work = run_agent(assistant, context)
                     await run_supervised(
                         work,
                         data_store=data_store,

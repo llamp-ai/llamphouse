@@ -54,6 +54,7 @@ from .run_lifecycle import (
     cancelled_before_start,
     default_worker_id,
     resume_message,
+    run_agent,
     run_supervised,
 )
 
@@ -300,15 +301,13 @@ class DistributedWorker(BaseWorker):
                         queue_class=RedisEventQueueFactory(self.redis_url),
                         assistants=self.assistants,
                         lease=lease,
+                        load_session=False,
                     )
 
                     # Execute the assistant: within its time out, with a
                     # heartbeat, stopped if a cancel is requested.
-                    work = (
-                        assistant.run(context)
-                        if inspect.iscoroutinefunction(assistant.run)
-                        else asyncio.to_thread(assistant.run, context)
-                    )
+                    # The session too loads under the heartbeat and time out.
+                    work = run_agent(assistant, context)
                     await run_supervised(
                         work,
                         data_store=self.data_store,

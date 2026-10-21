@@ -22,6 +22,7 @@ See docs/DURABLE_RUNS_PLAN.md.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import socket
@@ -128,6 +129,15 @@ async def run_supervised(
         raise
     finally:
         watcher.cancel()
+
+
+async def run_agent(agent: Any, context: Any) -> Any:
+    """What a worker runs, supervised: the run's session first (a compaction
+    may take a while, so under the heartbeat), then the agent."""
+    await context.load_session()
+    if inspect.iscoroutinefunction(agent.run):
+        return await agent.run(context)
+    return await asyncio.to_thread(agent.run, context)
 
 
 def resume_message(run: Any) -> dict:

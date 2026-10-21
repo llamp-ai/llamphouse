@@ -36,8 +36,11 @@ a run that runs again (durable runs) gets the same session - is done here.
 
 from __future__ import annotations
 
+import contextvars
 import inspect
+import json
 import logging
+from types import SimpleNamespace
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING, Union
@@ -56,7 +59,26 @@ TokenCounter = Callable[[str], int]
 
 NAMESPACE_PREFIX = "session:"
 _STEP = "session.compact"
+_STEP_MESSAGES = "session.compact_messages"
 _PAGE = 100
+
+# Events a run sends while it compacts (context.emit): A2A shows their
+# "message" as a status, AG-UI passes them as CUSTOM events.
+COMPACTION_STARTED = "session.compaction.started"
+COMPACTION_COMPLETED = "session.compaction.completed"
+COMPACTION_FAILED = "session.compaction.failed"
+
+# The run a session is loaded for, so a compaction can tell its client.
+_RUN: contextvars.ContextVar[Optional["Context"]] = contextvars.ContextVar("llamphouse_session_run", default=None)
+
+
+def _notify(name: str, data: Dict[str, Any]) -> None:
+    context = _RUN.get()
+    if context is not None:
+        try:
+            context.emit(name, data)
+        except Exception:  # telling the client never breaks a compaction
+            logger.debug("Could not send %s", name, exc_info=True)
 
 
 def estimate_tokens(text: str) -> int:
@@ -154,7 +176,11 @@ class SessionManager(ABC):
             session = await self._replay(context, done.step_details.output)
         else:
             memory = await self._memory(context) if self.uses_memory else {}
-            session = await self.build(await self.messages(context, memory), memory)
+            token = _RUN.set(context)
+            try:
+                session = await self.build(await self.messages(context, memory), memory)
+            finally:
+                _RUN.reset(token)
             if session.memory is not None:
                 step = await context.start_step(_STEP, input={"messages": len(session.messages)}, call_key=key)
                 await context.complete_step(step.id, output=_record(session))
@@ -361,17 +387,30 @@ class _RunningSummary(SessionManager):
         if n <= 0:
             return session
         folding = session.messages[:n]
+        before = self.summary_size(session) + self.tokens(session.messages)
+        _notify(COMPACTION_STARTED, {
+            "message": "Compacting the conversation…", "scope": "thread", "messages": n, "tokens": before,
+        })
         try:
             summary = await summarize(self.summarizer, session.summary, folding, max_tokens=self.summary_tokens)
-        except Exception:
+        except Exception as exc:
             # The run goes on with the session as it is; a later run compacts.
             logger.warning("Summarizing %d messages failed; the session is not compacted this run.", n, exc_info=True)
+            _notify(COMPACTION_FAILED, {
+                "message": "Compacting the conversation failed; carrying on without it.",
+                "scope": "thread", "error": f"{type(exc).__name__}: {exc}",
+            })
             return session
         if self.summary_tokens is not None and self.count_tokens(summary) > 2 * self.summary_tokens:
             logger.warning(
                 "The summary is %d tokens, over twice the %d asked for.", self.count_tokens(summary), self.summary_tokens,
             )
         folded = session.folded + n
+        after = self.count_tokens(summary) + self.tokens(session.messages[n:])
+        _notify(COMPACTION_COMPLETED, {
+            "message": f"Compacted the conversation: {n} messages into a summary.",
+            "scope": "thread", "folded": n, "tokens_before": before, "tokens_after": after,
+        })
         return Session(
             summary=summary,
             messages=session.messages[n:],
@@ -519,6 +558,153 @@ class Compacting(_RunningSummary):
         return await self.fold(session, len(session.messages) - keep)
 
 
+    # ── An agent's own working transcript (mid-run) ──────────────────────
+
+    async def compact_messages(
+        self,
+        context: "Context",
+        messages: List[Any],
+        *,
+        summary_role: str = "user",
+    ) -> List[Any]:
+        """``messages`` - an agent's own working transcript, e.g. the
+        chat-completion messages of its tool loop - compacted by this
+        policy if they reached ``compact_at`` of the budget, else as they
+        are. See ``Context.compact``."""
+        items = list(messages)
+        pinned = 0  # the leading system / developer messages always stay
+        while pinned < len(items) and _role(items[pinned]) in ("system", "developer"):
+            pinned += 1
+        head, body = items[:pinned], items[pinned:]
+        previous = None
+        if body and _is_summary(body[0]):
+            previous, body = _summary_text(body[0]), body[1:]
+        cost = [self.count_tokens(_text(m)) for m in body]
+        size = sum(self.count_tokens(_text(m)) for m in head) + (self.count_tokens(previous) if previous else 0) + sum(cost)
+        if size < self.compact_at * self.budget:
+            return items
+
+        key = context._call_key(_STEP_MESSAGES)
+        done = context._replayed(key)
+        if done is not None and done.status == "completed" and isinstance(done.step_details.output, dict):
+            kept = done.step_details.output["kept"]  # this run compacted them already
+            return head + [_summary_message(done.step_details.output["summary"], summary_role)] + body[len(body) - kept:]
+
+        # The latest messages that fit next to the new summary, and not
+        # starting with the answer to a tool call (its call would be gone).
+        room = int(self.compact_to * self.budget) - self.summary_tokens - sum(self.count_tokens(_text(m)) for m in head)
+        keep, used = 0, 0
+        for c in reversed(cost):
+            if keep and used + c > room:
+                break
+            keep += 1
+            used += c
+        while keep < len(body) and _answers_a_tool_call(body[len(body) - keep]):
+            keep += 1
+        folding = body[: len(body) - keep]
+        if not folding:
+            return items
+
+        step = await context.start_step(_STEP_MESSAGES, input={"messages": len(items), "tokens": size}, call_key=key)
+        context.emit(COMPACTION_STARTED, {
+            "message": "Compacting the conversation…", "scope": "run", "messages": len(folding), "tokens": size,
+        })
+        try:
+            summary = await summarize(
+                self.summarizer, previous, [_as_message(m) for m in folding], max_tokens=self.summary_tokens,
+            )
+        except Exception as exc:
+            logger.warning("Compacting %d messages failed; carrying on without it.", len(folding), exc_info=True)
+            await context.complete_step(step.id, error=f"{type(exc).__name__}: {exc}")
+            context.emit(COMPACTION_FAILED, {
+                "message": "Compacting the conversation failed; carrying on without it.",
+                "scope": "run", "error": f"{type(exc).__name__}: {exc}",
+            })
+            return items
+        out = head + [_summary_message(summary, summary_role)] + body[len(body) - keep:]
+        after = sum(self.count_tokens(_text(m)) for m in out)
+        await context.complete_step(step.id, output={
+            "summary": summary, "kept": keep, "folded": len(folding), "tokens_before": size, "tokens_after": after,
+        })
+        context.emit(COMPACTION_COMPLETED, {
+            "message": f"Compacted the conversation: {len(folding)} messages into a summary.",
+            "scope": "run", "folded": len(folding), "tokens_before": size, "tokens_after": after,
+        })
+        return out
+
+
+# ── Working transcripts: chat-completion messages, in their usual shapes ──
+
+_SUMMARY_PREFIX = "Summary of the earlier conversation:\n"
+
+
+def _get(message: Any, key: str, default: Any = None) -> Any:
+    if isinstance(message, dict):
+        return message.get(key, default)
+    return getattr(message, key, default)
+
+
+def _role(message: Any) -> str:
+    role = _get(message, "role") or _get(message, "type") or ""
+    return {"human": "user", "ai": "assistant"}.get(role, role)
+
+
+def _text(message: Any) -> str:
+    """The text a message takes in a prompt: its content, and its tool
+    calls (OpenAI tool_calls, Anthropic tool_use / tool_result blocks)."""
+    if isinstance(message, MessageObject):
+        return message.text
+    content = _get(message, "content")
+    parts: List[str] = []
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                elif block.get("type") == "tool_use":
+                    parts.append(f"[tool call {block.get('name')}({json.dumps(block.get('input'), default=str)})]")
+                elif block.get("type") == "tool_result":
+                    inner = block.get("content")
+                    parts.append(f"[tool result: {inner if isinstance(inner, str) else json.dumps(inner, default=str)}]")
+    for call in _get(message, "tool_calls") or []:
+        function = (call.get("function") if isinstance(call, dict) else getattr(call, "function", None)) or {}
+        name = function.get("name") if isinstance(function, dict) else getattr(function, "name", "")
+        args = function.get("arguments") if isinstance(function, dict) else getattr(function, "arguments", "")
+        parts.append(f"[tool call {name}({args})]")
+    return "\n".join(p for p in parts if p)
+
+
+def _answers_a_tool_call(message: Any) -> bool:
+    if _role(message) == "tool":
+        return True
+    content = _get(message, "content")
+    return isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+
+def _summary_message(summary: str, role: str) -> Dict[str, str]:
+    return {"role": role, "content": _SUMMARY_PREFIX + summary}
+
+
+def _is_summary(message: Any) -> bool:
+    content = _get(message, "content")
+    return isinstance(content, str) and content.startswith(_SUMMARY_PREFIX)
+
+
+def _summary_text(message: Any) -> str:
+    return _get(message, "content")[len(_SUMMARY_PREFIX):]
+
+
+def _as_message(message: Any) -> Any:
+    """What a summarizer reads of a transcript message: ``.role``, ``.text``."""
+    if isinstance(message, MessageObject):
+        return message
+    return SimpleNamespace(role=_role(message), text=_text(message), raw=message)
+
+
 async def summarize(
     summarizer: Summarizer,
     previous: Optional[str],
@@ -637,6 +823,9 @@ def apply_default_session_manager(agents: Any, manager: Optional[SessionManager]
 
 __all__ = [
     "DEFAULT_SESSION_MANAGER",
+    "COMPACTION_STARTED",
+    "COMPACTION_COMPLETED",
+    "COMPACTION_FAILED",
     "Session",
     "SessionManager",
     "FullHistory",

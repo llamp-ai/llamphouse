@@ -146,6 +146,75 @@ If the summarizer fails (a time out, a rate limit), the run goes on with
 the session as it is — not compacted — a warning is logged, and a later
 run compacts.
 
+## When compaction happens
+
+Compaction happens **inside a run** — never as a run of its own, and not
+between runs:
+
+- **At the start of a run**, when the worker loads the run's session: if
+  the session is past its manager's limit (`Summarizing`: `max_messages`;
+  `Compacting`: `compact_at`), it is compacted before `Agent.run` starts. It
+  runs under the run's heartbeat and time out, and is recorded as a
+  `session.compact` step of that run. The thread keeps every message; the
+  summary is kept per thread and agent.
+- **During a run**, when the agent asks for it: `context.compact(messages)`
+  compacts the agent's *own* working transcript — see below.
+
+A run that runs again replays its compaction (no second summarizer call).
+A thread nobody runs is never compacted.
+
+### Events
+
+A compaction tells the run's client, on its event stream:
+
+| Event | Data |
+|---|---|
+| `session.compaction.started` | `message`, `scope` (`"thread"`: the session; `"run"`: `context.compact`), `messages` (to fold), `tokens` |
+| `session.compaction.completed` | `message`, `scope`, `folded`, `tokens_before`, `tokens_after` |
+| `session.compaction.failed` | `message`, `scope`, `error` — the run goes on, uncompacted |
+
+Over A2A a streaming client sees each `message` as a status update; over
+AG-UI they are `CUSTOM` events (`name`: the event, `value`: the data).
+
+## Coding and long-running agents: `context.compact`
+
+An agent that works in a loop — call the model, run a tool, read the
+result, call the model again — grows its context *within* one run, in its
+own list of messages, not in the thread. `context.compact` keeps that list
+within budget, by the same `Compacting` policy:
+
+```python
+class CodingAgent(Agent):
+    session_manager = Compacting(openai_summarizer("gpt-4o-mini"), max_tokens=150_000, reserve_tokens=20_000)
+
+    async def run(self, context: Context):
+        messages = [{"role": "system", "content": SYSTEM}, *context.session.to_messages()]
+        while True:
+            messages = await context.compact(messages)          # as is, until it reaches 90%
+            response = await llm(messages=messages, tools=TOOLS)
+            messages.append(response.message)
+            if not response.tool_calls:
+                break
+            for call in response.tool_calls:
+                messages.append(tool_result(call, await run_tool(call)))
+        await context.reply(response.message.content)
+```
+
+- Under `compact_at` of the budget the list comes back as it is; at it, it
+  is compacted to `compact_to`: the leading system messages stay, the latest
+  messages that fit stay as they are, and the rest becomes one summary
+  message (an earlier summary message folded in).
+- **Tool calls stay whole:** the kept messages never start with a tool
+  result whose call was folded (OpenAI `tool` messages, Anthropic
+  `tool_result` blocks); the call is kept with it.
+- Messages are dicts or objects with `role` / `content` — the OpenAI,
+  Anthropic and LangChain shapes, tool calls included. The summary message
+  has `summary_role` (`"user"` by default, which every chat API accepts).
+- `policy=Compacting(...)` uses another policy than the agent's session
+  manager (one is needed: `context.compact` raises `TypeError` without).
+- Recorded as a `session.compact_messages` step, replayed by a run that
+  runs again; told to the client as above, with `scope: "run"`.
+
 ## A manager of your own
 
 Subclass `SessionManager` and implement `build`:
