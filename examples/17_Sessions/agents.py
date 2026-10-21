@@ -7,6 +7,9 @@ agents, three session managers, on the same kind of conversation:
   folded into a running summary, down to the latest 3.
 - ``window-agent`` - ``SlidingWindow``: the latest 4 messages, plus the
   first one (the request the conversation started with).
+- ``compacting-agent`` - ``Compacting``: a budget of 120 tokens that fills
+  up; at 90% it is compacted to 25% (a new summary and the latest
+  messages), and fills up again.
 - ``facts-agent`` - a manager of its own (``KeyFacts``): the latest 2
   messages, and every number the user mentioned, remembered across runs.
 """
@@ -14,15 +17,19 @@ agents, three session managers, on the same kind of conversation:
 import os
 import re
 
-from llamphouse.core import Agent, Context, Session, SessionManager, SlidingWindow, Summarizing, openai_summarizer
+from llamphouse.core import Agent, Compacting, Context, Session, SessionManager, SlidingWindow, Summarizing, openai_summarizer
 from llamphouse.core.sessions import thread_messages
 
 
-async def first_words(previous: str | None, messages) -> str:
+async def first_words(previous: str | None, messages, max_tokens: int | None = None) -> str:
     """A stand-in summarizer without an LLM: the first words of each user
-    message - enough to see compaction happen."""
+    message - enough to see compaction happen - cut to ``max_tokens``
+    (about 4 characters a token), the length the session manager asks for."""
     said = "; ".join(" ".join(m.text.split()[:4]) for m in messages if m.role == "user")
-    return f"{previous}; {said}" if previous else said
+    summary = f"{previous}; {said}" if previous else said
+    if max_tokens and len(summary) > max_tokens * 4:  # keep the latest, from a word on
+        summary = summary[-max_tokens * 4:].split(" ", 1)[-1]
+    return summary
 
 
 # With OPENAI_API_KEY set, a real LLM summary.
@@ -55,6 +62,11 @@ class KeyFacts(SessionManager):
         )
 
 
+def session_tokens(session: Session) -> int:
+    text = (session.summary or "") + "".join(m.text for m in session.messages)
+    return (len(text) + 3) // 4
+
+
 class SessionAgent(Agent):
     """Replies with the session it sees. In a real agent:
     ``llm(messages=context.session.to_messages())``."""
@@ -66,7 +78,8 @@ class SessionAgent(Agent):
     async def run(self, context: Context):
         session = context.session
         # In a real agent: llm(messages=session.to_messages()).
-        lines = [f"I see {len(session.messages)} messages ({session.folded} folded into the summary)."]
+        tokens = session_tokens(session)
+        lines = [f"I see {len(session.messages)} messages, ~{tokens} tokens ({session.folded} folded into the summary)."]
         if session.summary:
             lines.append(f"Summary: {session.summary}")
         await context.reply("\n".join(lines))
@@ -78,6 +91,10 @@ def summarizing_agent(_cfg=None):
 
 def window_agent(_cfg=None):
     return SessionAgent("window-agent", SlidingWindow(max_messages=4, keep_first=1))
+
+
+def compacting_agent(_cfg=None):
+    return SessionAgent("compacting-agent", Compacting(summarizer, max_tokens=120))
 
 
 def facts_agent(_cfg=None):

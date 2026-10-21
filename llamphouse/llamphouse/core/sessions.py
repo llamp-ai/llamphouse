@@ -9,10 +9,14 @@ that view. Three come with LLAMPHouse:
 - ``FullHistory()`` - the whole thread.
 - ``SlidingWindow(max_messages=20)`` - the latest messages (or tokens),
   optionally with the thread's first few kept in view.
-- ``Summarizing(summarizer, max_messages=40, keep_messages=20)`` - past the
-  limit, the oldest messages are folded into a running summary
-  (compaction); ``llm_summarizer`` and ``openai_summarizer`` make the
-  summarizer from an LLM call.
+- ``Summarizing(summarizer, max_messages=40, keep_messages=20)`` - the latest
+  messages, and a running summary of the older ones.
+- ``Compacting(summarizer, max_tokens=100_000)`` - a token budget that fills
+  up; at 90% it is compacted to 25% (a new summary and the latest
+  messages), and fills up again.
+
+``llm_summarizer`` and ``openai_summarizer`` make the summarizer from an
+LLM call.
 
 ::
 
@@ -45,7 +49,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("llamphouse.sessions")
 
-Summarizer = Callable[[Optional[str], List[MessageObject]], Awaitable[str]]
+# ``async (previous_summary, messages) -> summary``; one that also takes a
+# ``max_tokens`` keyword is told the summary's target length.
+Summarizer = Callable[..., Awaitable[str]]
 TokenCounter = Callable[[str], int]
 
 NAMESPACE_PREFIX = "session:"
@@ -328,81 +334,43 @@ class SlidingWindow(SessionManager):
         return Session(messages=pinned + rest)
 
 
-class Summarizing(SessionManager):
-    """Past its limits, folds the oldest messages into a running summary.
-
-    The session holds every message since the last compaction. When that is
-    more than ``max_messages`` messages, or more than ``max_tokens`` tokens,
-    the oldest are folded into the summary until at most ``keep_messages``
-    and ``keep_tokens`` remain - so the summarizer runs once in a while, not
-    on every run. The summary is kept per thread and agent: each compaction
-    folds only what is new, on top of the summary so far.
-
-    :param summarizer: ``async (previous_summary, messages) -> summary``
-        (see ``llm_summarizer``, ``openai_summarizer``).
-    :param max_messages: compact past this many messages (None: no limit).
-    :param keep_messages: messages left after compacting (default: half of
-        ``max_messages``).
-    :param max_tokens: compact past this many tokens (None: no limit).
-    :param keep_tokens: tokens left after compacting (default: half of
-        ``max_tokens``).
-    """
+class _RunningSummary(SessionManager):
+    """What Summarizing and Compacting share: fold the oldest messages of a
+    session into its summary, with the summarizer told how long the summary
+    may be, and the session left as it is when summarizing fails."""
 
     def __init__(
         self,
         summarizer: Summarizer,
         *,
-        max_messages: Optional[int] = 50,
-        keep_messages: Optional[int] = None,
-        max_tokens: Optional[int] = None,
-        keep_tokens: Optional[int] = None,
-        count_tokens: TokenCounter = estimate_tokens,
-        max_message_tokens: Optional[int] = None,
+        summary_tokens: Optional[int],
+        count_tokens: TokenCounter,
+        max_message_tokens: Optional[int],
     ) -> None:
         super().__init__(count_tokens=count_tokens, max_message_tokens=max_message_tokens)
-        if max_messages is None and max_tokens is None:
-            raise ValueError("Summarizing needs max_messages or max_tokens")
         self.summarizer = summarizer
-        self.max_messages = max_messages
-        self.keep_messages = keep_messages if keep_messages is not None else (
-            max(1, max_messages // 2) if max_messages is not None else None
-        )
-        self.max_tokens = max_tokens
-        self.keep_tokens = keep_tokens if keep_tokens is not None else (
-            max_tokens // 2 if max_tokens is not None else None
-        )
+        self.summary_tokens = summary_tokens
 
-    def over(self, messages: List[MessageObject]) -> bool:
-        if self.max_messages is not None and len(messages) > self.max_messages:
-            return True
-        return self.max_tokens is not None and self.tokens(messages) > self.max_tokens
+    def summary_size(self, session: Session) -> int:
+        return self.count_tokens(session.summary) if session.summary else 0
 
-    def fold_count(self, messages: List[MessageObject]) -> int:
-        """How many of the oldest messages to fold (the latest always stays)."""
-        n = 0
-        if self.keep_messages is not None:
-            n = max(n, len(messages) - self.keep_messages)
-        if self.keep_tokens is not None:
-            tokens = self.tokens(messages[n:])
-            while n < len(messages) - 1 and tokens > self.keep_tokens:
-                tokens -= self.count_tokens(messages[n].text)
-                n += 1
-        return min(n, len(messages) - 1)
-
-    async def build(self, messages: List[MessageObject], memory: Dict[str, Any]) -> Session:
-        session = Session(summary=memory.get("summary"), messages=list(messages), folded=memory.get("folded", 0))
-        if not self.over(messages):
-            return session
-        return await self.compact(session)
-
-    async def compact(self, session: Session) -> Session:
-        """Fold ``session``'s oldest messages into its summary now, down to
-        ``keep_messages`` / ``keep_tokens``."""
-        n = self.fold_count(session.messages)
+    async def fold(self, session: Session, n: int) -> Session:
+        """``session`` with its ``n`` oldest messages folded into its summary
+        (the latest message always stays)."""
+        n = min(n, len(session.messages) - 1)
         if n <= 0:
             return session
         folding = session.messages[:n]
-        summary = await self.summarizer(session.summary, folding)
+        try:
+            summary = await summarize(self.summarizer, session.summary, folding, max_tokens=self.summary_tokens)
+        except Exception:
+            # The run goes on with the session as it is; a later run compacts.
+            logger.warning("Summarizing %d messages failed; the session is not compacted this run.", n, exc_info=True)
+            return session
+        if self.summary_tokens is not None and self.count_tokens(summary) > 2 * self.summary_tokens:
+            logger.warning(
+                "The summary is %d tokens, over twice the %d asked for.", self.count_tokens(summary), self.summary_tokens,
+            )
         folded = session.folded + n
         return Session(
             summary=summary,
@@ -410,6 +378,165 @@ class Summarizing(SessionManager):
             folded=folded,
             memory={"summary": summary, "folded_until": folding[-1].id, "folded": folded},
         )
+
+    @staticmethod
+    def resumed(messages: List[MessageObject], memory: Dict[str, Any]) -> Session:
+        return Session(summary=memory.get("summary"), messages=list(messages), folded=memory.get("folded", 0))
+
+
+class Summarizing(_RunningSummary):
+    """Keeps the latest messages as they are, and a running summary of the
+    rest: once the session holds more than ``max_messages`` messages, the
+    oldest are folded into the summary until ``keep_messages`` remain - so
+    the summarizer runs once in a while, not on every run. Each compaction
+    folds only what is new, on top of the summary so far.
+
+    For a budget in tokens, see ``Compacting``.
+
+    :param summarizer: ``async (previous_summary, messages) -> summary``
+        (see ``llm_summarizer``, ``openai_summarizer``).
+    :param max_messages: compact past this many messages.
+    :param keep_messages: messages left after compacting (default: half of
+        ``max_messages``).
+    :param summary_tokens: how long the summary may be; told to the
+        summarizer (the built-in ones aim for it).
+    """
+
+    def __init__(
+        self,
+        summarizer: Summarizer,
+        *,
+        max_messages: int = 50,
+        keep_messages: Optional[int] = None,
+        summary_tokens: Optional[int] = 400,
+        count_tokens: TokenCounter = estimate_tokens,
+        max_message_tokens: Optional[int] = None,
+    ) -> None:
+        super().__init__(
+            summarizer, summary_tokens=summary_tokens, count_tokens=count_tokens, max_message_tokens=max_message_tokens,
+        )
+        if max_messages < 1:
+            raise ValueError("Summarizing needs max_messages >= 1")
+        self.max_messages = max_messages
+        self.keep_messages = keep_messages if keep_messages is not None else max(1, max_messages // 2)
+
+    async def build(self, messages: List[MessageObject], memory: Dict[str, Any]) -> Session:
+        session = self.resumed(messages, memory)
+        if len(session.messages) <= self.max_messages:
+            return session
+        return await self.compact(session)
+
+    async def compact(self, session: Session) -> Session:
+        """Fold ``session``'s oldest messages into its summary now, down to
+        ``keep_messages``."""
+        return await self.fold(session, len(session.messages) - self.keep_messages)
+
+
+class Compacting(_RunningSummary):
+    """A token budget that fills up, is compacted, and fills up again.
+
+    The session - its summary and its messages, plus ``reserve_tokens`` for
+    what the agent adds (instructions, tools, the answer) - may take
+    ``max_tokens``. While it stays under ``compact_at`` of that, nothing
+    happens: the messages are all there, as they are. Once it reaches it,
+    the session is compacted down to ``compact_to``: everything but the
+    latest messages is folded into a new summary (of at most
+    ``summary_tokens``, the previous summary included), and the session
+    starts filling up again.
+
+    :param summarizer: ``async (previous_summary, messages) -> summary``
+        (see ``llm_summarizer``, ``openai_summarizer``).
+    :param max_tokens: the session's budget - typically a share of the
+        model's context window.
+    :param compact_at: compact when the session reaches this share of the
+        budget (default 0.9).
+    :param compact_to: ... down to this share (default 0.25): the new summary
+        and the latest messages that fit.
+    :param summary_tokens: how long the summary may be (default: a tenth of
+        the budget, and at most ``compact_to`` of it); told to the
+        summarizer.
+    :param reserve_tokens: taken off the budget for what is not in the
+        session (system prompt, tools, the answer).
+    """
+
+    def __init__(
+        self,
+        summarizer: Summarizer,
+        *,
+        max_tokens: int,
+        compact_at: float = 0.9,
+        compact_to: float = 0.25,
+        summary_tokens: Optional[int] = None,
+        reserve_tokens: int = 0,
+        count_tokens: TokenCounter = estimate_tokens,
+        max_message_tokens: Optional[int] = None,
+    ) -> None:
+        if not 0 < compact_to < compact_at <= 1:
+            raise ValueError("Compacting needs 0 < compact_to < compact_at <= 1")
+        budget = max_tokens - reserve_tokens
+        if budget <= 0:
+            raise ValueError("Compacting needs max_tokens above reserve_tokens")
+        if summary_tokens is None:
+            summary_tokens = max(1, min(int(budget * 0.1), int(budget * compact_to)))
+        super().__init__(
+            summarizer, summary_tokens=summary_tokens, count_tokens=count_tokens, max_message_tokens=max_message_tokens,
+        )
+        self.max_tokens = max_tokens
+        self.reserve_tokens = reserve_tokens
+        self.compact_at = compact_at
+        self.compact_to = compact_to
+
+    @property
+    def budget(self) -> int:
+        """The tokens the session may take: ``max_tokens`` less the reserve."""
+        return self.max_tokens - self.reserve_tokens
+
+    def size(self, session: Session) -> int:
+        """The tokens ``session`` takes: its summary and its messages."""
+        return self.summary_size(session) + self.tokens(session.messages)
+
+    def full(self, session: Session) -> bool:
+        return self.size(session) >= self.compact_at * self.budget
+
+    async def build(self, messages: List[MessageObject], memory: Dict[str, Any]) -> Session:
+        session = self.resumed(messages, memory)
+        if not self.full(session):
+            return session
+        return await self.compact(session)
+
+    async def compact(self, session: Session) -> Session:
+        """Compact ``session`` now: the latest messages that fit in
+        ``compact_to`` of the budget (next to a summary of
+        ``summary_tokens``) stay, the rest is folded into the summary."""
+        room = int(self.compact_to * self.budget) - self.summary_tokens
+        keep, used = 0, 0
+        for m in reversed(session.messages):
+            cost = self.count_tokens(m.text)
+            if keep and used + cost > room:
+                break
+            keep += 1
+            used += cost
+        return await self.fold(session, len(session.messages) - keep)
+
+
+async def summarize(
+    summarizer: Summarizer,
+    previous: Optional[str],
+    messages: List[MessageObject],
+    *,
+    max_tokens: Optional[int] = None,
+) -> str:
+    """Call ``summarizer``, telling it ``max_tokens`` - the summary's target
+    length - if it takes that keyword (the built-in ones do)."""
+    takes = False
+    try:
+        params = inspect.signature(summarizer).parameters.values()
+        takes = any(p.name == "max_tokens" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+    except (TypeError, ValueError):
+        pass
+    if takes and max_tokens is not None:
+        return await summarizer(previous, messages, max_tokens=max_tokens)
+    return await summarizer(previous, messages)
 
 
 # ── Summarizers ──────────────────────────────────────────────────────────
@@ -440,14 +567,20 @@ def llm_summarizer(
 ) -> Summarizer:
     """A summarizer from any LLM call: ``complete(prompt) -> text`` (sync or
     async). The prompt holds ``instructions``, the summary so far and the
-    messages to fold in.
+    messages to fold in; the summary is asked to be at most ``max_words``
+    words, or the target length a session manager gives
+    (``summary_tokens``).
 
         Summarizing(llm_summarizer(lambda prompt: my_llm(prompt)), max_messages=40)
     """
-    text = instructions.format(max_words=max_words) if "{max_words}" in instructions else instructions
+    def text(words: int) -> str:
+        return instructions.format(max_words=words) if "{max_words}" in instructions else instructions
 
-    async def summarize(previous: Optional[str], messages: List[MessageObject]) -> str:
-        result = complete(summary_prompt(previous, messages, text))
+    async def summarize(previous: Optional[str], messages: List[MessageObject], max_tokens: Optional[int] = None) -> str:
+        # A target length in tokens (from the session manager) wins: about
+        # 3 words in 4 tokens.
+        words = max(20, int(max_tokens * 0.75)) if max_tokens else max_words
+        result = complete(summary_prompt(previous, messages, text(words)))
         if inspect.isawaitable(result):
             result = await result
         return str(result).strip()
@@ -509,7 +642,9 @@ __all__ = [
     "FullHistory",
     "SlidingWindow",
     "Summarizing",
+    "Compacting",
     "Summarizer",
+    "summarize",
     "llm_summarizer",
     "openai_summarizer",
     "thread_messages",

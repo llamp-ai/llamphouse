@@ -4,7 +4,7 @@ from .context import Context
 from .adapters.a2a.types import AgentSkill
 from .triggers import BaseTrigger, TriggerInfo, WebhookTrigger
 from .workflow import step
-from .sessions import FullHistory, Session, SessionManager, SlidingWindow, Summarizing, llm_summarizer, openai_summarizer
+from .sessions import Compacting, FullHistory, Session, SessionManager, SlidingWindow, Summarizing, llm_summarizer, openai_summarizer
 from .wrappers import BaseAgentWrapper, LangGraphAgent
 
 __all__ = [
@@ -22,6 +22,7 @@ __all__ = [
     "FullHistory",
     "SlidingWindow",
     "Summarizing",
+    "Compacting",
     "llm_summarizer",
     "openai_summarizer",
     "BaseAgentWrapper",

@@ -25,7 +25,7 @@ TURNS = [
 ]
 
 
-AGENTS = ["summarizing-agent", "window-agent", "facts-agent"]
+AGENTS = ["summarizing-agent", "window-agent", "compacting-agent", "facts-agent"]
 
 
 async def converse(client: httpx.AsyncClient, agent: str) -> None:

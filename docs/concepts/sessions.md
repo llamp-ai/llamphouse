@@ -7,10 +7,10 @@ summary of older ones if it keeps one — and a **session manager** decides
 that view.
 
 ```python
-from llamphouse.core import Agent, Context, Summarizing, openai_summarizer
+from llamphouse.core import Agent, Compacting, Context, openai_summarizer
 
 class SupportAgent(Agent):
-    session_manager = Summarizing(openai_summarizer("gpt-4o-mini"), max_messages=40, keep_messages=20)
+    session_manager = Compacting(openai_summarizer("gpt-4o-mini"), max_tokens=100_000)
 
     async def run(self, context: Context):
         reply = await my_llm(messages=context.session.to_messages())
@@ -62,7 +62,7 @@ agents:
       full_history:
 ```
 
-The YAML names are `full_history`, `sliding_window` and `summarizing`,
+The YAML names are `full_history`, `sliding_window`, `summarizing` and `compacting`,
 with the constructor arguments below; callables (`summarizer`,
 `count_tokens`) are given as `file.py:name` or `module:name`.
 
@@ -72,7 +72,8 @@ with the constructor arguments below; callables (`summarizer`,
 |---|---|---|
 | `FullHistory()` | the whole thread | — |
 | `SlidingWindow(max_messages=20, max_tokens=None, keep_first=0)` | the latest messages, within a message count and/or token budget; `keep_first` keeps the thread's first n in view too | — |
-| `Summarizing(summarizer, max_messages=50, keep_messages=None, max_tokens=None, keep_tokens=None)` | every message since the last compaction | past a limit, the oldest into a running summary, down to `keep_*` |
+| `Summarizing(summarizer, max_messages=50, keep_messages=None, summary_tokens=400)` | the latest messages, and a running summary of the older ones | past `max_messages`, the oldest — down to `keep_messages` (default: half) |
+| `Compacting(summarizer, max_tokens, compact_at=0.9, compact_to=0.25, summary_tokens=None, reserve_tokens=0)` | a token budget that fills up | at `compact_at` of the budget, everything but the latest messages — down to `compact_to` |
 
 Every manager also takes:
 
@@ -81,23 +82,57 @@ Every manager also takes:
 | `count_tokens` | `(text) -> int`; about 4 characters a token by default — pass your model's tokenizer for exact counts |
 | `max_message_tokens` | shorten any single message in view past this many tokens (a pasted document, a long tool output) — in the view only; the thread keeps it whole |
 
-### `Summarizing`
+### `Summarizing` — a count of recent messages, and a summary
 
-Compaction runs only past a limit, and folds down to the `keep_*` limits —
-so the summarizer runs once in a while, not on every run; the latest
-message always stays. The summary, and up to which message it goes, are
-kept per thread and agent (in the data store's key-value records, deleted
-with the thread): each compaction folds only what is new, on top of the
-summary so far.
+Once the session holds more than `max_messages` messages, the oldest are
+folded into the summary until `keep_messages` remain — so the summarizer
+runs once in a while, not on every run. Each compaction folds only what is
+new, on top of the summary so far.
 
-The summarizer is any `async (previous_summary, messages) -> str`. Two
-helpers make one from an LLM call:
+### `Compacting` — a token budget that fills up and is compacted
+
+```python
+Compacting(summarizer, max_tokens=100_000, reserve_tokens=8_000)
+```
+
+```
+tokens
+ 90% ┤      ╱│          ╱│          ╱│
+     │    ╱  │        ╱  │        ╱  │
+     │  ╱    │      ╱    │      ╱    │
+ 25% ┤╱      │    ╱      │    ╱      │
+     │       │  ╱        │  ╱        │
+     │       ╰╱          ╰╱          ╰ …
+     └──────────────────────────────────▶ runs
+```
+
+- **The budget** is `max_tokens` less `reserve_tokens` (what the agent adds
+  that is not in the session: instructions, tools, room for the answer).
+  The session's size is its summary *and* its messages.
+- **While under `compact_at`** (default 90%) of the budget, nothing
+  happens: every message since the last compaction is there, as it is.
+- **At `compact_at`**, it is compacted to `compact_to` (default 25%):
+  the latest messages that fit stay, next to a new summary of at most
+  `summary_tokens` (default: a tenth of the budget) of everything else —
+  the previous summary included. Then it fills up again.
+
+Size `max_tokens` from the model's context window and what else goes in
+the prompt; pass the model's tokenizer as `count_tokens` for exact counts.
+
+### Summaries
+
+A summary is kept per thread and agent (in the data store's key-value
+records, deleted with the thread), and so is up to which message it goes.
+The summarizer is any `async (previous_summary, messages) -> str`; one that
+also takes a `max_tokens` keyword is told the summary's target length
+(`summary_tokens`). Two helpers make one from an LLM call, and aim for
+that length:
 
 ```python
 from llamphouse.core import llm_summarizer, openai_summarizer
 
 # Any LLM: a function from a prompt to text (sync or async).
-summarizer = llm_summarizer(lambda prompt: my_llm.complete(prompt), max_words=150)
+summarizer = llm_summarizer(lambda prompt: my_llm.complete(prompt))
 
 # An OpenAI-compatible chat-completions API (client: an AsyncOpenAI; default from the environment).
 summarizer = openai_summarizer("gpt-4o-mini", client=AsyncOpenAI(base_url=...), temperature=0)
@@ -106,6 +141,10 @@ summarizer = openai_summarizer("gpt-4o-mini", client=AsyncOpenAI(base_url=...), 
 Both build the prompt from instructions (`instructions=` to change them —
 the default keeps goals, facts, preferences, decisions and open questions),
 the summary so far, and the messages to fold in.
+
+If the summarizer fails (a time out, a rate limit), the run goes on with
+the session as it is — not compacted — a warning is logged, and a later
+run compacts.
 
 ## A manager of your own
 

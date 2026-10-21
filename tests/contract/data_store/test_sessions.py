@@ -8,7 +8,9 @@ Coverage:
 - FullHistory, SlidingWindow (messages, tokens, keep_first) and Summarizing
 - A manager of your own: build() with a memory, recorded and replayed
 - llm_summarizer / openai_summarizer; max_message_tokens shortens long messages
-- A token limit compacts too
+- Compacting: fills up, compacts at 90% to 25%, fills up again; counts the
+  summary and the reserve
+- A failing summarizer leaves the session as it is; summaries get a target length
 - to_messages(): summary first, then the recent messages
 - A run that runs again (durable) gets the same session without
   summarizing twice
@@ -28,6 +30,7 @@ from llamphouse.core.queue.in_memory_queue import InMemoryQueue
 from llamphouse.core.queue.types import QueueMessage
 from llamphouse.core.sessions import (
     NAMESPACE_PREFIX,
+    Compacting,
     FullHistory,
     Session,
     SessionManager,
@@ -165,22 +168,99 @@ async def test_a_sliding_window_is_the_latest_messages(data_store):
     await data_store.delete_thread(thread_id)
 
 
-async def test_a_token_limit_compacts_too(data_store):
-    summaries = Summaries()
-    words = lambda text: len(text.split())  # noqa: E731
-    agent = Viewer(Summarizing(summaries, max_messages=None, max_tokens=6, keep_tokens=3, count_tokens=words))
+class Sized:
+    """A summarizer that records the target length it was given and returns
+    a summary of ``words`` words."""
+
+    def __init__(self, words=3, fail=0):
+        self.calls = []
+        self.words = words
+        self.fail = fail
+
+    async def __call__(self, previous, messages, max_tokens=None):
+        self.calls.append({"previous": previous, "texts": [m.text for m in messages], "max_tokens": max_tokens})
+        if self.fail:
+            self.fail -= 1
+            raise ConnectionError("LLM down")
+        return " ".join(["s"] * self.words)
+
+
+def ten_words(i):
+    return " ".join([f"w{i}"] * 10)
+
+
+async def add(ds, thread_id, *texts_):
+    for text in texts_:
+        await ds.insert_message(thread_id, CreateMessageRequest(role="user", content=text))
+
+
+async def test_compacting_fills_up_compacts_at_90_to_25_and_fills_up_again(data_store):
+    """A 100-token budget (a word a token): at 90 tokens, compact to 25 -
+    a summary of 10 and the latest messages in the 15 left."""
+    sized = Sized(words=3)
+    manager = Compacting(sized, max_tokens=100, summary_tokens=10, count_tokens=lambda t: len(t.split()))
+    agent = Viewer(manager)
     thread_id = (await data_store.insert_thread(CreateThreadRequest(metadata={}))).id
-    for text in ["one two three", "four five", "six", "seven eight"]:
-        await data_store.insert_message(thread_id, CreateMessageRequest(role="user", content=text))
+    await add(data_store, thread_id, *[ten_words(i) for i in range(8)])  # 80 tokens
+
+    await run_once(data_store, agent, thread_id)  # 80 + nothing: under 90, as it is
+    assert sized.calls == [] and len(agent.seen[-1].messages) == 8
+
+    await add(data_store, thread_id, ten_words(8))  # 80 + reply (4) + 10 = 94: full
+    await run_once(data_store, agent, thread_id)
+    compacted = agent.seen[-1]
+    assert len(sized.calls) == 1 and sized.calls[0]["max_tokens"] == 10
+    assert texts(compacted) == ["I see 8 messages", ten_words(8)]  # the latest that fit in 25 - 10
+    assert compacted.summary == "s s s" and manager.size(compacted) <= 25
+
+    # It fills up again without compacting - 17 tokens, then 14 a turn (a
+    # message and a reply) - until it is full again: 17 + 5 * 14 = 87, then 101.
+    for i in range(9, 14):
+        await add(data_store, thread_id, ten_words(i))
+        await run_once(data_store, agent, thread_id)
+        assert len(sized.calls) == 1
+    await add(data_store, thread_id, ten_words(14))
+    await run_once(data_store, agent, thread_id)
+    assert len(sized.calls) == 2
+    assert sized.calls[1]["previous"] == "s s s"  # the summary so far is folded in too
+    assert manager.size(agent.seen[-1]) <= 25
+    await data_store.delete_thread(thread_id)
+
+
+async def test_compacting_counts_the_summary_and_the_reserve(data_store):
+    sized = Sized(words=1)
+    words = lambda t: len(t.split())  # noqa: E731
+    reserved = Compacting(sized, max_tokens=140, reserve_tokens=40, summary_tokens=5, count_tokens=words)
+    assert reserved.budget == 100
+    session = Session(summary=" ".join(["x"] * 30), messages=[])
+    big = Session(summary=session.summary, messages=_messages(*[("user", ten_words(i)) for i in range(6)]))
+    assert reserved.size(big) == 90 and reserved.full(big)  # 60 of messages + 30 of summary
+    small = Session(summary=None, messages=big.messages)
+    assert not reserved.full(small)
+
+
+async def test_a_failing_summarizer_leaves_the_session_as_it_is_until_a_later_run(data_store):
+    sized = Sized(words=2, fail=1)
+    agent = Viewer(Summarizing(sized, max_messages=4, keep_messages=2))
+    thread_id = await thread_with(data_store, 6)
+
+    await run_once(data_store, agent, thread_id)  # the summarizer fails: no compaction
+    assert agent.seen[-1].summary is None and len(agent.seen[-1].messages) == 6
+
+    await run_once(data_store, agent, thread_id)  # tried again, it works
+    assert agent.seen[-1].summary == "s s" and len(agent.seen[-1].messages) == 2
+    assert len(sized.calls) == 2
+    await data_store.delete_thread(thread_id)
+
+
+async def test_summarizing_tells_the_summarizer_how_long_the_summary_may_be(data_store):
+    sized = Sized()
+    agent = Viewer(Summarizing(sized, max_messages=2, keep_messages=1, summary_tokens=120))
+    thread_id = await thread_with(data_store, 3)
 
     await run_once(data_store, agent, thread_id)
 
-    assert texts(agent.seen[0]) == ["six", "seven eight"]  # 3 tokens left
-    assert summaries.calls == [(None, ["one two three", "four five"])]
-    session = agent.seen[0]
-    assert session.to_messages()[0] == {
-        "role": "system", "content": "Summary of the earlier conversation:\none two three, four five",
-    }
+    assert sized.calls[0]["max_tokens"] == 120 and sized.calls[0]["texts"] == ["m0", "m1"]
     await data_store.delete_thread(thread_id)
 
 
@@ -358,6 +438,9 @@ async def test_llm_summarizer_wraps_any_llm_call():
     assert "at most 50 words" in prompts[0]
     assert "Summary so far:\nuser plans a trip" in prompts[0]
     assert "user: Lisbon, in May\nassistant: Nice!" in prompts[0]
+
+    await summarize("x", _messages(("user", "y")), max_tokens=400)  # a target from the manager
+    assert "at most 300 words" in prompts[1]
 
 
 async def test_openai_summarizer_calls_chat_completions():

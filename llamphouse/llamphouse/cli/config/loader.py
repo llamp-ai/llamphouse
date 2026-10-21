@@ -39,7 +39,7 @@ import yaml
 from ...core.assistant import Agent
 from ...core.context import Context
 from ...core.adapters import AssistantAPIAdapter, A2AAdapter, CompassAdapter, AGUIAdapter
-from ...core.sessions import FullHistory, SlidingWindow, Summarizing, openai_summarizer
+from ...core.sessions import Compacting, FullHistory, SlidingWindow, Summarizing, openai_summarizer
 from ...core.data_stores import InMemoryDataStore, PostgresDataStore
 from ...core.triggers import WebhookTrigger
 from ...core.workers import AsyncWorker
@@ -72,6 +72,7 @@ SESSION_MANAGER_REGISTRY: Dict[str, type] = {
     "full_history": FullHistory,
     "sliding_window": SlidingWindow,
     "summarizing": Summarizing,
+    "compacting": Compacting,
 }
 
 WORKER_REGISTRY: Dict[str, type] = {

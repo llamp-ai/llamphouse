@@ -106,3 +106,16 @@ def test_llamphouse_check_reports_a_bad_session_manager(tmp_path, capsys):
 
     assert exit_code != 0
     assert "session_manager: Session_manager 'sliding_window' does not accept" in capsys.readouterr().out
+
+
+def test_compacting_from_yaml(tmp_path):
+    from llamphouse.core.sessions import Compacting
+
+    write(tmp_path, BASE)
+    manager = build_session_manager(
+        {"compacting": {"summarizer": "agents.py:summarize", "max_tokens": 8000, "reserve_tokens": 2000,
+                        "compact_at": 0.8, "compact_to": 0.3}},
+        tmp_path,
+    )
+    assert isinstance(manager, Compacting) and manager.budget == 6000
+    assert manager.compact_at == 0.8 and manager.summary_tokens == 600
