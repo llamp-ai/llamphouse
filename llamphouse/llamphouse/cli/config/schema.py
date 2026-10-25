@@ -60,7 +60,8 @@ Each adapter/worker entry is a single-key mapping: ``{name: {kwargs}}``.
 The kwargs are validated against the real class constructor — no separate
 config models are needed.
 
-Adapters available by default: ``assistant_api``, ``a2a``, ``compass``.
+Adapters available by default: ``assistant_api``, ``a2a``, ``compass``, ``ag_ui``
+(``ag_ui`` needs ``pip install llamphouse[ag-ui]``).
 Workers available: ``asyncworker``.
 """
 

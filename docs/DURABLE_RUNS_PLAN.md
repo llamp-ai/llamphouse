@@ -13,71 +13,104 @@ loop as user code.
 
 ## 0. Progress checklist
 
-Tick items as they land. Phases map to §12.
+Tick items as they land. Phases map to §12. P1–P4 landed in 1.4.0; see
+§0.1 for where the build differs from this plan, and
+[concepts/durable-runs.md](concepts/durable-runs.md) for the user docs.
 
 ### P1 — Leasing
-- [ ] Migration: add `worker_id`, `lease_expires_at`, `lease_epoch`, `wake_at` to `runs` (§3.1)
-- [ ] Indexes: `idx_runs_pickup_inprogress`, `idx_runs_pickup_wake` (§3.1)
-- [ ] Data store API: `claim_run`, `renew_lease`, `release_lease`, `list_runs_to_pickup` (§4) — Postgres
-- [ ] Same API for `InMemoryStore` (§4)
-- [ ] `LeaseHolder` async context manager with heartbeat task (§5.1)
-- [ ] Lease-lost cancellation wired into run task (§5.1)
-- [ ] `AsyncWorker` dispatcher loop with claim + jitter (§5.2)
-- [ ] Worker ID config (`WORKER_ID`, defaults) (§9)
+- [x] Migration: add `worker_id`, `lease_expires_at`, `lease_epoch`, `wake_at` to `runs` (§3.1) — `c3d8e1f2a4b5`
+- [x] Indexes: `idx_runs_recover_lease`, `idx_runs_recover_wake` (§3.1)
+- [x] Data store API: `claim_run`, `renew_lease`, `release_lease`, `list_runs_to_recover` (§4) — Postgres
+- [x] Same API for `InMemoryDataStore` (§4)
+- [x] Lease renewal in the heartbeat (`run_supervised`) instead of a separate `LeaseHolder` (§5.1)
+- [x] Lease-lost cancellation wired into run task (§5.1) — `LeaseLost`
+- [x] Claim on dequeue + `RunRecovery` loop instead of a polling dispatcher (§5.2)
+- [x] Worker ID config (`worker_id=`, default `host:pid:random`) (§9)
 - [ ] Graceful shutdown releases leases (§5.3)
-- [ ] Unit tests: claim race, heartbeat, lease loss (§11)
-- [ ] Integration test: kill worker mid-run → run goes to `failed` (no auto-resume yet)
+- [x] Unit tests: claim race, heartbeat, lease loss (§11)
+- [x] Crashed runs of non-durable agents go to `failed`
 
 ### P2 — Step memoization
-- [ ] Migration: add `call_key` to `run_steps` + unique index (§3.2)
-- [ ] Data store API: `find_step_by_call_key`, `next_step_ordinal` (§4)
-- [ ] `Context._next_ordinal` per-run counter, rebuilt on resume
-- [ ] `@step` decorator: lookup by `call_key`, replay completed, reset stale `in_progress` (§6.1)
-- [ ] `start_step` accepts and persists `call_key`
-- [ ] Reaper auto-resumes after crash (re-dispatches via `agent.run`)
-- [ ] Unit tests: replay returns stored output without re-invoking user code
-- [ ] Integration test: kill worker mid-run → second worker resumes, no double execution
+- [x] `call_key` kept in the run step's `metadata` — no migration (§3.2)
+- [x] One `list_steps_for_replay` read per attempt instead of `find_step_by_call_key` per call (§4)
+- [x] `Context._call_key` per-run ordinal counter
+- [x] `@step` decorator: replay completed, re-run stale `in_progress` (marked failed) (§6.1)
+- [x] `start_step` accepts and persists `call_key`
+- [x] `insert_message` / `reply` replay too — a resumed run does not say things twice
+- [x] Reaper auto-resumes after crash for `Agent.durable = True`
+- [x] Unit tests: replay returns stored output without re-invoking user code
+- [x] Run retries (queue `RetryPolicy`, `POST .../retry`) carry on from the failed step
+- [x] `@step(retries=, backoff=)` — per-step retry (was an open RFC)
 
 ### P3 — Durable sleep
-- [ ] `wake_at` populated when suspending; dispatcher predicate covers `wait_until` (§4 SQL)
-- [ ] `WorkflowSuspended(BaseException)` sentinel (§6.4)
-- [ ] `@step` lets `WorkflowSuspended` pass through without marking failure (§6.4)
-- [ ] `context.sleep(seconds=..., until=...)` (§6.2)
-- [ ] Worker `_execute` catches `WorkflowSuspended`, releases lease cleanly
-- [ ] Resume flow: `Context.__init__` finalizes due `wait_until` step (§6.5)
-- [ ] Unit tests: sleep with mocked clock; replay after wake
-- [ ] Example update / new example demonstrating sleep
+- [x] `wake_at` populated when suspending; due runs claimable and recovered (§4)
+- [x] `WorkflowSuspended(BaseException)` sentinel (§6.4)
+- [x] `@step` lets `WorkflowSuspended` pass through without marking failure (§6.4)
+- [x] `context.sleep(seconds=..., until=...)` (§6.2)
+- [x] Worker catches `WorkflowSuspended`, parks the run (`suspend_run`), releases the lease
+- [x] Resume flow: the claim hands back the wait (`RunLease.resumed`), `Context` finalizes it (§6.5)
+- [x] Wake-up: the run queue's `schedule_at`; `RunRecovery` if that message is lost
+- [x] Unit tests: sleep, replay after wake
+- [x] Example: `examples/16_DurableRuns`
 
 ### P4 — Wait-for-signal
-- [ ] Migration: `signals` table + lookup index (§3.3)
-- [ ] Data store API: `deliver_signal`, `consume_signal`, `suspend_run`, `resume_run` (§4)
-- [ ] Dispatcher predicate covers `wait_for_signal` with delivered signal (§4 SQL)
-- [ ] `context.wait_for_signal(name, correlation_id, timeout)` (§6.3)
-- [ ] HTTP endpoint `POST .../signals` (§7.1)
-- [ ] Optional Python client convenience `client.runs.signal(...)` (§7.3)
-- [ ] Resume flow: consume matching signal, mark step completed (§6.5)
-- [ ] Timeout path: signal never arrives → step `expired`, raise `TimeoutError`
-- [ ] Unit tests: signal-before-wait, signal-during-wait, FIFO ordering, idempotency
-- [ ] Integration test: end-to-end refund-style example (§13)
+- [x] Migration: `signals` table + lookup index (§3.3)
+- [x] Data store API: `deliver_signal`, `consume_signal`, `suspend_run` (§4)
+- [x] Signalled runs are due (claim + recovery)
+- [x] `context.wait_for_signal(name, correlation_id, timeout, request)` (§6.3)
+- [x] `context.wait_for_input(prompt, schema)` — human in the loop
+- [x] HTTP endpoint `POST .../signals` (§7.1) — Assistants API
+- [x] A2A: waiting task is `input-required`; a reply with its `taskId` is the signal
+- [x] Resume flow: consume matching signal, mark step completed (§6.5)
+- [x] Timeout path: signal never arrives → step `expired`, raise `TimeoutError`
+- [x] Unit tests: signal-before-wait, signal-during-wait, FIFO ordering, other signal ignored
+- [x] Contract tests on Postgres; end to end over A2A; restart survival checked by hand on Postgres
+
+### LangGraph (1.4.0)
+- [x] `LangGraphAgent` runs with a checkpointer keyed by the run (`LLAMPHouseCheckpointSaver` on `kv_*` records by default)
+- [x] `interrupt()` parks the run as `wait_for_signal`; the answer resumes with `Command(resume={interrupt_id: answer})`
+- [x] The n-th interrupt of a task waits under `langgraph:<interrupt id>#<n>` (n from the task's `__resume__` writes): stable across attempts
+- [x] Retry / takeover carries on from the last checkpoint; contract tests on both stores
 
 ### P5 — Polish & production readiness
 - [ ] `NOTIFY`-based wakeup on Postgres (latency optimization)
+- [ ] Close the gap between "no signal yet" and parking: a signal delivered in between waits for the recovery loop (≤ `recover_interval`)
 - [ ] Configurable `@step(on_resume="retry"|"fail"|"skip")` policy (§8)
-- [ ] Cancel-while-suspended path verified
+- [x] Cancel-while-suspended path — cancelled at once
 - [ ] `run.expires_at` honored by reaper for suspended runs
 - [ ] Fencing-token enforcement on all step writes (`lease_epoch` check) (§8)
+- [ ] `call_agent` / `handover_to_agent` replay (a resumed run calls the sub-agent again today)
 - [ ] Property-based crash-injection tests (§11)
-- [ ] Docs: concept page (`docs/concepts/durable-runs.md`)
+- [x] Docs: concept page (`docs/concepts/durable-runs.md`)
 - [ ] Docs: migration / upgrade guide for existing users
-- [ ] CHANGELOG entry
-- [ ] Feature flag `DURABLE_RUNS_ENABLED` removed (or stays as opt-out)
+- [x] CHANGELOG entry
+- [x] No feature flag: replay is a no-op for a run's first attempt; crash *resume* is opt-in per agent (`durable = True`)
 
 ### Open RFCs (not blocking)
-- [ ] Per-step retry policy design
 - [ ] Cross-tenant fairness in dispatcher
 - [ ] Signal payload size cap + blob-reference convention
 - [ ] Idempotent signal delivery (`signal_id` from caller)
 - [ ] Step versioning (`@step(version=N)`, `patched()` equivalent)
+
+### 0.1 As built (1.4.0) — where it differs from this plan
+
+- **No dispatcher loop.** Runs still reach workers through the run queue. A
+  worker *claims* a run (`claim_run`, atomic: `SELECT ... FOR UPDATE` on
+  Postgres) before running it, so a duplicate queue message is harmless. A
+  `RunRecovery` loop in every worker (`recover_interval`, default 10 s)
+  queues the runs that need a worker: expired leases and due waits.
+- **The heartbeat is the lease.** The existing heartbeat
+  (`run_supervised`) renews the lease (`renew_lease`); a renewal that finds
+  the lease gone stops the run with `LeaseLost`.
+- **Status `requires_action`, as an Assistants-API run.** A waiting run is
+  `requires_action` with `required_action = {"type": "wait_until" |
+  "wait_for_signal", "details": {...}}` (the existing `RequiredAction`
+  shape).
+- **Opt-in resume, no flag.** Replay costs one read per attempt and changes
+  nothing for a first attempt. Resuming a *crashed* run is opt-in per agent
+  (`Agent.durable = True`); other agents' crashed runs fail.
+- **Run retries.** A run retried by the queue's `RetryPolicy` goes back to
+  `queued` (it was set to `failed` before being requeued) and replays.
 
 ---
 

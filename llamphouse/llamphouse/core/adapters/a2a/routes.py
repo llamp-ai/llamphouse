@@ -13,12 +13,15 @@ from ...types.enum import run_status as run_status_enum
 from ...types.message import CreateMessageRequest
 from ...types.run import RunCreateRequest
 from ...types.thread import CreateThreadRequest
+from ...types.durable import WAIT_FOR_SIGNAL, WAIT_UNTIL
+from ...workers.run_lifecycle import signal_run
 from .types import (
     AgentCapabilities,
     AgentCard,
     AgentProvider,
     AgentSkill,
     Artifact,
+    DataPart,
     JSONRPCRequest,
     Message,
     MessageSendParams,
@@ -69,14 +72,62 @@ def _make_jsonrpc_response(req_id, result=None, error=None) -> dict:
     return resp
 
 
+def _wait_type(run):
+    """What a run parked by a durable wait waits for (WAIT_UNTIL /
+    WAIT_FOR_SIGNAL), None for any other run."""
+    action = getattr(run, "required_action", None)
+    if run.status == run_status_enum.AWAITING_TOOLS and action is not None:
+        if action.type in (WAIT_UNTIL, WAIT_FOR_SIGNAL):
+            return action.type
+    return None
+
+
+def _waits_for_input(run) -> bool:
+    return _wait_type(run) == WAIT_FOR_SIGNAL
+
+
+def _input_request(run) -> Message:
+    """What a run waiting for input asks: its prompt, and the answer's
+    schema as a data part."""
+    request = (run.required_action.details or {}).get("request") or {}
+    parts = [TextPart(text=request.get("prompt") or "Input required.")]
+    if request.get("schema"):
+        parts.append(DataPart(data={"schema": request["schema"]}))
+    return Message(messageId=str(uuid.uuid4()), role="agent", parts=parts, taskId=run.id)
+
+
 def _make_task(run, context_id: str, artifacts=None) -> dict:
     state = RUN_STATUS_TO_A2A.get(run.status, "working")
+    message = None
+    if _wait_type(run) == WAIT_UNTIL:
+        state = "working"  # a durable sleep: still at work, later
+    elif _waits_for_input(run):
+        message = _input_request(run)
     return Task(
         id=run.id,
         contextId=context_id,
-        status=TaskStatus(state=state),
+        status=TaskStatus(state=state, message=message),
         artifacts=artifacts,
     ).model_dump(exclude_none=True)
+
+
+def _answer(message: Message):
+    """The payload of a reply to a run waiting for input: the first data
+    part's data if there is one, else the text."""
+    for part in message.parts:
+        if isinstance(part, DataPart):
+            return part.data
+    return _parts_to_text(message)
+
+
+async def _find_task_run(req: Request, task_id: str):
+    """The run behind an A2A task id - also after a restart, when the
+    in-process task map no longer has it."""
+    db: BaseDataStore = req.app.state.data_store
+    context_id = getattr(req.app.state, "a2a_tasks", {}).get(task_id)
+    if context_id:
+        return await db.get_run_by_id(context_id, task_id)
+    return await db.get_run_by_run_id(task_id)
 
 
 def _sse_event(req_id, result: dict) -> str:
@@ -224,6 +275,10 @@ async def _setup_task(rpc: JSONRPCRequest, req: Request, params: MessageSendPara
 
     # Resolve assistant (by metadata.assistant_id or fall back to first)
     assistant_id = (params.metadata or {}).get("assistant_id")
+    if params.message.taskId and not assistant_id:
+        task_run = await _find_task_run(req, params.message.taskId)
+        if task_run is not None:
+            assistant_id = task_run.assistant_id
     if assistant_id:
         assistant = next((a for a in assistants if a.id == assistant_id), None)
         if not assistant:
@@ -242,6 +297,15 @@ async def _setup_task(rpc: JSONRPCRequest, req: Request, params: MessageSendPara
         thread = await db.insert_thread(CreateThreadRequest())
         context_id = thread.id
 
+    # A reply to a task waiting for input: the answer it waits for.
+    waiting = None
+    if params.message.taskId:
+        waiting = await _find_task_run(req, params.message.taskId)
+        if waiting is not None and not _waits_for_input(waiting):
+            waiting = None
+        if waiting is not None:
+            context_id = waiting.thread_id
+
     # Insert user message
     text_content = _parts_to_text(params.message)
     await db.insert_message(context_id, CreateMessageRequest(role="user", content=text_content))
@@ -257,6 +321,17 @@ async def _setup_task(rpc: JSONRPCRequest, req: Request, params: MessageSendPara
             )
         output_queue = req.app.state.event_queues[task_key]
         await output_queue.subscribe()
+
+    if waiting is not None:
+        details = waiting.required_action.details or {}
+        await signal_run(
+            db, req.app.state.run_queue, context_id, waiting.id,
+            details.get("signal"), _answer(params.message), details.get("correlation_id"),
+        )
+        if not hasattr(req.app.state, "a2a_tasks"):
+            req.app.state.a2a_tasks = {}
+        req.app.state.a2a_tasks[waiting.id] = context_id
+        return waiting, context_id, output_queue, task_key
 
     config_store = getattr(req.app.state, "config_store", None)
     config_values = config_store.resolve_config(assistant.id) if config_store else None
@@ -313,10 +388,18 @@ async def _handle_message_send(rpc: JSONRPCRequest, req: Request):
         timeout = 120.0
         poll_interval = 0.5
         elapsed = 0.0
+        answered = _waits_for_input(run)  # resumed by this message
+        answered_step = (run.required_action.details or {}).get("step_id") if answered else None
         while elapsed < timeout:
             run = await db.get_run_by_id(context_id, run.id)
             if run and run.status in TERMINAL_STATES:
                 break
+            if run and _waits_for_input(run):
+                details = run.required_action.details or {}
+                if not answered or details.get("step_id") != answered_step:
+                    break  # waits for (new) input
+            elif answered:
+                answered = False  # it left the wait it was answered in
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
@@ -529,10 +612,23 @@ async def _handle_message_stream(rpc: JSONRPCRequest, req: Request):
                         break
 
                     elif evt_name == event_type.RUN_REQUIRES_ACTION:
+                        action = evt_data.get("required_action") or {}
+                        if action.get("type") == WAIT_UNTIL:
+                            # A durable sleep: the run carries on later, on
+                            # this same stream.
+                            yield _sse_event(rpc.id, TaskStatusUpdateEvent(
+                                taskId=task_id,
+                                contextId=context_id,
+                                status=TaskStatus(state="working"),
+                                final=False,
+                            ).model_dump(exclude_none=True))
+                            continue
+                        waiting_run = await req.app.state.data_store.get_run_by_id(context_id, task_id)
+                        message = _input_request(waiting_run) if waiting_run and _waits_for_input(waiting_run) else None
                         yield _sse_event(rpc.id, TaskStatusUpdateEvent(
                             taskId=task_id,
                             contextId=context_id,
-                            status=TaskStatus(state="input-required"),
+                            status=TaskStatus(state="input-required", message=message),
                             final=True,
                         ).model_dump(exclude_none=True))
                         break
@@ -599,16 +695,8 @@ async def _handle_tasks_get(rpc: JSONRPCRequest, req: Request):
 
     try:
         db: BaseDataStore = req.app.state.data_store
-        a2a_tasks: dict = getattr(req.app.state, "a2a_tasks", {})
-        context_id = a2a_tasks.get(params.id)
-
-        if not context_id:
-            return JSONResponse(
-                _make_jsonrpc_response(rpc.id, error={"code": -32001, "message": "Task not found."}),
-                status_code=404,
-            )
-
-        run = await db.get_run_by_id(context_id, params.id)
+        run = await _find_task_run(req, params.id)
+        context_id = run.thread_id if run else None
         if not run:
             return JSONResponse(
                 _make_jsonrpc_response(rpc.id, error={"code": -32001, "message": "Task not found."}),
@@ -636,24 +724,16 @@ async def _handle_tasks_cancel(rpc: JSONRPCRequest, req: Request):
 
     try:
         db: BaseDataStore = req.app.state.data_store
-        a2a_tasks: dict = getattr(req.app.state, "a2a_tasks", {})
-        context_id = a2a_tasks.get(params.id)
-
-        if not context_id:
-            return JSONResponse(
-                _make_jsonrpc_response(rpc.id, error={"code": -32001, "message": "Task not found."}),
-                status_code=404,
-            )
-
-        run = await db.get_run_by_id(context_id, params.id)
+        run = await _find_task_run(req, params.id)
+        context_id = run.thread_id if run else None
         if not run:
             return JSONResponse(
                 _make_jsonrpc_response(rpc.id, error={"code": -32001, "message": "Task not found."}),
                 status_code=404,
             )
 
-        if run.status == run_status_enum.QUEUED:
-            run = await db.update_run_status(context_id, params.id, run_status_enum.CANCELLED)
+        if run.status not in TERMINAL_STATES:
+            run = await db.request_cancel(context_id, params.id) or run
 
         return JSONResponse(_make_jsonrpc_response(rpc.id, result=_make_task(run, context_id)))
 

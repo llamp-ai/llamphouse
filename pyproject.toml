@@ -26,6 +26,9 @@ llamphouse = "llamphouse.cli:main"
 version = { attr = "llamphouse.__version__" }
 dependencies = { file = ["requirements.txt"] }
 
+[project.optional-dependencies]
+ag-ui = ["ag-ui-protocol>=1.0,<2"]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",

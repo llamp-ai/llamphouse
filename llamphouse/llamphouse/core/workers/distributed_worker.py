@@ -42,6 +42,19 @@ from ..data_stores.base_data_store import BaseDataStore
 from ..queue.base_queue import BaseQueue
 from ..queue.types import QueueMessage
 from ..queue.exceptions import QueueRetryExceeded
+from .run_lifecycle import (
+    HEARTBEAT_SECONDS,
+    LEASE_TTL_SECONDS,
+    RECOVER_INTERVAL_SECONDS,
+    LeaseLost,
+    RunCancelled,
+    RunRecovery,
+    WorkflowSuspended,
+    cancelled_before_start,
+    default_worker_id,
+    resume_message,
+    run_supervised,
+)
 
 logger = logging.getLogger("llamphouse.worker.distributed")
 tracer = get_tracer("llamphouse.worker")
@@ -79,7 +92,11 @@ class DistributedWorker(BaseWorker):
         *,
         assistants: Sequence[Agent] = None,  # backward-compat alias
         time_out: float = 30.0,
+        heartbeat: float = HEARTBEAT_SECONDS,
         concurrency: int = 10,
+        worker_id: Optional[str] = None,
+        lease_ttl: float = LEASE_TTL_SECONDS,
+        recover_interval: Optional[float] = RECOVER_INTERVAL_SECONDS,
     ) -> None:
         self.redis_url = redis_url
         self.data_store = data_store
@@ -88,7 +105,13 @@ class DistributedWorker(BaseWorker):
         self.assistants = self.agents  # backward-compat alias
         self.run_queue = run_queue
         self.time_out = time_out
+        self.heartbeat = heartbeat
         self.concurrency = concurrency
+        self.worker_id = worker_id or default_worker_id()
+        self.lease_ttl = lease_ttl
+        # Seconds between looks for runs to recover (RunRecovery); None: never.
+        self.recover_interval = recover_interval
+        self._recovery_task: asyncio.Task | None = None
 
         self._running = False
         self._semaphore: asyncio.Semaphore | None = None
@@ -107,6 +130,13 @@ class DistributedWorker(BaseWorker):
             self.concurrency,
             [a.id for a in self.assistants],
         )
+
+        if self.recover_interval is not None:
+            recovery = RunRecovery(
+                self.data_store, self.run_queue, self.assistants,
+                worker_id=self.worker_id, interval=self.recover_interval, lease_ttl=self.lease_ttl,
+            )
+            self._recovery_task = asyncio.create_task(recovery.run_forever())
 
         while self._running:
             try:
@@ -131,6 +161,9 @@ class DistributedWorker(BaseWorker):
                 self._semaphore.release()
                 logger.exception("Error in dequeue loop")
                 await asyncio.sleep(1.0)
+
+        if self._recovery_task:
+            self._recovery_task.cancel()
 
         # Drain in-flight tasks on shutdown
         if self._tasks:
@@ -214,6 +247,13 @@ class DistributedWorker(BaseWorker):
                         span.set_status(Status(StatusCode.ERROR))
                         return
 
+                    # Cancelled while it waited in the queue: never started.
+                    if await cancelled_before_start(self.data_store, thread_id, run_id):
+                        await self.data_store.update_run_status(thread_id, run_id, run_status.CANCELLED)
+                        span.add_event("run.cancelled_before_start")
+                        await self.run_queue.ack(receipt)
+                        return
+
                     # Create Redis event queue if streaming was requested
                     if run_object.stream:
                         output_queue = RedisEventQueue(
@@ -222,8 +262,13 @@ class DistributedWorker(BaseWorker):
                             thread_id=thread_id,
                         )
 
-                    # Mark IN_PROGRESS
-                    await self.data_store.update_run_status(thread_id, run_id, run_status.IN_PROGRESS)
+                    # Claim it: IN_PROGRESS, held by this worker. Not
+                    # claimable: another worker holds it, or it finished.
+                    lease = await self.data_store.claim_run(thread_id, run_id, self.worker_id, self.lease_ttl)
+                    if lease is None:
+                        span.add_event("run.not_claimed")
+                        await self.run_queue.ack(receipt)
+                        return
 
                     # Set span attributes
                     span.set_attribute("gen_ai.operation.name", "chat")
@@ -250,13 +295,27 @@ class DistributedWorker(BaseWorker):
                         run_queue=self.run_queue,
                         queue_class=RedisEventQueueFactory(self.redis_url),
                         assistants=self.assistants,
+                        lease=lease,
                     )
 
-                    # Execute the assistant
-                    if inspect.iscoroutinefunction(assistant.run):
-                        await asyncio.wait_for(assistant.run(context), timeout=self.time_out)
-                    else:
-                        await asyncio.wait_for(asyncio.to_thread(assistant.run, context), timeout=self.time_out)
+                    # Execute the assistant: within its time out, with a
+                    # heartbeat, stopped if a cancel is requested.
+                    work = (
+                        assistant.run(context)
+                        if inspect.iscoroutinefunction(assistant.run)
+                        else asyncio.to_thread(assistant.run, context)
+                    )
+                    await run_supervised(
+                        work,
+                        data_store=self.data_store,
+                        thread_id=thread_id,
+                        run_id=run_id,
+                        time_out=self.time_out,
+                        heartbeat=self.heartbeat,
+                        worker_id=self.worker_id,
+                        lease_ttl=self.lease_ttl,
+                    )
+                    await context.flush()
 
                     # Success
                     await self.data_store.update_run_status(thread_id, run_id, run_status.COMPLETED)
@@ -269,6 +328,36 @@ class DistributedWorker(BaseWorker):
 
                     span.set_attribute("gen_ai.response.status", "completed")
                     span.set_status(Status(StatusCode.OK))
+
+                except WorkflowSuspended as suspended:
+                    # The run waits: parked, holding no worker, until it is due.
+                    await context.flush()
+                    span.add_event("run.suspended", {"wait.type": suspended.required_action.get("type")})
+                    span.set_attribute("gen_ai.response.status", "requires_action")
+                    run_object = await self.data_store.suspend_run(
+                        thread_id, run_id, self.worker_id, suspended.required_action, suspended.wake_at,
+                    ) or run_object
+                    if suspended.wake_at is not None:
+                        await self.run_queue.enqueue(resume_message(run_object), schedule_at=suspended.wake_at)
+                    if output_queue and run_object:
+                        await output_queue.add(run_object.to_event(event_type.RUN_REQUIRES_ACTION))
+                        await output_queue.add(DoneEvent())
+                    await self.run_queue.ack(receipt)
+
+                except LeaseLost:
+                    # Another worker runs it now: nothing here to record.
+                    span.add_event("run.lease_lost")
+                    await self.run_queue.ack(receipt)
+
+                except RunCancelled:
+                    span.add_event("run.cancelled")
+                    span.set_attribute("gen_ai.response.status", "cancelled")
+                    await self.data_store.update_run_status(thread_id, run_id, run_status.CANCELLED)
+                    if output_queue and run_object:
+                        run_object = await self.data_store.get_run_by_id(thread_id, run_id) or run_object
+                        await output_queue.add(run_object.to_event(event_type.RUN_CANCELLED))
+                        await output_queue.add(DoneEvent())
+                    await self.run_queue.ack(receipt)
 
                 except asyncio.TimeoutError as e:
                     error = {"code": "server_error", "message": "Run timeout"}
@@ -286,11 +375,18 @@ class DistributedWorker(BaseWorker):
                     span.record_exception(e)
                     span.set_attribute("gen_ai.response.status", "failed")
                     span.set_status(Status(StatusCode.ERROR))
-                    await self.data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)
-                    if output_queue and run_object:
+                    retry = max(message.attempts, 1) < self.run_queue.retry_policy.max_attempts
+                    if retry:
+                        # Queued again: the next attempt claims it, and skips
+                        # the steps this one completed.
+                        await self.data_store.update_run_status(thread_id, run_id, run_status.QUEUED, error)
+                        await self.data_store.release_lease(thread_id, run_id, self.worker_id)
+                    else:
+                        await self.data_store.update_run_status(thread_id, run_id, run_status.FAILED, error)
+                    if output_queue and run_object and not retry:
                         await output_queue.add(run_object.to_event(event_type.RUN_FAILED))
                         await output_queue.add(ErrorEvent(error))
-                    if message.attempts < self.run_queue.retry_policy.max_attempts:
+                    if retry:
                         await self.run_queue.requeue(receipt, message)
                     else:
                         await self.run_queue.ack(receipt)

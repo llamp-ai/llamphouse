@@ -18,6 +18,11 @@ class Agent(ABC):
     ``AssistantAPIAdapter`` is mounted.
     """
     config: List[BaseParam] = []
+    # True: a run whose worker died is taken over by another worker and
+    # resumes where it was (its completed steps replay). Set it on agents
+    # written for replay - what may differ between attempts kept in @step
+    # (see Context's notes on durable runs). False: such a run fails.
+    durable: bool = False
     def __init__(
         self,
         id: str,

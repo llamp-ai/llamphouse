@@ -7,6 +7,8 @@ from ...types.thread import CreateThreadRequest
 from ...types.run_step import CreateRunStepRequest, RunStepObject
 from ...types.enum import run_status, run_step_status, message_status, event_type
 from ...types.list import ListResponse
+from ...types.durable import WAIT_TYPES, Signal, SignalRunRequest
+from ...workers.run_lifecycle import RETRYABLE, retry_run, signal_run
 from ...assistant import Agent, Assistant
 from ...streaming.event_queue.base_event_queue import BaseEventQueue
 from ...streaming.event import Event, DoneEvent, ErrorEvent
@@ -424,6 +426,13 @@ async def submit_tool_outputs_to_run(thread_id: str, run_id: str, request: Submi
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.invalid_state")
                 raise HTTPException(status_code=400, detail="Run is not in 'requires_action' status.")
+            if run.required_action is not None and run.required_action.type in WAIT_TYPES:
+                span.set_status(Status(StatusCode.ERROR))
+                span.add_event("run.invalid_state")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Run waits for a signal, not tool outputs: POST it to /signals.",
+                )
 
             latest_run_step = await db.get_latest_run_step_by_run_id(run_id)
             if not latest_run_step:
@@ -510,12 +519,18 @@ async def cancel_run(thread_id: str, run_id: str, req: Request):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.not_found")
                 raise HTTPException(status_code=404, detail="Run not found.")
-            if run.status != run_status.QUEUED:
+            # Queued: cancelled at once, its worker skips it. Running: it
+            # becomes 'cancelling', and its worker stops it at the next
+            # heartbeat (workers/run_lifecycle.py).
+            if run.status not in (run_status.QUEUED, run_status.IN_PROGRESS, run_status.AWAITING_TOOLS):
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.invalid_state")
-                raise HTTPException(status_code=400, detail="Run cannot be canceled unless it is in 'queued' status.")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Run cannot be cancelled: it is already {run.status}.",
+                )
 
-            run = await db.update_run_status(thread_id, run_id, run_status.CANCELLED)
+            run = await db.request_cancel(thread_id, run_id)
             if not run:
                 span.set_status(Status(StatusCode.ERROR))
                 span.add_event("run.not_found_after_update")
@@ -530,6 +545,70 @@ async def cancel_run(thread_id: str, run_id: str, req: Request):
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR))
             raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@router.post("/threads/{thread_id}/runs/{run_id}/signals", response_model=Signal)
+async def signal_run_route(thread_id: str, run_id: str, request: SignalRunRequest, req: Request):
+    """Deliver a signal to a run - a human's answer to ``context.wait_for_input``,
+    an event ``context.wait_for_signal`` waits for. A run that waits for it
+    resumes; a signal sent before the run waits is kept until it does."""
+    with span_context(
+        tracer,
+        "llamphouse.run.signal",
+        attributes={
+            "session.id": thread_id,
+            "run.id": run_id,
+            "signal.name": request.name,
+            "gen_ai.system": "llamphouse",
+            "gen_ai.operation.name": "run.signal",
+        },
+    ) as span:
+        db: BaseDataStore = req.app.state.data_store
+        if not getattr(db, "supports_durable_runs", False):
+            raise HTTPException(status_code=501, detail="This data store does not support durable runs.")
+        run = await db.get_run_by_id(thread_id, run_id)
+        if not run:
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=404, detail="Run not found.")
+        signal = await signal_run(
+            db, req.app.state.run_queue, thread_id, run_id,
+            request.name, request.payload, request.correlation_id,
+        )
+        if signal is None:
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=409, detail=f"Run cannot receive signals: it is already {run.status}.")
+        span.set_status(Status(StatusCode.OK))
+        return signal
+
+
+@router.post("/threads/{thread_id}/runs/{run_id}/retry", response_model=RunObject)
+async def retry_run_route(thread_id: str, run_id: str, req: Request):
+    """Run a failed, expired or cancelled run again. The steps it completed
+    replay, so it carries on from the step that failed."""
+    with span_context(
+        tracer,
+        "llamphouse.run.retry",
+        attributes={
+            "session.id": thread_id,
+            "run.id": run_id,
+            "gen_ai.system": "llamphouse",
+            "gen_ai.operation.name": "run.retry",
+        },
+    ) as span:
+        db: BaseDataStore = req.app.state.data_store
+        run = await db.get_run_by_id(thread_id, run_id)
+        if run is None:
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(status_code=404, detail="Run not found.")
+        if run.status not in RETRYABLE:
+            span.set_status(Status(StatusCode.ERROR))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Run cannot be retried: it is {run.status} (retry: {', '.join(RETRYABLE)}).",
+            )
+        run = await retry_run(db, req.app.state.run_queue, thread_id, run_id)
+        span.set_status(Status(StatusCode.OK))
+        return run
+
 
 async def handle_stream_event(event: dict, db: BaseDataStore, thread_id: str, request: RunCreateRequest, assistant: Agent):
     evt = event.get("event")

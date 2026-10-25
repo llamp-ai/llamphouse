@@ -152,6 +152,9 @@ class InMemoryQueue(BaseQueue):
                         try:
                             await asyncio.wait_for(self._not_empty.wait(), timeout=sleep_for)
                         except asyncio.TimeoutError:
+                            # Woken by a scheduled item coming due: look again.
+                            if next_ready is not None and time.time() >= next_ready:
+                                continue
                             span.add_event("queue.dequeue.timeout", {"timeout": timeout})
                             span.set_attribute("queue.latency_ms", (time.time() - start) * 1000)
                             span.set_status(Status(StatusCode.ERROR))

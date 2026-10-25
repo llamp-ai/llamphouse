@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
-from a2a.types import Message, Part, Role, TaskArtifactUpdateEvent, TaskStatusUpdateEvent, TextPart
+from a2a.types import DataPart, Message, Part, Role, TaskArtifactUpdateEvent, TaskState, TaskStatusUpdateEvent, TextPart
 
 BASE_URL = "http://127.0.0.1:8000"
 
@@ -24,7 +24,33 @@ async def main():
             "Solve x + 1 = 4",
             "Compare two rollout strategies and give me a plan",
             "Say hello from the graph",
+            "I want a refund, my lamp arrived broken",
         ]
+
+        async def send(message: Message):
+            """Stream one message; returns the task when it ends input-required."""
+            printed = False
+            async for event in client.send_message(message):
+                if not isinstance(event, tuple):
+                    continue
+                task, streaming_event = event
+                if isinstance(streaming_event, TaskArtifactUpdateEvent):
+                    for part in streaming_event.artifact.parts:
+                        text = _part_text(part)
+                        if text:
+                            printed = True
+                            print(text, end="", flush=True)
+                elif isinstance(streaming_event, TaskStatusUpdateEvent):
+                    if streaming_event.status.state == TaskState.input_required:
+                        question = streaming_event.status.message
+                        print("? " + "".join(_part_text(p) for p in question.parts))
+                        return streaming_event
+                    if streaming_event.final and streaming_event.status.message and not printed:
+                        for part in streaming_event.status.message.parts:
+                            text = _part_text(part)
+                            if text:
+                                print(text, end="", flush=True)
+            return None
 
         for prompt in prompts:
             message = Message(
@@ -35,23 +61,18 @@ async def main():
 
             print(f"\nPrompt: {prompt}\n")
             print("Streaming response:\n", end="")
-            printed = False
-            async for event in client.send_message(message):
-                if not isinstance(event, tuple):
-                    continue
-                _, streaming_event = event
-                if isinstance(streaming_event, TaskArtifactUpdateEvent):
-                    for part in streaming_event.artifact.parts:
-                        text = _part_text(part)
-                        if text:
-                            printed = True
-                            print(text, end="", flush=True)
-                elif isinstance(streaming_event, TaskStatusUpdateEvent):
-                    if streaming_event.final and streaming_event.status.message and not printed:
-                        for part in streaming_event.status.message.parts:
-                            text = _part_text(part)
-                            if text:
-                                print(text, end="", flush=True)
+            waiting = await send(message)
+            if waiting is not None:
+                # The graph stopped at interrupt(): answer the task to resume it.
+                print("Answering: approved\n")
+                answer = Message(
+                    message_id=uuid4().hex,
+                    role=Role.user,
+                    task_id=waiting.task_id,
+                    context_id=waiting.context_id,
+                    parts=[Part(root=DataPart(data={"approved": True}))],
+                )
+                await send(answer)
             print("\n")
 
 
