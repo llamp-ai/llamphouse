@@ -395,7 +395,7 @@ def _step_events(name: str, data: dict, tool_calls_open: set) -> List[Any]:
     kind = details.get("type")
     if kind == "step":
         step_name = details.get("name") or "step"
-        if step_name.startswith(("wait_for_signal:", "sleep", "session.", "langgraph.")):
+        if step_name.startswith(("wait_for_signal:", "sleep", "langgraph.")):
             return []  # waits and bookkeeping: shown as interrupts, not steps
         if name == event_type.RUN_STEP_CREATED:
             return [StepStartedEvent(step_name=step_name)]

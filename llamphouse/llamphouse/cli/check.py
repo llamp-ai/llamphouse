@@ -20,7 +20,6 @@ from .config.loader import (
     TRIGGER_REGISTRY,
     WORKER_REGISTRY,
     _load_entrypoint,
-    build_session_manager,
     load_config,
 )
 from .config.components import (
@@ -103,7 +102,7 @@ def _load_check_dotenv(config_path: Path) -> None:
                 os.environ.setdefault(key, value)
 
 
-def _check_components(config, config_dir: Path = Path(".")) -> HealthCheckResult:
+def _check_components(config) -> HealthCheckResult:
     errors: list[str] = []
 
     component_groups = [
@@ -128,17 +127,6 @@ def _check_components(config, config_dir: Path = Path(".")) -> HealthCheckResult
             error = validate_registry_entry(registry, name, kwargs, kind)
             if error:
                 errors.append(error)
-
-    session_entries = [("session_manager", config.session_manager)] + [
-        (f"agents.{d.name}.session_manager", d.session_manager) for d in config.agents
-    ]
-    for label, entry in session_entries:
-        if entry is None:
-            continue
-        try:
-            build_session_manager(entry, config_dir)
-        except Exception as exc:
-            errors.append(f"{label}: {exc}")
 
     for deployment in config.agents:
         for entry in deployment.triggers or []:
@@ -387,7 +375,7 @@ async def _collect_results(config_path: Path, timeout: float) -> list[HealthChec
             )
         )
         try:
-            results.append(_check_components(config, config_path.parent))
+            results.append(_check_components(config))
             results.append(_check_entrypoints(config, config_path.parent))
             results.append(await _check_data_store(config, timeout))
             results.append(await _check_tracing_store(config, timeout))

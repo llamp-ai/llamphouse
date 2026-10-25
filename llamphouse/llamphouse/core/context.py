@@ -146,9 +146,6 @@ class Context:
         # Completed calls of an earlier attempt not replayed yet: while there
         # are some, the run redoes what the client already saw.
         self._ahead: set[str] = set()
-        # The agent's view of the thread (see sessions.py): its session
-        # manager's, by default the latest 20 messages.
-        self.session = None
 
     @property
     def runtime(self) -> SimpleNamespace:
@@ -186,57 +183,12 @@ class Context:
         return {p.key: p.default_value() for p in params}
 
     @classmethod
-    async def create(cls, load_session: bool = True, **kwargs) -> "Context":
-        """A run's context. ``load_session=False``: load ``session`` later,
-        with ``load_session()`` (the workers do, under the run's heartbeat
-        and time out - a compaction may take a while)."""
+    async def create(cls, **kwargs) -> "Context":
         self = cls(**kwargs)
         self.thread = await self._get_thread_by_id(self.thread_id)
         self.messages = await self._list_messages_by_thread_id(self.thread_id)
         await self._load_replay()
-        if load_session:
-            await self.load_session()
         return self
-
-    async def load_session(self) -> None:
-        """Set ``session``: the agent's view of the thread, compacted first
-        if its session manager says so."""
-        if self.data_store is not None and self.thread_id:
-            from .sessions import session_manager_of
-
-            self.session = await session_manager_of(self.assistant).load(self)
-
-    async def compact(self, messages: List[Any], *, policy: Any = None, summary_role: str = "user") -> List[Any]:
-        """Compact an agent's own working transcript - the messages of its
-        tool loop, say - when it has grown past its budget; else return it as
-        it is. For agents whose context grows within a run (coding agents,
-        long-running agents)::
-
-            while not done:
-                messages = await context.compact(messages)
-                response = await llm(messages=messages, tools=tools)
-                ...
-
-        The policy is ``policy`` or the agent's session manager, a
-        ``Compacting`` (its budget, ``compact_at``, ``compact_to`` and
-        summarizer). Leading system messages stay; the latest messages that
-        fit stay as they are, never starting with a tool result whose call
-        would be gone; the rest becomes one summary message (``summary_role``,
-        ``"user"`` by default - accepted by every chat API) - folding in an
-        earlier one. Recorded as a step (a run that runs again replays it)
-        and told to the client (``session.compaction.*`` events). Messages:
-        dicts or objects with ``role`` / ``content`` (OpenAI, Anthropic and
-        LangChain shapes, tool calls included).
-        """
-        from .sessions import Compacting, session_manager_of
-
-        policy = policy or session_manager_of(self.assistant)
-        if not isinstance(policy, Compacting):
-            raise TypeError(
-                "context.compact() needs a Compacting policy: give the agent a Compacting session "
-                "manager, or pass policy=Compacting(summarizer, max_tokens=...)."
-            )
-        return await policy.compact_messages(self, messages, summary_role=summary_role)
 
     # ── Durable runs ─────────────────────────────────────────────────────
     #
@@ -290,17 +242,17 @@ class Context:
             await self._finish_wait(self._lease.resumed)
         self._ahead = {
             key for key, step in self._replay.items()
-            if step.status == run_step_status.COMPLETED and not key.startswith("session.")
+            if step.status == run_step_status.COMPLETED
         }
         # What this run said already is not new input to it: an agent that
         # reads context.messages sees the thread as its first attempt did.
-        self._said_ids = {
+        said = {
             step.step_details.message_creation.message_id
             for step in self._replay.values()
             if step.type == "message_creation"
         }
-        if self._said_ids:
-            self.messages = [m for m in self.messages if m.id not in self._said_ids]
+        if said:
+            self.messages = [m for m in self.messages if m.id not in said]
 
     async def _finish_wait(self, action: Dict[str, Any]) -> None:
         """Complete the wait this run was woken from, before it runs again."""
@@ -624,10 +576,10 @@ class Context:
     async def _list_messages_by_thread_id(self, thread_id):
         if not thread_id:
             return []
-        # The latest 100, oldest first (a thread's first 100 would miss what
-        # was said last). context.session holds a whole thread's view.
-        resp = await self.data_store.list_messages(thread_id=thread_id, limit=100, order="desc", after=None, before=None)
-        return list(reversed(resp.data)) if resp and resp.data else []
+        resp = await self.data_store.list_messages(thread_id=thread_id, limit=100, order="asc", after=None, before=None)
+        if not resp or not resp.data:
+            print(f"No messages found in thread {thread_id}.")
+        return resp.data if resp else []
     
     def _get_function_from_tools(self, function_name: str):
         for tool in self.assistant.tools:

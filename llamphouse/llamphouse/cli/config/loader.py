@@ -39,7 +39,6 @@ import yaml
 from ...core.assistant import Agent
 from ...core.context import Context
 from ...core.adapters import AssistantAPIAdapter, A2AAdapter, CompassAdapter, AGUIAdapter
-from ...core.sessions import Compacting, FullHistory, SlidingWindow, Summarizing, openai_summarizer
 from ...core.data_stores import InMemoryDataStore, PostgresDataStore
 from ...core.triggers import WebhookTrigger
 from ...core.workers import AsyncWorker
@@ -66,13 +65,6 @@ ADAPTER_REGISTRY: Dict[str, type] = {
     "a2a": A2AAdapter,
     "compass": CompassAdapter,
     "ag_ui": AGUIAdapter,
-}
-
-SESSION_MANAGER_REGISTRY: Dict[str, type] = {
-    "full_history": FullHistory,
-    "sliding_window": SlidingWindow,
-    "summarizing": Summarizing,
-    "compacting": Compacting,
 }
 
 WORKER_REGISTRY: Dict[str, type] = {
@@ -350,36 +342,6 @@ def _make_agent(entrypoint_obj: Any, deployment: DeploymentConfig) -> Agent:
     )
 
 
-# ── Session managers ─────────────────────────────────────────────────────────
-
-
-def build_session_manager(entry: Any, config_dir: str | Path) -> Any:
-    """A session manager from its YAML entry ``{name: {kwargs}}``.
-
-    Callables are named: ``summarizer: openai`` (or ``{openai: {model: ...}}``)
-    for ``openai_summarizer``, or ``file.py:name`` / ``module:name`` for one of
-    your own; ``count_tokens`` likewise takes ``file.py:name``.
-    """
-    name, kwargs = _parse_component_entry(entry, "session_manager")
-    kwargs = dict(kwargs)
-    summarizer = kwargs.get("summarizer")
-    if summarizer is not None:
-        if summarizer == "openai":
-            kwargs["summarizer"] = openai_summarizer()
-        elif isinstance(summarizer, dict) and set(summarizer) == {"openai"}:
-            kwargs["summarizer"] = openai_summarizer(**(summarizer["openai"] or {}))
-        elif isinstance(summarizer, str) and ":" in summarizer:
-            kwargs["summarizer"] = _load_entrypoint(summarizer, config_dir)
-        else:
-            raise ValueError(
-                f"session_manager.{name}.summarizer must be 'openai', {{openai: {{model: ...}}}} "
-                f"or 'file.py:name', got {summarizer!r}."
-            )
-    if isinstance(kwargs.get("count_tokens"), str):
-        kwargs["count_tokens"] = _load_entrypoint(kwargs["count_tokens"], config_dir)
-    return _instantiate_from_registry(SESSION_MANAGER_REGISTRY, name, kwargs, "session_manager")
-
-
 # ── Main builder ─────────────────────────────────────────────────────────────
 
 
@@ -432,8 +394,6 @@ def build_app_from_config(
         )
         entrypoint_obj = _load_entrypoint(agent_def.entrypoint, config_dir)
         agent = _make_agent(entrypoint_obj, deployment)
-        if deployment.session_manager is not None:
-            agent.session_manager = build_session_manager(deployment.session_manager, config_dir)
         if deployment.triggers is not None:
             agent.triggers = []
             for entry in deployment.triggers:
@@ -489,17 +449,10 @@ def build_app_from_config(
         data_store = _instantiate_from_registry(DATA_STORE_REGISTRY, name, kwargs, "data_store")
         logger.info("Data store '%s' configured from YAML.", name)
 
-    # ── 9. Default session manager ──────────────────────────────────────────
-    session_manager = None
-    if config.session_manager is not None:
-        session_manager = build_session_manager(config.session_manager, config_dir)
-        logger.info("Session manager '%s' configured from YAML.", type(session_manager).__name__)
-
     return LLAMPHouse(
         agents=agents,
         adapters=adapters,
         worker=worker,
         tracing_store=tracing_store,
         data_store=data_store,
-        session_manager=session_manager,
     )

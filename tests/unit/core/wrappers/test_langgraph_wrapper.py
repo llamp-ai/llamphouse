@@ -214,20 +214,3 @@ async def test_langgraph_events_stream_maps_node_to_steps():
     assert ctx.steps_started[0]["metadata"]["node_name"] == "respond"
     assert "state" in ctx.steps_started[0]["metadata"]
     assert "state" in ctx.steps_completed[0]["output"]
-
-
-async def test_base_wrapper_state_mapper_uses_the_session_when_there_is_one():
-    from llamphouse.core.sessions import Session
-
-    msg = MessageObject(
-        id="m2", created_at=datetime.now(timezone.utc), thread_id="thread-1", role="user",
-        parts=[TextPart(text="recent")],
-    )
-    context = DummyContext(messages=[msg])
-    context.session = Session(summary="earlier: hello", messages=[msg], folded=1)
-    wrapper = WrapperHarness(id="w")
-
-    state = wrapper.default_state_mapper(cast(Any, context))
-
-    assert state["summary"] == "earlier: hello"
-    assert [m["id"] for m in state["messages"]] == ["m2"]

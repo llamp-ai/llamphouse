@@ -8,7 +8,6 @@ from .adapters.compass import CompassAdapter
 from .assistant import Agent, Assistant
 from .workers.base_worker import BaseWorker
 from .workers.async_worker import AsyncWorker
-from .sessions import SessionManager, apply_default_session_manager
 from .middlewares.catch_exceptions_middleware import CatchExceptionsMiddleware
 from .middlewares.auth_middleware import AuthMiddleware
 from .auth.base_auth import BaseAuth
@@ -191,13 +190,9 @@ class LLAMPHouse:
                  tracing_store: Optional[BaseTracingStore] = None,
                  compass: bool = True,
                  on_run_status: Optional[RunStatusListener] = None,
-                 session_manager: Optional[SessionManager] = None,
                  ):
         # Accept either 'agents' (new) or 'assistants' (legacy) parameter
         resolved = agents or assistants or []
-        # The session manager of every agent that has none of its own
-        # (default: a SlidingWindow, see sessions.py).
-        apply_default_session_manager(resolved, session_manager)
         self.agents = resolved
         self.assistants = resolved  # backward-compat alias
         # None → default to AssistantAPIAdapter + Compass for backward compat;
