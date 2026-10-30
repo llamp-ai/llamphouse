@@ -115,6 +115,12 @@ class ThisThread(ThreadRef, ABC):
         """The record: every message on this thread (a fork: its history, then its own), newest
         last. Recorded like a step. For the model, read the session instead (`ctx.session.messages()`)."""
 
+    @property
+    def metadata(self) -> Mapping[str, Any]:
+        """The app's labels for this thread (who it's for), given when it was created; threads a run
+        creates inherit them. Not the agent's to change."""
+        return {}
+
 
 class Client(Protocol):
     """The client connected to this run (AG-UI, Responses): tools it declared, and calling them."""

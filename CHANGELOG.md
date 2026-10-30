@@ -1,15 +1,79 @@
 # Changelog
 
-## [2.0.0a] - TBD
+## [2.0.0a0] - unreleased
+
+A new agent contract (`llamphouse.sdk`) and a new runtime (`llamphouse.runtime`), next to the 1.x core
+(`llamphouse.core`), which stays as it is until each piece is ported. An alpha: the API may still change.
+Pin it by version (`llamphouse==2.0.0a0`) or commit.
 
 ### Added
 
+- **The 2.0 SDK** (`llamphouse.sdk`) - everything is a thread with one agent, and at most one active run
+  per thread; nothing starts a run by itself.
+  - Primitives: `append` (a message on the thread), `start` (a run), `send` (to the active run's inbox).
+    What a message means while a run is busy is the app's decision.
+  - `RunContext`: `input`, `session` (`messages`, `add`, `revise`, `settled`), thread state as events
+    (`ctx.state`: versions, `batch`, snapshots at any position), `send` / `stream`, `ask`, `@step`,
+    `sleep`, forks (`ctx.fork`, `ctx.forks`), other agents (`ctx.call`), `handover`, `ctx.next`.
+  - Typed outputs from `run()`'s return annotation, checked when the agent loads; `Workflow` with typed
+    Input / Output; the description from the class docstring.
+  - Session providers (`RollingWindow`, `Summarizing`) with revisions in the background.
+  - Test kits: `FakeRun` (one run, scripted) and `Scenario` (agents on the real engine, in memory, on a
+    fake clock, with crashes you inject).
+- **The 2.0 runtime** (`llamphouse.runtime`):
+  - Processes: `python -m llamphouse.runtime app:AGENTS --role api|worker|all` (or `runtime.serve`) -
+    any number of API and worker processes on one Postgres and one Redis; `--memory` for one process.
+  - Postgres is the truth: a conversation (a thread and every thread its runs create) is the unit of a
+    transaction, under a lock on it; processes cache what they work on. Runs are leased by workers and
+    taken over when a worker dies, replaying their recorded steps; a graceful stop hands them back.
+  - `PostgresStore` (migrations on start), `PostgresFileStore`, Redis job queue and pub/sub; in-memory
+    backends for tests and development.
+  - HTTP API `/v2` with live streams (SSE), and a basic Compass at `/compass`.
+- **Threads made for an app**: `engine.thread(agent, metadata=..., state=..., config=..., session=...)`
+  and `POST /v2/threads` with the same fields:
+  - `metadata` - the app's labels (who a thread is for); threads its runs create inherit them; listed
+    and filtered by (`list_threads(metadata=...)`, `GET /v2/threads?metadata.org=acme`); agent code
+    reads them as `ctx.thread.metadata`.
+  - `state` - its initial `ctx.state`.
+  - `config` - the agent's Config for runs on this thread, over the engine's, validated when the thread
+    is made: one agent class, many instances. A fork inherits it.
+  - `session` - what its first session starts from, e.g. the summary of a thread it continues.
+- **Hearing what happens**:
+  - `engine.follow(thread, after=position, kinds=...)` - a thread's events, stored first then live, from
+    whichever process writes them; resume by position and nothing is missed.
+  - `engine.follow_runs(agent=..., metadata=...)` - every run's status changes in the deployment, live
+    (`RunChange`: run, thread, agent, status, error, output, parent, the thread's labels); over HTTP:
+    `GET /v2/stream/runs` (SSE).
+- **Long-lived threads**: any number of runs over a thread's life; ended runs are never encoded or
+  compared again, so the cost of a new message doesn't grow with history.
 - **Tracing in the 2.0 runtime** (`llamphouse.runtime.tracing`, on `llamphouse.core.tracing` and its tracing stores):
   - `Engine(..., tracing_store=...)` sets tracing up on `open()` (`setup_tracing`) and flushes on `close()`; `runtime.server` takes the store from the environment like 1.x (`TRACING_STORE`; off with `LLAMPHOUSE_TRACING_ENABLED=false`, or `tracing_store=None`) and shuts tracing down when the process ends.
   - Spans: `llamphouse.run` per execution of a run (`run.id`, `llamphouse.run_id`, `thread.id`, `llamphouse.agent`, `llamphouse.parent_run`, `llamphouse.run.status`, `llamphouse.run.error`), current while the agent runs, so spans agent code makes nest under it; a run executed again is a new span with the same `run.id`. `llamphouse.step` per `ctx.step` executed (`llamphouse.step.name`; none for a replayed step). `llamphouse.session.revise` per session revision (`llamphouse.session.id`, `thread.id`, `llamphouse.session.reason`).
   - `GET /v2/runs/{id}/trace` — the run's spans from the tracing store (`{"run", "tracing", "spans"}`).
   - Compass: a Trace panel in the run view - the spans as a tree (name, duration, status), a span's attributes, and `gen_ai.input.messages` / `gen_ai.output.messages` / `input.value` / `output.value` readable and foldable.
   - Without a tracing store or a tracer provider, nothing is imported and no span is made; tracing never fails a run.
+
+### Changed (before 2.0.0a0 was released)
+
+- Against loops, `Engine(max_runs_per_root=1000, max_depth=50)`: the runs one run started by the app may
+  lead to, and how deep. There is no limit on runs per thread any more (`max_runs_per_thread`: a cap
+  only if set); `max_runs_per_tree` still works, as the old name of `max_runs_per_root`.
+- Stored records read back with defaults for fields added later: data written by an earlier 2.0 commit
+  keeps loading.
+
+### Migrating from 1.x
+
+1.x keeps working: `llamphouse.core` is unchanged in this release, and 2.0 uses its own tables
+(`llamphouse_*`). Moving an agent over is a rewrite to the new contract, not a flag:
+
+- An assistant becomes an `Agent` (or `Workflow`) with `async def run(self, ctx)`; `context.reply` /
+  `insert_message` become `ctx.send`; `call_agent` becomes `ctx.call` (another agent's thread) or
+  `ctx.fork` (your own work in parallel); `handover_to_agent` becomes `ctx.handover`.
+- The Assistants-style API (`/assistants`, `/threads/{id}/runs`) becomes `/v2`: create a thread,
+  then append, start a run, or send to the active run - and decide in the app what a message means
+  while a run is busy.
+- Data is not migrated yet: 1.x threads and runs stay in their tables; a `llamphouse migrate` follows.
+- See `docs/llamphouse 2.0 — design notes.md` and `examples/v2`.
 
 ## [1.4.0] - TBD
 

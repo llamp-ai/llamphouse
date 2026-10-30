@@ -145,7 +145,8 @@ async function openThread(id) {
   const t = await api(`/v2/threads/${id}`);
   $("head").innerHTML = `<b>${esc(t.agent)}</b> <span class="mono small">${t.id}</span>
     ${t.forked_from ? `<span class="small">fork of <a href="#${t.forked_from.thread}">${t.forked_from.thread}</a> @${t.forked_from.position}</span>` : ""}
-    ${t.closed ? `<span class="badge">closed</span>` : ""}`;
+    ${t.closed ? `<span class="badge">closed</span>` : ""}
+    ${Object.keys(t.metadata || {}).length ? `<span class="small mono">${esc(Object.entries(t.metadata).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" "))}</span>` : ""}`;
   $("composer").hidden = false;
   $("timeline").innerHTML = "";
   const mine = source = new AbortController();

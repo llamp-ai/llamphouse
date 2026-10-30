@@ -246,6 +246,7 @@ class _FakeThisThread(ThisThread):
 
     agent = property(lambda self: self._run._agent)
     forked_from = property(lambda self: None)
+    metadata = property(lambda self: dict(self._run._thread_metadata))
 
     async def messages(self) -> Sequence[Message]:
         return list(self._run._conversation)
@@ -325,6 +326,7 @@ class FakeRun:
         earlier_runs: Iterable[RunRef] = (),  # earlier runs sharing this run's session: their messages are OWN
         run_id: str = "run-1",
         thread_id: str = "thread-1",
+        thread_metadata: Mapping[str, Any] | None = None,
         parent: RunRef | None = None,
         depth: int = 0,
         max_restarts: int = 100,
@@ -352,6 +354,7 @@ class FakeRun:
         self._client_tools = list(client_tools)
         self._agent, self._agent_version, self._run_id, self._thread_id = agent, agent_version, run_id, thread_id
         self._agent_revision = agent_revision
+        self._thread_metadata = dict(thread_metadata or {})
         self._earlier_runs = set(earlier_runs)
         for fake in {id(f): f for f in [self._agents_fake, self._files, *self._capabilities.values()]}.values():
             if hasattr(fake, "bind"):

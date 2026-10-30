@@ -37,8 +37,19 @@ class Client:
     async def agents(self) -> list[dict]:
         return await self._call("GET", "/v2/agents")
 
-    async def thread(self, agent: str) -> dict:
-        return await self._call("POST", "/v2/threads", json={"agent": agent})
+    async def thread(self, agent: str, **options: Any) -> dict:
+        """`metadata`, `state`, `config`, `session` (a list of messages) - all optional."""
+        return await self._call("POST", "/v2/threads", json={"agent": agent, **options})
+
+    async def threads(self, *, agent: str | None = None, metadata: dict | None = None, limit: int = 50) -> list[dict]:
+        params = {"limit": limit, **({"agent": agent} if agent else {}),
+                  **{f"metadata.{k}": v for k, v in (metadata or {}).items()}}
+        return await self._call("GET", "/v2/threads", params=params)
+
+    def run_changes(self, *, agent: str | None = None, metadata: dict | None = None) -> AsyncIterator[dict]:
+        """Every run's status changes, live: {run, thread, agent, status, error, output, parent, metadata}."""
+        params = {**({"agent": agent} if agent else {}), **{f"metadata.{k}": v for k, v in (metadata or {}).items()}}
+        return self._stream("/v2/stream/runs", None, params)
 
     async def get_thread(self, thread_id: str) -> dict:
         return await self._call("GET", f"/v2/threads/{thread_id}")
@@ -101,8 +112,9 @@ class Client:
         r.raise_for_status()
         return r.content
 
-    async def _stream(self, path: str, after: int) -> AsyncIterator[dict]:
-        async with self.http.stream("GET", path, params={"after": after}) as r:
+    async def _stream(self, path: str, after: int | None, params: dict | None = None) -> AsyncIterator[dict]:
+        params = {**(params or {}), **({"after": after} if after is not None else {})}
+        async with self.http.stream("GET", path, params=params) as r:
             buffer = ""
             async for chunk in r.aiter_text():
                 buffer += chunk

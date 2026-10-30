@@ -1,5 +1,6 @@
 """The codec: what the engine keeps, as JSON and back - the same types."""
 
+import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -51,3 +52,15 @@ def test_exceptions_and_the_engines_records():
     back = round_trip(rec)
     assert back.steps == rec.steps and back.input == rec.input and list(back.subs) == list(rec.subs)
     assert round_trip(SessionRecord(id="s1", thread_id="t1", agent="a")).id == "s1"
+
+
+@dataclasses.dataclass
+class Grown:
+    a: int
+    b: list = dataclasses.field(default_factory=list)
+    c: str = "new"
+
+
+def test_a_field_added_since_a_value_was_stored_reads_back_as_its_default():
+    stored = {"$dc": f"{__name__}:Grown", "fields": {"a": 1, "gone": 2}}
+    assert decode(stored) == Grown(a=1, b=[], c="new")

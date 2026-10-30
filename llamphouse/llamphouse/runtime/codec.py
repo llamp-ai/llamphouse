@@ -19,7 +19,8 @@ sees what it saw before.
   objects in a step result); it only reads back with the same code deployed.
 
 Classes are found again by their import path, so they must be importable: a
-class defined inside a function can't be stored.
+class defined inside a function can't be stored. A dataclass field added after
+a value was stored reads back as its default; a field removed is ignored.
 """
 
 from __future__ import annotations
@@ -124,8 +125,14 @@ def decode(value: Any) -> Any:
     if "$dc" in value:
         cls = _resolve(value["$dc"])
         obj = object.__new__(cls)  # field by field: frozen classes, custom __init__ and __post_init__ alike
-        for name, field_value in value["fields"].items():
-            object.__setattr__(obj, name, decode(field_value))
+        stored = value["fields"]
+        for f in dataclasses.fields(cls):
+            if f.name in stored:
+                object.__setattr__(obj, f.name, decode(stored[f.name]))
+            elif f.default is not dataclasses.MISSING:  # a field added since it was stored: its default
+                object.__setattr__(obj, f.name, f.default)
+            elif f.default_factory is not dataclasses.MISSING:
+                object.__setattr__(obj, f.name, f.default_factory())
         return obj
     if "$exc" in value:
         cls = _resolve(value["$exc"])

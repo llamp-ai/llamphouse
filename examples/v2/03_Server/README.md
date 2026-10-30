@@ -74,8 +74,8 @@ back by them, in any process.
 
 | | | |
 |---|---|---|
-| `POST /v2/threads` | `{"agent": "desk"}` | a new thread |
-| `GET /v2/threads[?agent=&top=true]` | | threads, newest first |
+| `POST /v2/threads` | `{"agent": "desk"}`, optional `metadata`, `state`, `config`, `session` | a new thread: the app's labels, its initial state, the agent's config for it, what its session starts from |
+| `GET /v2/threads[?agent=&top=true&metadata.org=acme]` | | threads, newest first |
 | `GET /v2/threads/{id}` | | the thread: agent, active run, runs, threads it made |
 | `POST /v2/threads/{id}/messages` | a message | append, for the record - **409 `thread_busy`** while a run is active |
 | `POST /v2/threads/{id}/runs` | a message | start a run - **409 `thread_busy`** while one is active |
@@ -88,6 +88,7 @@ back by them, in any process.
 | `GET /v2/runs/{id}` · `/session` | | the run; its session |
 | `GET /v2/runs/{id}/events[/stream]` | | its stream as stored; `/stream` live with text deltas, ends with the run |
 | `POST /v2/files?name=x.pdf` | the bytes + Content-Type | upload first, reference in a message later |
+| `GET /v2/stream/runs[?agent=&metadata.org=acme]` | | every run's status changes, live (SSE) |
 | `GET /v2/files/{id}` · `GET /v2/agents` · `GET /health` | | |
 
 A message: `{"text": "..."}`, `{"data": {...}}` or `{"parts": [...]}`, with an optional

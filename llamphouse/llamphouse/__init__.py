@@ -1,4 +1,4 @@
-__version__ = "1.3.0"
+__version__ = "2.0.0a0"
 
 # The names below load on first use (PEP 562), so `import llamphouse.sdk`
 # doesn't pull in the runtime (FastAPI, SQLAlchemy, Redis, OpenTelemetry).

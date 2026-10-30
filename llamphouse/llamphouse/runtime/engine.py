@@ -80,11 +80,12 @@ from llamphouse.sdk.vocab import EventKind, Origin, RunRef, RunStatus, SenderKin
 
 T = TypeVar("T")
 
-__all__ = ["Engine", "Crash", "StoreUnavailable", "RunRecord", "SessionRecord", "FileRecord", "EPOCH"]
+__all__ = ["Engine", "Crash", "StoreUnavailable", "RunChange", "RunRecord", "SessionRecord", "FileRecord", "EPOCH"]
 
 log = logging.getLogger("llamphouse.runtime")
 
 TERMINAL = (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.REJECTED)
+_TERMINAL_NAMES = {str(s) for s in TERMINAL}
 TERMINAL_KINDS = (EventKind.RUN_COMPLETED, EventKind.RUN_FAILED, EventKind.RUN_CANCELLED, EventKind.RUN_REJECTED)
 INPUT_ANSWERED = "run.input_answered"  # an answer to an input or auth request, on the thread
 EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -93,6 +94,27 @@ _COPY = object()  # the default `session=` of a fork: a copy of the forking run'
 
 class Crash(BaseException):
     """The worker process dies: nothing is cleaned up, the run's lease stays until it expires."""
+
+
+@dataclass(frozen=True)
+class RunChange:
+    """A run's status changed (`Engine.follow_runs`): where, and to what. `output` as stored (JSON) once it
+    completed; `metadata`: its thread's labels."""
+
+    run: RunRef
+    thread: ThreadRef
+    agent: str
+    status: RunStatus
+    error: str | None = None
+    output: Any = None
+    parent: RunRef | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_json(cls, data: Mapping[str, Any]) -> "RunChange":
+        return cls(run=RunRef(data["run"]), thread=ThreadRef(data["thread"]), agent=data["agent"],
+                   status=RunStatus(data["status"]), error=data.get("error"), output=data.get("output"),
+                   parent=RunRef(data["parent"]) if data.get("parent") else None, metadata=data.get("metadata") or {})
 
 
 class StoreUnavailable(Exception):
@@ -146,6 +168,10 @@ class _Thread:
     closed: bool = False  # no more messages (`thread.close()`)
     created_at: datetime | None = None
     tree: str = ""  # the tree it belongs to: the thread people talk to, of every thread its runs create
+    metadata: dict[str, Any] = field(default_factory=dict)  # the app's labels (who it's for): threads made from it inherit them
+    config: dict[str, Any] | None = None  # the agent's Config for runs on this thread (a fork inherits it)
+    config_agent: str | None = None  # the agent that config is for: after a handover it no longer applies
+    seed: list[Message] | None = None  # what its first session starts from
 
 
 @dataclass
@@ -218,6 +244,8 @@ class RunRecord:
     lease_owner: str | None = field(default=None, repr=False)  # the engine executing it
     ring_at: datetime | None = field(default=None, repr=False)  # queued: when the sweeper rings for it again
     stream_seq: int = field(default=0, repr=False)  # its run events so far
+    root: str | None = field(default=None, repr=False)  # the run started from outside it descends from
+    depth: int = field(default=0, repr=False)  # runs between it and that root
     tree: str = field(default="", repr=False)
     active: int = field(default=0, repr=False)
 
@@ -281,6 +309,8 @@ class _Tree:
         self.flushed: dict[str, int] = {}  # thread -> its events stored
         self.rings: list[str] = []  # jobs to ring once the transaction commits
         self.notes: dict[str, int] = {}  # threads with new events (their last position), to publish
+        self.statuses: dict[str, str] = {}  # each run's status as stored: a change is published
+        self.final: set[str] = set()  # runs stored as ended: they never change again, so never looked at again
         self.used = time.monotonic()
 
     async def refresh(self, stx: StoreTx) -> None:
@@ -323,7 +353,10 @@ class _Tree:
                 for k, v in vars(new).items():
                     if k not in _LOCAL:
                         setattr(old, k, v)
+            self.statuses[r.id] = str(new.status)
             self.digests[f"run:{r.id}"] = _digest(r.text)
+            if new.status in TERMINAL:
+                self.final.add(r.id)
         for r in rows.sessions:
             new = decode(json.loads(r.text))
             if (old := self.sessions.get(r.id)) is None:
@@ -351,6 +384,7 @@ class _Tree:
             text = _json(dataclasses.replace(t, events=[], keys={}))
             if self.digests.get(f"thread:{t.id}") != _digest(text):
                 out.threads.append(Row(t.id, {"agent": t.agent, "created_by": t.created_by, "closed": t.closed,
+                                              "metadata": t.metadata,
                                               "forked_from": t.forked_from[0] if t.forked_from else None,
                                               "created_at": t.created_at}, text))
             n = self.flushed.get(t.id, 0)
@@ -359,6 +393,8 @@ class _Tree:
                 out.events += [EventRow(t.id, ev.position, self.order[(t.id, ev.position)], keys.get(id(ev)), _json(ev))
                                for ev in t.events[n:]]
         for rec in self.records.values():
+            if rec.id in self.final:  # a long thread's history costs nothing per transaction
+                continue
             text = _json(dataclasses.replace(rec, stream=[], replays=[], active=0))
             if self.digests.get(f"run:{rec.id}") != _digest(text):
                 out.runs.append(Row(rec.id, {"thread_id": rec.thread_id, "agent": rec.agent, "status": str(rec.status),
@@ -375,6 +411,7 @@ class _Tree:
         for kind, table in (("thread", rows.threads), ("run", rows.runs), ("session", rows.sessions)):
             for r in table:
                 self.digests[f"{kind}:{r.id}"] = _digest(r.text)
+        self.final |= {r.id for r in rows.runs if r.meta["status"] in _TERMINAL_NAMES}
         for t in {e.thread_id for e in rows.events}:
             self.flushed[t] = len(self.threads[t].events)
 
@@ -421,6 +458,11 @@ class Engine:
     long a run's lease lasts (renewed while it runs); `redeliver`: how long a queued run may wait for
     a worker before it is rung again; `tick`: how often (real clock) due runs are looked for.
 
+    Against loops - runs that start runs without end - a run started from outside (by the app) may lead
+    to at most `max_runs_per_root` runs below it, at most `max_depth` deep. Runs the app starts are the
+    app's: a thread may have any number of them over its life (`max_runs_per_thread`: a cap, if you
+    want one).
+
     `tracing_store`: where spans go (`llamphouse.core.tracing`; `llamphouse.runtime.tracing` says which
     spans): set up on `open()`. Without one, runs are traced only when the process has a tracer provider
     set up otherwise."""
@@ -434,8 +476,10 @@ class Engine:
         redeliver: float = 30,
         window: int = 50,
         upload_ttl: float = 3600,
-        max_runs_per_thread: int = 100,
-        max_runs_per_tree: int = 1000,
+        max_runs_per_root: int = 1000,
+        max_depth: int = 50,
+        max_runs_per_thread: int | None = None,
+        max_runs_per_tree: int | None = None,
         sessions: SessionProvider | Mapping[str, SessionProvider] | None = None,
         capabilities: Iterable[type] = (Files, Scheduler),
         clock: Callable[[], datetime] | None = None,
@@ -474,7 +518,8 @@ class Engine:
         self.files = FileService(self.file_store, emit=self._system_event)
         self.tracing_store = tracing_store
         self.tracing = Tracing(tracing_store)
-        self.max_runs_per_thread, self.max_runs_per_tree = max_runs_per_thread, max_runs_per_tree
+        self.max_runs_per_root = max_runs_per_tree if max_runs_per_tree is not None else max_runs_per_root  # (its old name)
+        self.max_depth, self.max_runs_per_thread = max_depth, max_runs_per_thread
         self._sessions = sessions if sessions is not None else RollingWindow(window)
         self._incoming: dict[str, tuple[Request, Identity]] = {}  # a said message -> its request and caller
         self._trees: dict[str, _Tree] = {}  # this process's copies
@@ -600,10 +645,15 @@ class Engine:
                 except BaseException as e:
                     await self._abandon(tree, stx)
                     raise StoreUnavailable(str(e)) from e
+                changed = [r for r in rows.runs if tree.statuses.get(r.id) != r.meta["status"]]
+                for r in changed:
+                    tree.statuses[r.id] = r.meta["status"]
                 for job in rings:
                     await self.queue.put(job)
                 for thread_id, position in notes.items():
                     await self.bus.publish(f"thread:{thread_id}", {"position": position})
+                for r in changed:
+                    await self.bus.publish("runs", self._change(tree, tree.records[r.id]))
 
     async def _abandon(self, tree: _Tree, stx: StoreTx) -> None:
         """This copy went its own way from the store: dropped. Runs executing on it stop."""
@@ -693,12 +743,34 @@ class Engine:
 
     # ── driving the outside world ───────────────────────────────────────────
 
-    async def thread(self, agent: str) -> ThreadRef:
-        """A thread of one agent: people and callers talk to it. A new tree."""
-        self._entry(agent)
+    async def thread(self, agent: str, *, metadata: Mapping[str, Any] | None = None,
+                     state: Mapping[str, Any] | None = None, config: Mapping[str, Any] | None = None,
+                     session: Sequence[Message] | None = None) -> ThreadRef:
+        """A thread of one agent: people and callers talk to it. A new tree. Everything given is written
+        with it, in one transaction:
+
+        - `metadata`: the app's labels for it (who it's for: an organisation, a board). Listed and
+          filtered by (`list_threads`), read by agent code as `ctx.thread.metadata`; threads its runs
+          create inherit them.
+        - `state`: its initial state (`ctx.state`), as its first `state.changed` event.
+        - `config`: the agent's Config for runs on this thread, over the engine's: one agent class
+          serving many instances. Validated now; a fork inherits it.
+        - `session`: what its first session starts from, before the thread's own messages - e.g. the
+          summary of an earlier thread this one continues."""
+        entry = self._entry(agent)
+        validated = None
+        if config is not None:
+            merged = {**entry.config.model_dump(), **config}
+            validated = entry.cls.config_class().model_validate(merged).model_dump(mode="json")
         thread_id = self._id("thread")
         async with self._tx(thread_id):
-            self.threads[thread_id] = _Thread(thread_id, agent, created_at=self.now, tree=thread_id)
+            t = _Thread(thread_id, agent, created_at=self.now, tree=thread_id, metadata=dict(metadata or {}),
+                        config=validated, config_agent=agent if validated is not None else None,
+                        seed=list(session) if session is not None else None)
+            self.threads[thread_id] = t
+            if state:
+                changes = [{"key": k, "value": _stored(v), "version": 1, "deleted": False} for k, v in state.items()]
+                self._append(thread_id, EventKind.STATE_CHANGED, data={"changes": changes})
         self._tree_ids[thread_id] = thread_id
         return ThreadRef(thread_id)
 
@@ -816,6 +888,47 @@ class Engine:
         async with self._tx(await self._tree(thread.id)):
             return self._append(thread.id, kind, data=data)
 
+    def _change(self, tree: _Tree, rec: RunRecord) -> dict[str, Any]:
+        t = tree.threads.get(rec.thread_id)
+        return {"run": rec.id, "thread": rec.thread_id, "agent": rec.agent, "status": str(rec.status),
+                "error": rec.error, "output": jsonable(rec.output) if rec.status == RunStatus.COMPLETED else None,
+                "parent": rec.parent.id if rec.parent else None, "metadata": dict(t.metadata) if t else {}}
+
+    async def follow(self, thread: ThreadRef, *, after: int = 0, kinds: Iterable[str] = (),
+                     poll: float = 5.0) -> AsyncIterator[ThreadEvent]:
+        """The thread's events after position `after` - what is stored first, then live, as they are
+        written, in order, from whichever process writes them. Resume from the last position seen and
+        nothing is missed. `kinds` narrows it (patterns: "run.*"). Runs ending are among them
+        (run.completed, run.failed, run.cancelled, run.rejected)."""
+        async with self.bus.listen(f"thread:{thread.id}") as news:  # listening before reading: nothing missed
+            cursor = after
+            while True:
+                async with self.reading(thread.id):
+                    fresh = [ev for ev in self._read(thread.id) if ev.position > cursor]
+                for ev in fresh:
+                    cursor = ev.position
+                    if not kinds or any(fnmatch.fnmatchcase(str(ev.kind), str(k)) for k in kinds):
+                        yield ev
+                await news.get(poll)  # news, or a look anyway now and then
+
+    async def follow_runs(self, *, agent: str | None = None,
+                          metadata: Mapping[str, Any] | None = None) -> AsyncIterator[RunChange]:
+        """Every run's status changes in the deployment, live, as they are written (queued, running,
+        waiting, input_required, completed, failed, ...): for an app that reports runs back, shows their
+        status or frees a turn. Live only - for every event of one thread, resumable, use `follow`.
+        `agent` and `metadata` (all these labels on the run's thread) narrow it."""
+        async with self.bus.listen("runs") as news:
+            while True:
+                got = await news.get(None)
+                if got is None:
+                    continue
+                change = RunChange.from_json(got[1])
+                if agent is not None and change.agent != agent:
+                    continue
+                if metadata and any(change.metadata.get(k) != v for k, v in metadata.items()):
+                    continue
+                yield change
+
     async def run_events(self, run: RunRef, after: int = 0) -> list[tuple[int, Event]]:
         """A run's stream as stored (text deltas are live only)."""
         return [(seq, decode(json.loads(text))) for seq, text in await self.store.run_events(run.id, after)]
@@ -901,6 +1014,12 @@ class Engine:
             out.add(RunRef(c))
             out |= self._descendants(self.records[c])
         return out
+
+    def _root_id(self, rec: RunRecord) -> str:
+        """The run started from outside that this one descends from (itself, for such a run)."""
+        if rec.parent is None:
+            return rec.id
+        return rec.root or self._root(rec).id  # (a record stored before `root` was kept)
 
     def _root(self, rec: RunRecord) -> RunRecord:
         while rec.parent is not None:
@@ -1062,14 +1181,18 @@ class Engine:
         t = self.threads[thread_id]
         if (active := self._active(thread_id)) is not None:  # one active run per thread
             raise ThreadBusy(thread_id, active.id)
-        if len([r for r in self.records.values() if r.thread_id == thread_id]) >= self.max_runs_per_thread:
-            raise _RunLimit(f"more than {self.max_runs_per_thread} runs on {thread_id}: a loop?")
-        if parent is not None:
-            root = self._root(parent).id
-            if sum(self._root(r).id == root for r in self.records.values()) >= self.max_runs_per_tree:
-                raise _RunLimit(f"more than {self.max_runs_per_tree} runs in the tree of {root}: a loop?")
+        if self.max_runs_per_thread is not None and len(
+                [r for r in self.records.values() if r.thread_id == thread_id]) >= self.max_runs_per_thread:
+            raise _RunLimit(f"more than {self.max_runs_per_thread} runs on {thread_id}")
+        root, depth = None, 0
+        if parent is not None:  # against loops: runs that start runs, without end
+            root, depth = self._root_id(parent), parent.depth + 1
+            if depth > self.max_depth:
+                raise _RunLimit(f"{depth} runs deep under {root}: a loop?")
+            if sum(self._root_id(r) == root for r in self.records.values()) >= self.max_runs_per_root:
+                raise _RunLimit(f"more than {self.max_runs_per_root} runs started under {root}: a loop?")
         rec = RunRecord(id=self._id("run"), thread_id=thread_id, agent=agent, input=input, agent_uid=entry.uid,
-                        parent=parent.ref if parent else None, detach=detach, tree=t.tree,
+                        parent=parent.ref if parent else None, detach=detach, tree=t.tree, root=root, depth=depth,
                         request=request or (parent.request if parent else Request()),
                         identity=identity or (parent.identity if parent else Identity(subject="scenario")))
         self.records[rec.id] = rec
@@ -1091,6 +1214,8 @@ class Engine:
             t = self.threads[rec.thread_id]
             s = SessionRecord(self._id("session"), rec.thread_id, rec.agent, tree=rec.tree)
             s.cursor = t.forked_from[1] if t.forked_from else 0  # None: built from the thread's own events
+            if seed is None and t.seed is not None and not t.forked_from:  # what the app gave the thread
+                s.messages = list(t.seed)
             if seed is not None and seed_from is not None:
                 self._seed(s, seed, seed_from)
                 at = next((e for e in t.events if e.position == rec.start_pos), None)
@@ -1237,7 +1362,7 @@ class Engine:
                 self._enqueue(rec)
 
     def _answer(self, rec: RunRecord, value: Value, by: Sender) -> bool:
-        if rec.pending is None or rec.pending[0] in rec.answers:
+        if rec.status in TERMINAL or rec.pending is None or rec.pending[0] in rec.answers:
             return False  # nothing asked, or already answered: the first answer wins
         key = rec.pending[0]
         rec.answers[key] = _as_message(value, by)
@@ -1247,6 +1372,8 @@ class Engine:
         return True
 
     def _signal(self, rec: RunRecord, key: str, value: Any) -> None:
+        if rec.status in TERMINAL:
+            return  # it ended: nothing listens any more
         rec.signals[key] = value
         if rec.status == RunStatus.WAITING and rec.waiting_signal == key:
             self._enqueue(rec)
@@ -1489,7 +1616,13 @@ class _Context:
     thread = property(lambda self: _ThisThread(self))
     client = property(lambda self: _Client(self))
     input = property(lambda self: self._rec.input)
-    config = property(lambda self: self._entry.config)
+    @property
+    def config(self) -> Config:
+        """The thread's config for this agent, if it has one; the engine's otherwise."""
+        t = self._sc.threads[self._rec.thread_id]
+        if t.config is not None and t.config_agent == self._rec.agent:
+            return self._entry.cls.config_class().model_validate(t.config)
+        return self._entry.config
 
     @property
     def me(self) -> AgentIdentity:
@@ -1614,7 +1747,11 @@ class _Context:
         thread_id = sc._id("thread")
         message = await sc._file_message(thread_id, self._outgoing(content), rec.id)
         async with self._tx():
-            t = _Thread(thread_id, agent, created_by=rec.id, detach=detach, created_at=sc.now, tree=rec.tree)
+            here = sc.threads[rec.thread_id]
+            t = _Thread(thread_id, agent, created_by=rec.id, detach=detach, created_at=sc.now, tree=rec.tree,
+                        metadata=dict(here.metadata))  # the same conversation: the same labels
+            if forked_from is not None and here.config_agent == agent:  # a fork: the same instance
+                t.config, t.config_agent = here.config, here.config_agent
             if forked_from is not None:
                 t.forked_from, t.last_pos = (forked_from.id, forked_from.last_pos), forked_from.last_pos
             child = sc._start_thread(t, message, rec, session)
@@ -2142,6 +2279,10 @@ class _ThisThread(ThisThread):
     def forked_from(self) -> tuple[ThreadRef, int] | None:
         f = self._ctx._sc.threads[self.id].forked_from
         return (ThreadRef(f[0]), f[1]) if f else None
+
+    @property
+    def metadata(self) -> Mapping[str, Any]:
+        return dict(self._ctx._sc.threads[self.id].metadata)
 
     async def messages(self) -> Sequence[Message]:
         ctx = self._ctx

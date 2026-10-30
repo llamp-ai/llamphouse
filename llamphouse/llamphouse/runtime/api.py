@@ -1,7 +1,9 @@
 """The 2.0 HTTP API: the engine's primitives over HTTP, with live streams (SSE).
 
-    POST /v2/threads                         {"agent": "desk"}                     a new thread
-    GET  /v2/threads?agent=&top=true&limit=                                       threads, newest first
+    POST /v2/threads                         {"agent": "desk", "metadata": {...},  a new thread, with the app's labels,
+                                              "state": {...}, "config": {...},     its initial state, the agent's config
+                                              "session": [<message>, ...]}         for it, what its session starts from
+    GET  /v2/threads?agent=&top=true&limit=&metadata.<key>=<value>                threads, newest first
     GET  /v2/threads/{id}                                                          the thread: agent, active run, runs, threads made
     POST /v2/threads/{id}/messages           a message                             append (409 while a run is active)
     GET  /v2/threads/{id}/events?after=N                                          the thread's events (its record)
@@ -22,6 +24,7 @@
     POST /v2/files?name=report.pdf           the bytes, with their Content-Type    upload first, reference later
     GET  /v2/files/{id}                                                            the bytes
     GET  /v2/agents                                                                what can be talked to
+    GET  /v2/stream/runs?agent=&metadata.<key>=<value>                            every run's status changes, live (SSE)
 
 A message in a request: {"text": "..."} or {"parts": [<part>, ...]} or {"data": {...}}, with an optional
 "sender": {"kind": "person", "id": "an", "name": "An"} (a person "user" by default). Parts, messages and
@@ -127,6 +130,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         return {"id": t.id, "agent": t.agent, "created_at": t.created_at.isoformat() if t.created_at else None,
                 "forked_from": {"thread": t.forked_from[0], "position": t.forked_from[1]} if t.forked_from else None,
                 "created_by": t.created_by, "closed": t.closed, "last_position": t.last_pos,
+                "metadata": t.metadata, "config": t.config if t.config_agent == t.agent else None,
                 "active_run": run_view(active) if active else None,
                 "runs": [r.id for r in engine.runs(ThreadRef(t.id))],
                 "created": [c.id for c in engine.created(ThreadRef(t.id))]}
@@ -151,12 +155,16 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     async def new_thread(body: dict[str, Any]) -> dict[str, Any]:
         if body.get("agent") not in engine._agents:
             raise HTTPException(404, f"no agent {body.get('agent')!r}")
-        ref = await engine.thread(body["agent"])
+        session = [_message(m) for m in body["session"]] if body.get("session") is not None else None
+        ref = await engine.thread(body["agent"], metadata=body.get("metadata"), state=body.get("state"),
+                                  config=body.get("config"), session=session)
         return await read_thread(ref.id)
 
     @app.get("/v2/threads", dependencies=deps)
-    async def threads(limit: int = 50, agent: str | None = None, top: bool = False) -> list[dict[str, Any]]:
-        found = await engine.store.list_threads(limit=limit, agent=agent, top=top)
+    async def threads(request: Request, limit: int = 50, agent: str | None = None,
+                      top: bool = False) -> list[dict[str, Any]]:
+        metadata = {k.removeprefix("metadata."): v for k, v in request.query_params.items() if k.startswith("metadata.")}
+        found = await engine.store.list_threads(limit=limit, agent=agent, top=top, metadata=metadata or None)
         return [{**t, "created_at": t["created_at"].isoformat() if t["created_at"] else None} for t in found]
 
     @app.get("/v2/threads/{thread_id}", dependencies=deps)
@@ -220,6 +228,32 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         await known(thread_id, "thread")
         async with engine.reading(thread_id):
             return [run_view(r) for r in engine.runs(ThreadRef(thread_id))]
+
+    @app.get("/v2/stream/runs", dependencies=deps)
+    async def runs_stream(request: Request, agent: str | None = None) -> StreamingResponse:
+        metadata = {k.removeprefix("metadata."): v for k, v in request.query_params.items() if k.startswith("metadata.")}
+
+        async def events() -> AsyncIterator[str]:
+            changes = engine.follow_runs(agent=agent, metadata=metadata or None).__aiter__()
+            pending = asyncio.ensure_future(changes.__anext__())
+            try:
+                while True:
+                    done, _ = await asyncio.wait({pending}, timeout=KEEP_ALIVE)
+                    if not done:
+                        yield ": keep-alive\n\n"
+                        continue
+                    change = pending.result()
+                    pending = asyncio.ensure_future(changes.__anext__())
+                    yield _sse("run.status", {"run": change.run.id, "thread": change.thread.id, "agent": change.agent,
+                                              "status": str(change.status), "error": change.error,
+                                              "output": change.output, "parent": change.parent.id if change.parent
+                                              else None, "metadata": dict(change.metadata)})
+            finally:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+                await changes.aclose()
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.get("/v2/runs/{run_id}", dependencies=deps)
     async def run(run_id: str) -> dict[str, Any]:

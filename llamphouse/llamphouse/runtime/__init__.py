@@ -5,7 +5,7 @@ piece is ported. Modules here import only the standard library and
 `llamphouse.sdk`, unless they are a backend behind an extra.
 """
 
-from .engine import Engine  # noqa: E402
+from .engine import Engine, RunChange, StoreUnavailable  # noqa: E402
 
 
 def serve(*args, **kwargs):  # noqa: ANN002, ANN003 - see llamphouse.runtime.server.serve
@@ -15,4 +15,4 @@ def serve(*args, **kwargs):  # noqa: ANN002, ANN003 - see llamphouse.runtime.ser
     return _serve(*args, **kwargs)
 
 
-__all__ = ["Engine", "serve"]
+__all__ = ["Engine", "RunChange", "StoreUnavailable", "serve"]

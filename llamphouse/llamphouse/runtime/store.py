@@ -21,12 +21,14 @@ Backends: `MemoryStore` (in this process; shared by several engines in tests) an
 from __future__ import annotations
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 TERMINAL = ("completed", "failed", "cancelled", "rejected")
+_MISSING = object()
 
 
 @dataclass
@@ -112,8 +114,10 @@ class Store(ABC):
     async def trees(self) -> list[str]: ...
 
     @abstractmethod
-    async def list_threads(self, *, limit: int = 50, agent: str | None = None, top: bool = False) -> list[dict]:
-        """Newest first: id, agent, created_at, created_by, forked_from, closed, active_run {id, status}."""
+    async def list_threads(self, *, limit: int = 50, agent: str | None = None, top: bool = False,
+                           metadata: dict[str, Any] | None = None) -> list[dict]:
+        """Newest first: id, agent, created_at, created_by, forked_from, closed, metadata, active_run
+        {id, status}. `metadata`: only threads whose metadata has all these keys and values."""
 
     @abstractmethod
     async def due(self, now: datetime) -> Due: ...
@@ -217,12 +221,15 @@ class MemoryStore(Store):
     async def trees(self) -> list[str]:
         return list(self.data.trees)
 
-    async def list_threads(self, *, limit: int = 50, agent: str | None = None, top: bool = False) -> list[dict]:
+    async def list_threads(self, *, limit: int = 50, agent: str | None = None, top: bool = False,
+                           metadata: dict[str, Any] | None = None) -> list[dict]:
         active = {r.meta["thread_id"]: r for _, _, r in self.data.runs.values() if r.meta["status"] not in TERMINAL}
         found = []
         for _, _, r in self.data.threads.values():
             m = r.meta
             if (agent is not None and m["agent"] != agent) or (top and m["created_by"] is not None):
+                continue
+            if metadata and any(m.get("metadata", {}).get(k, _MISSING) != v for k, v in metadata.items()):
                 continue
             run = active.get(r.id)
             found.append({"id": r.id, **m, "active_run": {"id": run.id, "status": run.meta["status"]} if run else None})
@@ -328,6 +335,11 @@ MIGRATIONS = [
         primary key (run_id, seq)
     );
     """,
+    # 2: thread metadata - the app's labels, to filter threads by
+    """
+    alter table llamphouse_threads add column metadata jsonb not null default '{}';
+    create index llamphouse_threads_metadata on llamphouse_threads using gin (metadata jsonb_path_ops);
+    """,
 ]
 
 # the unreleased 2.0 prototype's tables, replaced by migration 1
@@ -378,10 +390,12 @@ class _PostgresTx(StoreTx):
         if rows.threads:
             await con.executemany(
                 "insert into llamphouse_threads (id, tree_id, version, agent, created_by, forked_from, closed, created_at, "
-                "data) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::json) on conflict (id) do update set "
-                "version = excluded.version, agent = excluded.agent, closed = excluded.closed, data = excluded.data",
+                "metadata, data) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::json) on conflict (id) do update "
+                "set version = excluded.version, agent = excluded.agent, closed = excluded.closed, "
+                "metadata = excluded.metadata, data = excluded.data",
                 [(r.id, t, version, r.meta["agent"], r.meta["created_by"], r.meta["forked_from"], r.meta["closed"],
-                  r.meta["created_at"], r.text) for r in rows.threads])
+                  r.meta["created_at"], json.dumps(r.meta.get("metadata") or {}, default=str), r.text)
+                 for r in rows.threads])
         if rows.events:
             await con.executemany(
                 "insert into llamphouse_events (thread_id, position, tree_id, version, written, key, data) "
@@ -471,16 +485,19 @@ class PostgresStore(Store):
         async with self.pool.acquire() as con:
             return [r["id"] for r in await con.fetch("select id from llamphouse_trees order by created_at")]
 
-    async def list_threads(self, *, limit: int = 50, agent: str | None = None, top: bool = False) -> list[dict]:
+    async def list_threads(self, *, limit: int = 50, agent: str | None = None, top: bool = False,
+                           metadata: dict[str, Any] | None = None) -> list[dict]:
         async with self.pool.acquire() as con:
             rows = await con.fetch(
-                "select t.id, t.agent, t.created_at, t.created_by, t.forked_from, t.closed, r.id as run_id, "
-                "r.status as run_status from llamphouse_threads t left join llamphouse_runs r on r.thread_id = t.id "
-                "and r.status not in ('completed', 'failed', 'cancelled', 'rejected') "
+                "select t.id, t.agent, t.created_at, t.created_by, t.forked_from, t.closed, t.metadata::text, "
+                "r.id as run_id, r.status as run_status from llamphouse_threads t left join llamphouse_runs r "
+                "on r.thread_id = t.id and r.status not in ('completed', 'failed', 'cancelled', 'rejected') "
                 "where ($1::text is null or t.agent = $1) and (not $2 or t.created_by is null) "
-                "order by t.created_at desc limit $3", agent, top, limit)
+                "and ($4::jsonb is null or t.metadata @> $4::jsonb) "
+                "order by t.created_at desc limit $3", agent, top, limit,
+                json.dumps(metadata, default=str) if metadata else None)
         return [{"id": r["id"], "agent": r["agent"], "created_at": r["created_at"], "created_by": r["created_by"],
-                 "forked_from": r["forked_from"], "closed": r["closed"],
+                 "forked_from": r["forked_from"], "closed": r["closed"], "metadata": json.loads(r["metadata"]),
                  "active_run": {"id": r["run_id"], "status": r["run_status"]} if r["run_id"] else None} for r in rows]
 
     async def due(self, now: datetime) -> Due:

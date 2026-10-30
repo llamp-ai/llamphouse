@@ -119,14 +119,23 @@ class Recurses(Agent):
         await ctx.fork("again")  # a fork of itself, which forks again
 
 
-async def test_an_agent_that_keeps_forking_itself_hits_the_runs_per_tree_limit():
-    async with Scenario({"r": Recurses}, max_runs_per_tree=10) as sc:
+async def test_an_agent_that_keeps_forking_itself_hits_the_runs_per_root_limit():
+    async with Scenario({"r": Recurses}, max_runs_per_root=10) as sc:
         thread = await sc.thread("r")
         await sc.say(thread, "go", by=AN)
         await sc.settle()
         runs = sc.runs()  # each on a fork of the one before
         assert len(runs) == 10 and any(r.status is RunStatus.FAILED and "a loop" in r.error for r in runs)
         assert len({r.thread_id for r in runs}) == 10
+
+
+async def test_runs_that_start_runs_too_deep_are_stopped():
+    async with Scenario({"r": Recurses}, max_depth=3) as sc:
+        thread = await sc.thread("r")
+        await sc.say(thread, "go", by=AN)
+        await sc.settle()
+        runs = sc.runs()
+        assert len(runs) == 4 and "deep" in next(r.error for r in runs if r.status is RunStatus.FAILED)
 
 
 class Researcher(Agent):
