@@ -18,6 +18,7 @@
     GET  /v2/runs/{id}/events?after=N                                             its stream as stored (progress, messages, ...)
     GET  /v2/runs/{id}/events/stream?after=N                                      live, text deltas included (SSE); ends with the run
     GET  /v2/runs/{id}/session                                                     its session and the session's log
+    GET  /v2/runs/{id}/trace                                                       its spans, from the tracing store
     POST /v2/files?name=report.pdf           the bytes, with their Content-Type    upload first, reference later
     GET  /v2/files/{id}                                                            the bytes
     GET  /v2/agents                                                                what can be talked to
@@ -34,6 +35,7 @@ one transaction. Any number of API processes can serve the same database.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, AsyncIterator
 
@@ -310,6 +312,21 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
                     "messages": [{**to_dict(m), "own": m.id in s.inherited_own or m.sender.run in s.runs}
                                  for m in s.messages],
                     "log": jsonable(s.log)}
+
+    @app.get("/v2/runs/{run_id}/trace", dependencies=deps)
+    async def trace(run_id: str) -> Any:
+        """The spans of every trace with this run in it - one per execution (`llamphouse.runtime.tracing`) -
+        as the tracing store gives them (the 1.x Compass's format), oldest first. Without a store: none."""
+        await known(run_id, "run")  # a run that exists: only its id goes to the store's query
+        store = engine.tracing_store
+        if store is None:
+            return {"run": run_id, "tracing": False, "spans": []}
+        await asyncio.to_thread(engine.tracing.flush)  # what this process executed, exported first
+        try:
+            spans = await store.get_trace(run_id)
+        except Exception as e:  # noqa: BLE001 - the store is away: the run is still there
+            return JSONResponse({"error": "tracing_store_unavailable", "detail": repr(e)}, status_code=502)
+        return {"run": run_id, "tracing": True, "spans": jsonable(spans)}
 
     @app.post("/v2/files", dependencies=deps, status_code=201)
     async def upload(request: Request, name: str | None = None) -> dict[str, Any]:

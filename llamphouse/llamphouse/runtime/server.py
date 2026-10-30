@@ -17,6 +17,11 @@ Without a database URL everything is in memory, in one process (`all` only).
 
 Settings come from arguments, else the environment: LLAMPHOUSE_DATABASE_URL, LLAMPHOUSE_REDIS_URL,
 LLAMPHOUSE_API_KEY.
+
+Tracing, as for 1.x: spans go to the tracing store TRACING_STORE names (memory, postgres - DATABASE_URL -,
+clickhouse - CLICKHOUSE_URL -; in memory by default; with several processes, one they share), and to an
+OTLP collector when OTEL_EXPORTER_OTLP_ENDPOINT is set. LLAMPHOUSE_TRACING_ENABLED=false turns it off;
+`tracing_store=None` does for one engine.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Mapping
 
 from .engine import Engine
+from .tracing import shutdown as shutdown_tracing, store_from_env
 
 ROLES = ("all", "api", "worker")
 
@@ -39,7 +45,7 @@ ROLES = ("all", "api", "worker")
 def build(agents: Mapping[str, Any], *, role: str = "all", database_url: str | None = None,
           redis_url: str | None = None, workers: int = 4, **engine_options: Any) -> Engine:
     """The engine a process runs: on Postgres and Redis when given (the environment otherwise), in memory
-    without them."""
+    without them; traced to the environment's tracing store unless `tracing_store` is given (None: untraced)."""
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}, not {role!r}")
     database_url = database_url or os.environ.get("LLAMPHOUSE_DATABASE_URL")
@@ -59,6 +65,8 @@ def build(agents: Mapping[str, Any], *, role: str = "all", database_url: str | N
         engine_options.setdefault("bus", RedisBus(redis_url))
     if role != "all" and not (database_url and redis_url):
         raise ValueError(f"role {role!r} shares work with other processes: it needs a database URL and a Redis URL")
+    if "tracing_store" not in engine_options:
+        engine_options["tracing_store"] = store_from_env()
     return Engine(agents, workers=0 if role == "api" else workers, **engine_options)
 
 
@@ -102,6 +110,7 @@ async def work(agents: Mapping[str, Any] | Engine, *, stop: asyncio.Event | None
         await stop.wait()
     finally:
         await engine.close()
+        shutdown_tracing()  # the process ends: the last spans out, the exporters closed
 
 
 def serve(agents: Mapping[str, Any] | Engine, *, role: str = "all", host: str = "127.0.0.1", port: int = 8000,
@@ -114,8 +123,11 @@ def serve(agents: Mapping[str, Any] | Engine, *, role: str = "all", host: str = 
         return
     import uvicorn
 
-    uvicorn.run(app(agents, role=role, api_key=api_key, compass=compass, **options), host=host, port=port,
-                log_level=log_level)
+    try:
+        uvicorn.run(app(agents, role=role, api_key=api_key, compass=compass, **options), host=host, port=port,
+                    log_level=log_level)
+    finally:
+        shutdown_tracing()  # the engine flushed on close; the process ends: the exporters closed
 
 
 def _load(spec: str) -> Mapping[str, Any]:

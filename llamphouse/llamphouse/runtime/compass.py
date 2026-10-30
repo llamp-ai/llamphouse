@@ -1,6 +1,7 @@
 """Compass, basic: one page on the 2.0 API - threads, their timeline (live), forks and threads of other
-agents, runs with their events and sessions, the thread's state, and a composer to start a run, send to
-the active one, answer its question or append."""
+agents, runs with their events, sessions and traces (the spans of a run, as a tree; a span's attributes, model
+input and output readable), the thread's state, and a composer to start a run, send to the active one, answer
+its question or append."""
 
 PAGE = r"""<!doctype html>
 <html lang="en">
@@ -45,6 +46,14 @@ PAGE = r"""<!doctype html>
   .kv { font-family:var(--mono); font-size:12px; white-space:pre-wrap; word-break:break-word; }
   a { color:var(--accent); }
   .empty { color:var(--muted); padding:20px; }
+  .span { display:flex; gap:6px; align-items:baseline; padding:3px 8px; border-radius:4px; cursor:pointer; font-family:var(--mono); font-size:12px; }
+  .span:hover, .span.on { background:var(--own); }
+  .span .n { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .span .d { color:var(--muted); }
+  .attrs { margin-top:8px; border-top:1px solid var(--line); padding-top:6px; }
+  .attrs details { margin:4px 0; } .attrs summary { cursor:pointer; font-family:var(--mono); font-size:12px; color:var(--accent); }
+  .attrs pre { white-space:pre-wrap; word-break:break-word; margin:4px 0 0; padding:6px 8px; background:var(--bg); border-radius:6px;
+               font-family:var(--mono); font-size:12px; max-height:360px; overflow:auto; }
   @media (max-width: 900px) { main { grid-template-columns:1fr; height:auto; } section { border-right:none; border-bottom:1px solid var(--line); } }
 </style>
 </head>
@@ -77,6 +86,7 @@ PAGE = r"""<!doctype html>
   <section>
     <h2>Runs</h2><div id="runs"></div>
     <h2>Run</h2><div id="run"><div class="empty">Pick a run.</div></div>
+    <h2>Trace</h2><div id="trace"><div class="empty">Pick a run.</div></div>
     <h2>Threads it made</h2><div id="tree"></div>
     <h2>State</h2><div id="state" class="card kv"></div>
   </section>
@@ -92,7 +102,7 @@ async function api(path, opts = {}) {
   return body;
 }
 let threadId = null, runId = null, source = null, runSource = null;
-const esc = (s) => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function text(m) {
   if (!m) return "";
   return (m.parts || []).map(p => p.kind === "text" ? p.text
@@ -197,9 +207,71 @@ async function showRun(id, fresh = true) {
       <div class="kv">${session.messages.map(m => `${m.own ? "own  " : "other"} ${esc(text(m)).slice(0, 140)}`).join("\n")}</div>
       ${session.log.length ? `<div class="kv small">${session.log.map(l => esc(l.kind)).join(" · ")}</div>` : ""}` : ""}
   </div>`;
-  if (fresh) refreshSide();
+  if (fresh) { spanId = null; refreshSide(); }
+  await showTrace(id);
 }
+// the run's trace: its spans as a tree; the one picked, its attributes - model input and output readable
+let spanId = null, spans = [];
+const opened = new Set();  // attributes unfolded: kept across refreshes
+const READABLE = ["gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.system_instructions", "input.value", "output.value"];
+function ms(ns) { const v = (ns || 0) / 1e6; return v >= 1000 ? (v / 1000).toFixed(2) + " s" : v.toFixed(v >= 10 ? 0 : 1) + " ms"; }
+function spanStatus(s) { return s.StatusCode === "STATUS_CODE_ERROR" ? `<span class="badge s-failed">error</span>`
+  : s.StatusCode === "STATUS_CODE_OK" ? `<span class="badge s-completed">ok</span>` : ""; }
+function partText(p) {
+  if (typeof p === "string") return p;
+  if (p.type === "text" || p.type === "reasoning") return p.content ?? p.text ?? "";
+  if (p.type === "tool_call") return `[tool call ${p.name}(${JSON.stringify(p.arguments)})]`;
+  if (p.type === "tool_call_response") return `[tool result] ${typeof p.response === "string" ? p.response : JSON.stringify(p.response, null, 2)}`;
+  return JSON.stringify(p, null, 2);
+}
+function readable(value) {
+  // a JSON string: messages ({role, parts | content}) as a conversation, anything else pretty-printed
+  let v = value;
+  if (typeof v === "string") { try { v = JSON.parse(v); } catch { return v; } }
+  if (Array.isArray(v) && v.length && v.every(m => m && typeof m === "object" && "role" in m)) {
+    return v.map(m => {
+      const body = Array.isArray(m.parts) ? m.parts.map(partText).join("\n")
+        : typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map(partText).join("\n")
+        : JSON.stringify(m.content ?? m, null, 2);
+      return `── ${m.role}${m.name ? " (" + m.name + ")" : ""}${m.finish_reason ? " · " + m.finish_reason : ""}\n${body}`;
+    }).join("\n\n");
+  }
+  return typeof v === "string" ? v : JSON.stringify(v, null, 2);
+}
+function fold(k, title, body) {
+  return `<details data-k="${esc(k)}" ${opened.has(k) ? "open" : ""}><summary>${esc(title)}</summary><pre>${esc(body)}</pre></details>`;
+}
+async function showTrace(id) {
+  let t; try { t = await api(`/v2/runs/${id}/trace`); } catch (e) { $("trace").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (id !== runId) return;
+  if (!t.tracing) { $("trace").innerHTML = `<div class="empty">Tracing is off.</div>`; return; }
+  spans = t.spans;
+  if (!spans.length) { $("trace").innerHTML = `<div class="empty">No spans yet.</div>`; return; }
+  const ids = new Set(spans.map(s => s.SpanId)), kids = new Map();
+  spans.forEach(s => { const p = ids.has(s.ParentSpanId) ? s.ParentSpanId : ""; kids.set(p, [...(kids.get(p) || []), s]); });
+  const rows = [], walk = (parent, depth) => (kids.get(parent) || []).forEach(s => {
+    rows.push(`<div class="span ${s.SpanId === spanId ? "on" : ""}" data-span="${esc(s.SpanId)}" style="padding-left:${8 + depth * 14}px">
+      <span class="n" title="${esc(s.SpanName)}">${esc(s.SpanName)}</span><span class="d">${ms(s.Duration)}</span>${spanStatus(s)}</div>`);
+    walk(s.SpanId, depth + 1); });
+  walk("", 0);
+  const s = spans.find(x => x.SpanId === spanId);
+  let detail = "";
+  if (s) {
+    const a = s.SpanAttributes || {}, keys = Object.keys(a).sort();
+    const big = keys.filter(k => READABLE.includes(k) || (typeof a[k] === "string" && a[k].length > 200));
+    const small = keys.filter(k => !big.includes(k));
+    const events = (s["Events.Name"] || []).map((n, i) => fold(`${s.SpanId}/event/${i}`, `event: ${n}`, readable((s["Events.Attributes"] || [])[i] || {})));
+    detail = `<div class="attrs"><div class="small">${esc(s.SpanName)} · ${ms(s.Duration)} · ${esc(s.Timestamp)}${s.StatusMessage ? " · " + esc(s.StatusMessage) : ""}</div>
+      <div class="kv">${small.map(k => `${esc(k)}: ${esc(typeof a[k] === "string" ? a[k] : JSON.stringify(a[k]))}`).join("\n")}</div>
+      ${big.map(k => fold(`${s.SpanId}/${k}`, k, readable(a[k]))).join("")}${events.join("")}</div>`;
+  }
+  $("trace").innerHTML = `<div class="card">${rows.join("")}${detail || `<div class="small" style="margin-top:6px">Pick a span for its attributes.</div>`}</div>`;
+}
+document.addEventListener("toggle", (ev) => { const k = ev.target.dataset && ev.target.dataset.k;
+  if (k) ev.target.open ? opened.add(k) : opened.delete(k); }, true);
 document.addEventListener("click", (ev) => {
+  const sp = ev.target.closest("[data-span]");
+  if (sp) { spanId = sp.dataset.span; if (runId) showTrace(runId); return; }
   const a = ev.target.closest("[data-run]"); if (!a) return; ev.preventDefault(); showRun(a.dataset.run);
 });
 window.addEventListener("hashchange", () => { const id = location.hash.slice(1); if (id) openThread(id); });

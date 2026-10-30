@@ -51,7 +51,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, NoReturn, Sequence, TypeVar, Union
+from typing import (TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, NoReturn, Sequence,
+                    TypeVar, Union)
 
 from llamphouse.sdk.agent import Agent, Config, Workflow, requirements_of
 from llamphouse.sdk.capabilities import CapabilityMissing, Files, RunResult, Scheduler, SessionSeed, Thread
@@ -70,6 +71,10 @@ from llamphouse.runtime.bus import Bus, MemoryBus
 from llamphouse.runtime.codec import decode, encode, jsonable
 from llamphouse.runtime.queue import JobQueue, MemoryQueue
 from llamphouse.runtime.store import EventRow, MemoryStore, Row, Rows, Store, StoreTx
+from llamphouse.runtime.tracing import REVISE, RUN, STEP, Tracing
+
+if TYPE_CHECKING:
+    from llamphouse.core.tracing import BaseTracingStore
 
 from llamphouse.sdk.vocab import EventKind, Origin, RunRef, RunStatus, SenderKind, ThreadRef, Viewpoint
 
@@ -414,7 +419,11 @@ class Engine:
     `store`, `queue`, `bus`, `file_store`: in memory by default (one process). `workers`: how many
     runs this engine executes at once - 0 for an engine that only serves an API. `lease_ttl`: how
     long a run's lease lasts (renewed while it runs); `redeliver`: how long a queued run may wait for
-    a worker before it is rung again; `tick`: how often (real clock) due runs are looked for."""
+    a worker before it is rung again; `tick`: how often (real clock) due runs are looked for.
+
+    `tracing_store`: where spans go (`llamphouse.core.tracing`; `llamphouse.runtime.tracing` says which
+    spans): set up on `open()`. Without one, runs are traced only when the process has a tracer provider
+    set up otherwise."""
 
     def __init__(
         self,
@@ -436,6 +445,7 @@ class Engine:
         queue: JobQueue | None = None,
         bus: Bus | None = None,
         file_store: Any = None,
+        tracing_store: "BaseTracingStore | None" = None,
     ):
         self._agents: dict[str, _Entry] = {}
         self._offered = set(capabilities)
@@ -462,6 +472,8 @@ class Engine:
         self.file_store = file_store or InMemoryFileStore(upload_ttl=upload_ttl, clock=lambda: self.now)
         self.system_events: list[SystemEvent] = []  # runtime-wide events: files before and after their thread
         self.files = FileService(self.file_store, emit=self._system_event)
+        self.tracing_store = tracing_store
+        self.tracing = Tracing(tracing_store)
         self.max_runs_per_thread, self.max_runs_per_tree = max_runs_per_thread, max_runs_per_tree
         self._sessions = sessions if sessions is not None else RollingWindow(window)
         self._incoming: dict[str, tuple[Request, Identity]] = {}  # a said message -> its request and caller
@@ -491,6 +503,7 @@ class Engine:
 
     async def open(self) -> "Engine":
         """Connect, and start the workers (and, on a real clock, the sweeper)."""
+        self.tracing.open()
         for part in (self.store, self.queue, self.bus, self.file_store):
             if hasattr(part, "open"):
                 await part.open()
@@ -518,6 +531,7 @@ class Engine:
         for part in (self.bus, self.queue, self.store, self.file_store):
             if hasattr(part, "close"):
                 await part.close()
+        self.tracing.flush()
 
     async def __aenter__(self) -> "Engine":
         return await self.open()
@@ -1166,33 +1180,48 @@ class Engine:
             s.revision_owner, s.revision_due = self.id, self.now + self.lease_ttl  # not done by then: again
             snapshot, options, info = list(s.messages), dict(s.options), self._info(s, list(s.messages))
             provider = self._provider(s.agent)
+            reason = options.get("reason")
+            attributes = {"llamphouse.session.id": s.id, "thread.id": s.thread_id, "llamphouse.thread_id": s.thread_id,
+                          "llamphouse.agent": s.agent, "llamphouse.session.version": s.version,
+                          "llamphouse.session.reason": None if reason is None else str(reason),
+                          "llamphouse.session.messages": len(snapshot)}
+        # a job of its own: its span is a trace's root; the provider's own spans (a model call) nest under it
+        with self.tracing.span(REVISE, attributes, root=True) as span:
+            outcome = await self._revise(tree_id, session_id, snapshot, options, info, provider, span)
+            self.tracing.set(span, {"llamphouse.session.revision": outcome})
+
+    async def _revise(self, tree_id: str, session_id: str, snapshot: list[Message], options: dict[str, Any],
+                      info: SessionInfo, provider: SessionProvider, span: Any) -> str:
+        """The revision, once this worker has it; how it ended: completed, declined, failed, or superseded
+        (it took too long, and another worker has it)."""
         await asyncio.sleep(0)  # a model call, in real life: runs meanwhile carry on with the current version
         try:
             revised = await provider.revise(info, options)
         except Exception as e:  # noqa: BLE001 - a failed revision leaves the session as it was
+            self.tracing.failed(span, e)
             async with self._tx(tree_id):
                 s = self.sessions[session_id]
                 if s.revision_owner != self.id:
-                    return
+                    return "superseded"
                 s.revising, s.revision_owner, s.revision_due = False, None, None
                 s.log.append({"kind": "session.revision.failed", "options": options, "error": repr(e),
                               "version": s.version})
                 self._settle_waiters(s)
-            return
+            return "failed"
         if revised is None:  # the provider declined: nothing to do
             async with self._tx(tree_id):
                 s = self.sessions[session_id]
                 if s.revision_owner != self.id:
-                    return
+                    return "superseded"
                 s.revising, s.revision_owner, s.revision_due = False, None, None
                 s.log.append({"kind": "session.revision.declined", "options": options, "version": s.version})
                 self._settle_waiters(s)
-            return
+            return "declined"
         revised = list(revised)
         async with self._tx(tree_id):
             s = self.sessions[session_id]
             if s.revision_owner != self.id:
-                return  # it took too long: another worker revised it meanwhile
+                return "superseded"  # it took too long: another worker revised it meanwhile
             s.revision_owner, s.revision_due = None, None
             added = s.messages[len(snapshot):]  # what came in meanwhile survives, after the revised part
             s.messages = revised + added
@@ -1200,6 +1229,7 @@ class Engine:
             s.log.append({"kind": "session.revision.completed", "options": options, "version": s.version,
                           "before": len(snapshot), "after": len(revised)})
             self._settle_waiters(s)
+        return "completed"
 
     def _settle_waiters(self, s: SessionRecord) -> None:
         for rec in self.records.values():
@@ -1292,14 +1322,34 @@ class Engine:
             ctx = _Context(self, rec, entry)
             self._executing[rec.id] = ctx
         heartbeat = asyncio.create_task(self._heartbeat(ctx)) if self._tick else None
-        try:
-            rec.stream_seq = max(rec.stream_seq, await self.store.last_run_event(rec.id))
-            await self._execute(ctx, rec, entry)
-        finally:
-            if heartbeat is not None:
-                heartbeat.cancel()
-            self._executing.pop(rec.id, None)
-            rec.replays.append(ctx.replayed)
+        # this execution's span: current while the agent runs, so the spans its code makes nest under it
+        with self.tracing.span(RUN, {"run.id": rec.id, "llamphouse.run_id": rec.id, "thread.id": rec.thread_id,
+                                     "llamphouse.thread_id": rec.thread_id, "llamphouse.agent": rec.agent,
+                                     "llamphouse.parent_run": rec.parent.id if rec.parent else None,
+                                     "llamphouse.run.activation": rec.activations, "llamphouse.engine": self.id},
+                               root=True) as span:
+            ctx._span = span
+            try:
+                rec.stream_seq = max(rec.stream_seq, await self.store.last_run_event(rec.id))
+                await self._execute(ctx, rec, entry)
+            finally:
+                if heartbeat is not None:
+                    heartbeat.cancel()
+                self._executing.pop(rec.id, None)
+                rec.replays.append(ctx.replayed)
+                self._traced(span, rec, ctx)
+
+    def _traced(self, span: Any, rec: RunRecord, ctx: "_Context") -> None:
+        """How the execution ended, on its span: the run's status after it (waiting, done, or still running
+        when the process lost it)."""
+        if span is None:
+            return
+        self.tracing.set(span, {"llamphouse.run.status": str(rec.status), "llamphouse.run.error": rec.error,
+                                "llamphouse.run.replayed_steps": ctx.replayed})
+        if rec.status == RunStatus.FAILED:
+            self.tracing.failed(span, rec.error or "failed")
+        elif rec.status == RunStatus.COMPLETED:
+            self.tracing.ok(span)
 
     async def _heartbeat(self, ctx: "_Context") -> None:
         """The lease, renewed while the run runs."""
@@ -1364,6 +1414,7 @@ class Engine:
                 rec.error = r.reason
                 self._terminal(rec, RunStatus.REJECTED, EventKind.RUN_REJECTED, {"reason": r.reason})
         except Exception as e:  # noqa: BLE001
+            self.tracing.failed(ctx._span, e)  # the exception itself, with its traceback
             async with self._tx(rec.tree, ctx=ctx):
                 rec.active -= 1
                 done()
@@ -1426,6 +1477,7 @@ class _Context:
         self._ordinals: Counter = Counter()
         self.replayed = 0
         self._fresh = False  # past the recorded history: emitted events are new
+        self._span: Any = None  # this execution's span, when traced
         self.lost = False  # another worker has the run now: stop, write nothing
 
     def _tx(self) -> Any:
@@ -1630,13 +1682,15 @@ class _Context:
         key = self._key(name)
         done, value = self._replay(key)
         if done:
-            return value
-        result = fn(*args, **kwargs)
-        value = await result if inspect.isawaitable(result) else result
-        self._crash_point("before", name)
-        async with self._tx():
-            self._rec.steps[key] = value
-        self._crash_point("after", name)
+            return value  # replayed: no span, it was traced when it executed
+        with self._sc.tracing.span(STEP, {"llamphouse.step.name": name, "llamphouse.step.key": key,
+                                          "run.id": self._rec.id}):
+            result = fn(*args, **kwargs)
+            value = await result if inspect.isawaitable(result) else result
+            self._crash_point("before", name)
+            async with self._tx():
+                self._rec.steps[key] = value
+            self._crash_point("after", name)
         return value
 
     async def _request(self, key: str, request: InputRequest | AuthRequest, status: RunStatus,

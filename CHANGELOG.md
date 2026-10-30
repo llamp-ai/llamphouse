@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0a] - TBD
+
+### Added
+
+- **Tracing in the 2.0 runtime** (`llamphouse.runtime.tracing`, on `llamphouse.core.tracing` and its tracing stores):
+  - `Engine(..., tracing_store=...)` sets tracing up on `open()` (`setup_tracing`) and flushes on `close()`; `runtime.server` takes the store from the environment like 1.x (`TRACING_STORE`; off with `LLAMPHOUSE_TRACING_ENABLED=false`, or `tracing_store=None`) and shuts tracing down when the process ends.
+  - Spans: `llamphouse.run` per execution of a run (`run.id`, `llamphouse.run_id`, `thread.id`, `llamphouse.agent`, `llamphouse.parent_run`, `llamphouse.run.status`, `llamphouse.run.error`), current while the agent runs, so spans agent code makes nest under it; a run executed again is a new span with the same `run.id`. `llamphouse.step` per `ctx.step` executed (`llamphouse.step.name`; none for a replayed step). `llamphouse.session.revise` per session revision (`llamphouse.session.id`, `thread.id`, `llamphouse.session.reason`).
+  - `GET /v2/runs/{id}/trace` — the run's spans from the tracing store (`{"run", "tracing", "spans"}`).
+  - Compass: a Trace panel in the run view - the spans as a tree (name, duration, status), a span's attributes, and `gen_ai.input.messages` / `gen_ai.output.messages` / `input.value` / `output.value` readable and foldable.
+  - Without a tracing store or a tracer provider, nothing is imported and no span is made; tracing never fails a run.
+
 ## [1.4.0] - TBD
 
 ### Planned
