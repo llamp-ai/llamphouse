@@ -1,6 +1,85 @@
 # Changelog
 
-## [1.3.0] - TBD
+## [1.4.0] - TBD
+
+### Planned
+
+- **Durable runs, what remains** — releasing leases on graceful shutdown, Postgres `NOTIFY` wake-ups, fencing step writes by `lease_epoch`, replaying `call_agent`. See `docs/DURABLE_RUNS_PLAN.md` §0 (P5).
+- **Lifecycle events & subscribers** — transactional outbox, `subscribers = [...]` / `@on_event`, retry and dead-letter; also notifies humans when a run waits for input. See `docs/PLAN_LIFECYCLE_EVENTS.md`.
+- **One active run per thread** — a rule (reject, queue or interrupt) for a new run on a thread that already has one, so retries, resumed runs and sessions never write to a thread at the same time.
+- **Run policies** — retries and backoff, step and run time outs, and token budgets, configurable per agent in `llamphouse.yaml`.
+- **AG-UI frontend tools** — calling the tools an AG-UI client declares (`tools`), and taking their results from the next input's tool messages.
+- **Compass** — durable run timeline (steps, retries, replayed vs re-executed), a human-in-the-loop inbox to approve or reject waiting runs, and a session view (what the agent saw next to the full thread).
+- **Upgrade guide** for the 1.4.0 migrations.
+
+### Added
+
+- **Durable runs** (`docs/concepts/durable-runs.md`) — a run survives a worker crash or a server restart, waits for hours without holding a worker, and never does twice what it already did:
+  - **Replay** — a run that runs again (resumed, retried, taken over) runs `Agent.run` from the top, and every `@step`, `reply` / `insert_message`, `sleep` and wait it already completed returns what it returned then. Calls are recorded under a call key (`name#n`) in the run step's `metadata.call_key`.
+  - **Leases** — a worker claims a run before running it (`BaseDataStore.claim_run`, atomic) and its heartbeat renews the lease (`renew_lease`); a worker that lost its lease stops the run (`LeaseLost`). `AsyncWorker` / `DistributedWorker` take `worker_id`, `lease_ttl` and `recover_interval`.
+  - **Crash recovery** — a `RunRecovery` loop in every worker finds runs whose lease expired: a durable agent's run (`Agent.durable = True`) is queued again and resumes; any other agent's run fails. It also wakes waiting runs that are due.
+  - **`context.sleep(seconds, until=)`** — parks the run (`requires_action`, `wait_until`) holding no worker; the run queue's `schedule_at` wakes it.
+  - **`context.wait_for_signal(name, correlation_id=, timeout=, request=)`** and **`context.wait_for_input(prompt, schema=)`** (human in the loop) — park the run until a signal is delivered; a signal sent early is kept; `timeout` raises `TimeoutError` in the agent.
+  - **Signals** — `POST /threads/{thread_id}/runs/{run_id}/signals` (Assistants API), `signal_run(...)`, and over **A2A**: a waiting task is `input-required` with the question (and schema) in its status message, and a reply carrying its `taskId` answers it.
+  - **Retries** — `@step(retries=, backoff=)` retries a step in place; a run retried by the queue's `RetryPolicy` goes back to `queued` and carries on from the step that failed; `POST /threads/{thread_id}/runs/{run_id}/retry` (`retry_run(...)`) does that for a failed, expired or cancelled run.
+  - `BaseDataStore` durable-runs methods (`claim_run`, `renew_lease`, `release_lease`, `suspend_run`, `list_runs_to_recover`, `list_steps_for_replay`, `deliver_signal`, `consume_signal`, `supports_durable_runs`) — implemented by `InMemoryDataStore` and `PostgresDataStore`, with contract tests; a custom store keeps working as before.
+  - Migration `c3d8e1f2a4b5`: `runs.worker_id`, `lease_expires_at`, `lease_epoch`, `wake_at`, and a `signals` table.
+- **Durable LangGraph runs** — `LangGraphAgent` runs the graph with a checkpointer keyed by the run (`checkpointer="llamphouse"` by default: `LLAMPHouseCheckpointSaver` in the data store; or your own LangGraph checkpointer; or `None`). A node's `interrupt()` parks the run like `wait_for_input` (A2A `input-required`, `/signals`) and the answer resumes the graph inside that node; a retried or taken-over run carries on from the last checkpoint. `checkpoint_scope="thread"` keeps the graph state across runs. Example 15 gains a refund branch with human approval.
+- **Key-value records** — `BaseDataStore.kv_put` / `kv_get_all` / `kv_delete`: small JSON records by namespace, deleted with their thread (migration `d4e9f2a3b5c6`, `kv_entries`). Used for LangGraph checkpoints.
+- `context.wait_for_signal(..., key=)` — a stable identity for a wait whose position may differ between attempts.
+- **Sessions** (`docs/concepts/sessions.md`) — `context.session` is an agent's view of a thread for a run: the messages in view and a summary of older ones (`to_messages()` for a chat-completion API), decided by the agent's `session_manager`:
+  - **Built in:** `FullHistory()` (the whole thread); `SlidingWindow(max_messages=, max_tokens=, keep_first=)` (the latest messages, optionally the first ones too); `Summarizing(summarizer, max_messages=, keep_messages=, summary_tokens=)` (the latest messages, and a running summary of the older ones, kept per thread and agent so each compaction folds only what is new); `Compacting(summarizer, max_tokens=, compact_at=0.9, compact_to=0.25, summary_tokens=, reserve_tokens=)` (a token budget - summary and messages, less a reserve for the prompt and answer - that fills up; at 90% everything but the latest messages is folded into a new summary, down to 25%, and it fills up again). All take `count_tokens=` and `max_message_tokens=` (shorten a long message in the view only).
+  - **Summarizers:** `llm_summarizer(complete)` from any LLM call (`prompt -> text`, sync or async), `openai_summarizer(model, client=)` on an OpenAI-compatible API; any `async (previous_summary, messages) -> str` works, and one that takes `max_tokens` is told the summary's target length (`summary_tokens`). A failing summarizer leaves the session uncompacted for the run (a warning), instead of failing it.
+  - **Your own:** subclass `SessionManager` and implement `build(messages, memory) -> Session`; the memory (a JSON dict per thread and agent) changes when `Session.memory` is set; override `messages()` to read less of the thread (`thread_messages(context, after=, latest=, first=)`).
+  - **Default: a rolling window.** Every agent has a session: an agent that sets no manager gets the server's default — `LLAMPHouse(session_manager=...)` / `DistributedWorker(session_manager=...)`, or `session_manager:` at the top of `llamphouse.yaml` — else `SlidingWindow(max_messages=20)`. An agent's entry in `llamphouse.yaml` (`agents[].session_manager`) overrides its own; YAML names `full_history`, `sliding_window`, `summarizing`, `compacting`, with `summarizer: openai` / `{openai: {model: ...}}` / `file.py:name`. `llamphouse check` validates them.
+  - **Mid-run compaction:** `context.compact(messages)` keeps an agent's own working transcript (a coding agent's tool loop) within its `Compacting` budget: leading system messages kept, the latest that fit kept, tool calls never split from their results (OpenAI and Anthropic shapes), the rest one summary message. Recorded and replayed as a `session.compact_messages` step.
+  - **Compaction events:** `session.compaction.started` / `completed` / `failed` (scope `thread` or `run`, tokens before and after) on the run's stream - A2A status messages, AG-UI `CUSTOM` events.
+  - A run's session loads under its heartbeat and time out (`Context.create(load_session=False)` + `load_session()` in the workers), so a slow summarizer does not lose the run its lease.
+  - A session whose memory changed is a `session.compact` step, replayed by a run that runs again (no second summarizer call). `LangGraphAgent` passes the session's `messages` and `summary` to the graph.
+- **Sessions example** (`examples/17_Sessions`) — four agents, four managers: `Summarizing`, `SlidingWindow`, `Compacting`, and a manager of its own.
+- **AG-UI adapter** (`AGUIAdapter`, YAML `ag_ui`, `pip install llamphouse[ag-ui]`) — serves the agents over AG-UI 1.0 (`POST /ag-ui`, `POST /ag-ui/agents/{agent_id}`): replies and streamed text as `TEXT_MESSAGE_*`, `@step`s as `STEP_*`, tool calls as `TOOL_CALL_*`, `context.emit_state()` / `emit_state_delta()` as `STATE_SNAPSHOT` / `STATE_DELTA`, `context.emit()` as `CUSTOM`. A run waiting for input (`wait_for_input`, `wait_for_signal`, LangGraph `interrupt()`) finishes with an `interrupt` outcome carrying the prompt and response schema; the next input's `resume` entries answer it and the same run carries on (or `cancelled` cancels it). The AG-UI thread and message ids are the thread's; the input's state, context, tools and forwarded props reach the agent through `ag_ui_input(context)`.
+- **`context.emit_state(state)` / `context.emit_state_delta(patch)`** — share the agent's state with the client.
+- **`context.replaying`** — while a run redoes what an earlier attempt did, the events it sends (`send_chunk`, `emit`, `emit_state`) are not sent again.
+- **AG-UI example** (`examples/18_AGUI`) — a trip planner with a web front-end (Vue 3 + Vite on `@ag-ui/client`): streamed chat, an approval form built from the interrupt's schema, the shared state, the run's steps; and a terminal client. The example clients read the server address from `LLAMPHOUSE_URL`.
+- **DurableRuns example** (`examples/16_DurableRuns`) — a refund agent that asks a human over A2A, sleeps through a cool-off and retries a flaky payment API, surviving a restart.
+- **Run lifecycle, the same for every worker** (`workers/run_lifecycle.py`, used by `AsyncWorker` and `DistributedWorker`):
+  - a run cancelled while queued is not started: it ends `cancelled`;
+  - a running run records a heartbeat (`BaseDataStore.heartbeat_run`) every few seconds — a run whose heartbeat stopped had its worker die;
+  - the same beat reads the status back: a cancel requested meanwhile, from any process, stops the run and it ends `cancelled`.
+- **Cancel running runs** — `BaseDataStore.request_cancel` moves `queued` → `cancelled` and running → `cancelling`. The cancel route now accepts running runs too (as OpenAI's Assistants API does) and refuses only finished ones.
+- **Run status listeners** — `BaseDataStore.add_run_status_listener` and `LLAMPHouse(on_run_status=...)`, notified on every status write of every store with the status before; a failing listener never breaks a write.
+- **`context.runtime`** — the data store, run queue, agents and event queues a run needs to start other runs, wherever it executes, instead of reaching for private attributes.
+- `runs.heartbeat_at` column (migration `b7e2c9a4d1f3`, which also joins the two migration heads into one).
+
+### Changed
+
+- `LangGraphAgent`'s default state mapper passes the session's messages - by default the latest 20 - instead of `context.messages` (the latest 100); `session_manager=FullHistory()` passes the whole thread.
+
+- A run waiting for a signal is cancelled at once by `request_cancel` (it has no worker to stop it); `submit_tool_outputs` refuses it.
+- A2A `tasks/get` and `tasks/cancel` find a task's run after a restart too; `tasks/cancel` now stops running tasks as well (`request_cancel`).
+- Running runs left `in_progress` by a worker that is gone (from before 1.4.0 too) are failed by the recovery loop once a 1.4.0 worker starts.
+
+### Fixed
+
+- `context.messages` holds a thread's **latest** 100 messages (oldest first); it held the first 100, so an agent on a long thread never saw what was said last. It also no longer prints "No messages found" for an empty thread.
+- `LangGraphAgent` with checkpoints runs the graph once per attempt (without them, a stream with no text still falls back to `astream` and `ainvoke`, running the graph again).
+- `InMemoryQueue.dequeue(timeout=...)` no longer returns empty when a scheduled message comes due while it waits.
+- `PostgresDataStore.update_run_status` stores `expires_at` for expired runs (it set a non-existent `expired_at`), and no longer turns an error dict that has a `code` into a string.
+- `AsyncWorker` keeps references to its run tasks, so none is garbage-collected mid-run.
+- The ignite banner no longer raises `AttributeError` when `event_queue_class` is a factory instance (e.g. `RedisEventQueueFactory`), so distributed mode starts again.
+
+### Known issues
+
+- Streamed text (`send_chunk`, `asend_chunk`, `process_stream`) is not stored as a message of the thread unless the agent also stores it (`reply` / `insert_message`): a client that reloads the thread does not see it, and an AG-UI client's next input carries it as an assistant message the thread does not have.
+
+- A signal delivered while its run is about to park (between `wait_for_signal` finding none and the run being parked) wakes the run only at the next recovery look, up to `recover_interval` (10 s) later.
+- `call_agent` / `handover_to_agent` are not replayed: a resumed run calls its sub-agent again.
+- Graceful shutdown does not release the leases of running runs: another worker takes them over only once they expire (`lease_ttl`, 30 s).
+- Step writes are not fenced by `lease_epoch`: a worker that lost its lease mid-write (network partition) can still write until its next heartbeat stops it.
+- `LangGraphAgent` without checkpoints (`checkpointer=None`, or a store without key-value records) still runs the graph again through `astream` and `ainvoke` when a stream yields no text.
+- A2A `message/stream` forwards streamed text (`send_chunk`) as artifacts, but not a reply inserted at once (`context.reply`): the stream ends `completed` with an empty artifact; `message/send` and `tasks/get` do return it.
+
+## [1.3.0] - 20/08/2026
 
 ### Added
 

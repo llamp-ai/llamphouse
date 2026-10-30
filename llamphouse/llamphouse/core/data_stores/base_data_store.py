@@ -1,5 +1,8 @@
+import contextvars
+import functools
+import logging
 from abc import ABC, abstractmethod
-from typing import Optional, List, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Optional, List, TYPE_CHECKING
 from .retention import RetentionPolicy, PurgeStats
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
@@ -10,11 +13,85 @@ from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, RunStepObject
 from ..types.webhook import WebhookCommand, WebhookCommandResult
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
+from ..types.durable import RunLease, Signal
 
 if TYPE_CHECKING:
     from ..assistant import Agent
 
+logger = logging.getLogger("llamphouse.data_store")
+
+# Told of every change of a run's status: (the run as it is now, the status
+# it had - None for a new run).
+RunStatusListener = Callable[[RunObject, Optional[str]], Awaitable[None]]
+
+
+# Set while a wrapped write runs: a store built on another store (calling
+# super()) is wrapped twice, and only the outermost write notifies.
+_NOTIFYING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "llamphouse_notifying", default=False
+)
+
+
+def _notifying(method: Callable, *, created: bool) -> Callable:
+    """Wrap a store's status write so its listeners hear about the change."""
+
+    @functools.wraps(method)
+    async def wrapper(self: "BaseDataStore", *args: Any, **kwargs: Any) -> Any:
+        if _NOTIFYING.get():  # inside another store's wrapped write
+            return await method(self, *args, **kwargs)
+        listeners = list(getattr(self, "_run_status_listeners", None) or [])
+        previous = None
+        if listeners and not created:
+            thread_id, run_id = _ids(args, kwargs)
+            before = await self.get_run_by_id(thread_id, run_id)
+            previous = before.status if before is not None else None
+        token = _NOTIFYING.set(True)
+        try:
+            result = await method(self, *args, **kwargs)
+        finally:
+            _NOTIFYING.reset(token)
+        # Outside the guard: a status a listener writes is heard too.
+        run = result
+        if listeners and result is not None and not isinstance(result, RunObject):
+            # claim_run returns a lease: the run is what changed.
+            run = await self.get_run_by_id(*_ids(args, kwargs))
+        if listeners and run is not None and (created or run.status != previous):
+            for listener in listeners:
+                try:
+                    await listener(run, previous)
+                except Exception:  # a listener never breaks the store
+                    logger.exception("Run status listener failed for %s", run.id)
+        return result
+
+    return wrapper
+
+
+def _ids(args: tuple, kwargs: dict) -> tuple[str, str]:
+    thread_id = kwargs.get("thread_id", args[0] if args else None)
+    run_id = kwargs.get("run_id", args[1] if len(args) > 1 else None)
+    return thread_id, run_id
+
+
+def _waits(run: RunObject) -> bool:
+    """True for a run parked by a durable wait (it holds no worker)."""
+    from ..types.durable import WAIT_TYPES
+
+    action = run.required_action
+    return action is not None and action.type in WAIT_TYPES
+
+
 class BaseDataStore(ABC):
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Every store's status writes notify, without each store having to.
+        if "update_run_status" in cls.__dict__:
+            cls.update_run_status = _notifying(cls.__dict__["update_run_status"], created=False)
+        for name in ("claim_run", "suspend_run"):
+            if name in cls.__dict__:
+                setattr(cls, name, _notifying(cls.__dict__[name], created=False))
+        if "insert_run" in cls.__dict__:
+            cls.insert_run = _notifying(cls.__dict__["insert_run"], created=True)
 
     def __init__(self):
         self.agents: list["Agent"] = []
@@ -237,3 +314,158 @@ class BaseDataStore(ABC):
     async def close(self) -> None:
         """Close any underlying resources (default: no-op)."""
         return None
+
+    # ── Run lifecycle ────────────────────────────────────────────────────
+
+    def add_run_status_listener(self, listener: RunStatusListener) -> None:
+        """Be told of every change of a run's status made through this store
+        (in this process): ``await listener(run, previous_status)``."""
+        if not hasattr(self, "_run_status_listeners"):
+            self._run_status_listeners: list[RunStatusListener] = []
+        self._run_status_listeners.append(listener)
+
+    def remove_run_status_listener(self, listener: RunStatusListener) -> None:
+        if listener in getattr(self, "_run_status_listeners", []):
+            self._run_status_listeners.remove(listener)
+
+    async def heartbeat_run(self, thread_id: str, run_id: str) -> str | None:
+        """Record that a running run is alive; returns its status, so the
+        worker sees a cancel requested meanwhile. Stores that keep a
+        heartbeat override this; by default it only reads the status."""
+        run = await self.get_run_by_id(thread_id, run_id)
+        return run.status if run is not None else None
+
+    async def request_cancel(self, thread_id: str, run_id: str) -> RunObject | None:
+        """Ask for a run to stop: a queued one is cancelled at once (its
+        worker skips it), a running one becomes 'cancelling' and its worker
+        stops it at the next heartbeat. A finished run is left as it is."""
+        from ..types.enum import run_status
+
+        run = await self.get_run_by_id(thread_id, run_id)
+        if run is None:
+            return None
+        if run.status == run_status.QUEUED:
+            return await self.update_run_status(thread_id, run_id, run_status.CANCELLED)
+        if run.status == run_status.AWAITING_TOOLS and _waits(run):
+            # A waiting run has no worker to stop it: it is cancelled here.
+            return await self.update_run_status(thread_id, run_id, run_status.CANCELLED)
+        if run.status in (run_status.IN_PROGRESS, run_status.AWAITING_TOOLS):
+            return await self.update_run_status(thread_id, run_id, run_status.CANCELLING)
+        return run
+
+    # ── Durable runs ─────────────────────────────────────────────────────
+    #
+    # A running run is held by one worker under a lease that its heartbeat
+    # renews; a worker that dies stops renewing, and another can claim the
+    # run once the lease expired. A run waiting (a durable sleep, a signal)
+    # holds no lease: it is 'requires_action' until it is due again.
+    # See docs/DURABLE_RUNS_PLAN.md.
+    #
+    # The defaults below keep a store without leases working as before (no
+    # crash recovery, no waiting); InMemoryDataStore and PostgresDataStore
+    # implement them for real.
+
+    supports_durable_runs: bool = False
+
+    async def claim_run(self, thread_id: str, run_id: str, worker_id: str, ttl: float) -> "RunLease | None":
+        """Take a run for ``worker_id`` for ``ttl`` seconds, atomically.
+
+        Claimable: a queued run; a running one whose lease expired (its
+        worker died); a waiting one that is due (``wake_at`` passed, or its
+        signal arrived). The run becomes 'in_progress'; a waiting one has its
+        ``required_action`` cleared and handed back in ``RunLease.resumed``.
+        None when the run is not claimable (another worker holds it, it was
+        cancelled, it finished, ...).
+        """
+        from ..types.enum import run_status
+
+        run = await self.get_run_by_id(thread_id, run_id)
+        if run is None or run.status != run_status.QUEUED:
+            return None
+        await self.update_run_status(thread_id, run_id, run_status.IN_PROGRESS)
+        return RunLease(run_id=run_id, thread_id=thread_id, worker_id=worker_id, epoch=0, expires_at=None)
+
+    async def renew_lease(self, thread_id: str, run_id: str, worker_id: str, ttl: float) -> str | None:
+        """Extend ``worker_id``'s lease (and record the heartbeat); returns the
+        run's status, or None when the lease is no longer this worker's."""
+        return await self.heartbeat_run(thread_id, run_id)
+
+    async def release_lease(self, thread_id: str, run_id: str, worker_id: str) -> None:
+        """Let go of ``worker_id``'s lease, so another worker can claim the run
+        at once instead of after the lease expired."""
+        return None
+
+    async def suspend_run(
+        self,
+        thread_id: str,
+        run_id: str,
+        worker_id: str,
+        required_action: dict,
+        wake_at: Optional[float] = None,
+    ) -> RunObject | None:
+        """Park a running run held by ``worker_id``: 'requires_action' with
+        ``required_action``, lease released, due again at ``wake_at`` (epoch
+        seconds) if given. None when the lease is not this worker's."""
+        raise NotImplementedError(f"{type(self).__name__} does not support durable runs.")
+
+    async def list_runs_to_recover(self, now: float, limit: int = 100) -> List[RunObject]:
+        """Runs that need a worker and have none: running runs whose lease
+        expired, and waiting runs that are due (``wake_at <= now``, or their
+        signal arrived)."""
+        return []
+
+    async def list_steps_for_replay(self, thread_id: str, run_id: str) -> List[RunStepObject]:
+        """Every step of a run, oldest first: what a resumed run replays."""
+        steps: List[RunStepObject] = []
+        after = None
+        while True:
+            page = await self.list_run_steps(thread_id, run_id, limit=100, order="asc", after=after, before=None)
+            if not page or not page.data:
+                return steps
+            steps.extend(page.data)
+            if not page.has_more:
+                return steps
+            after = page.data[-1].id
+
+    # ── Signals (a waiting run's input from outside) ─────────────────────
+
+    async def deliver_signal(
+        self,
+        thread_id: str,
+        run_id: str,
+        name: str,
+        payload: Any = None,
+        correlation_id: Optional[str] = None,
+    ) -> "Signal | None":
+        """Store a signal for a run; the run consumes it when it waits for it
+        (or at once, if it already waits). None when the run does not exist
+        or has finished."""
+        raise NotImplementedError(f"{type(self).__name__} does not support durable runs.")
+
+    async def consume_signal(
+        self,
+        run_id: str,
+        name: str,
+        correlation_id: Optional[str] = None,
+    ) -> "Signal | None":
+        """Take the oldest unconsumed signal ``name`` (and ``correlation_id``)
+        of a run, marking it consumed; None if there is none."""
+        return None
+
+    # ── Key-value records ────────────────────────────────────────────────
+    # Small JSON records grouped by namespace, for what the framework keeps
+    # besides threads, messages and runs (e.g. LangGraph checkpoints, see
+    # wrappers/langgraph_checkpoint.py). Records tied to a thread go with it.
+
+    async def kv_put(self, namespace: str, entries: dict, thread_id: Optional[str] = None) -> None:
+        """Insert or replace the records ``{key: value}`` (values: JSON) of
+        ``namespace``; deleted with the thread ``thread_id`` if given."""
+        raise NotImplementedError(f"{type(self).__name__} does not support key-value records.")
+
+    async def kv_get_all(self, namespace: str) -> dict:
+        """Every record of ``namespace``, ``{key: value}``."""
+        raise NotImplementedError(f"{type(self).__name__} does not support key-value records.")
+
+    async def kv_delete(self, namespace: str) -> None:
+        """Delete every record of ``namespace``."""
+        raise NotImplementedError(f"{type(self).__name__} does not support key-value records.")

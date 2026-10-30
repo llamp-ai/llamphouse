@@ -20,11 +20,14 @@ from ..types.webhook import (
 from ..types.enum import message_status, event_type, run_status, run_step_status
 from ..types.list import ListResponse
 from ..types.run_step import CreateRunStepRequest, StepDetails, RunStepObject
+from ..types.durable import WAIT_FOR_SIGNAL, WAIT_TYPES, RunLease, Signal
 from .. import telemetry as _telemetry
 import logging
 import json
 
 store_tracer = get_tracer("llamphouse.data_store")
+
+_FINISHED = (run_status.COMPLETED, run_status.FAILED, run_status.CANCELLED, run_status.EXPIRED, run_status.INCOMPLETE)
 logger = logging.getLogger("llamphouse.data_store.in_memory")
 
 def _content_to_text(content) -> str:
@@ -52,6 +55,10 @@ class InMemoryDataStore(BaseDataStore):
         self._last_created_at: Optional[datetime] = None
         self._webhook_command_lock = asyncio.Lock()
         self._webhook_idempotency_claims: dict[tuple[str, str], dict] = {}
+        self._signals: dict[str, list[Signal]] = {}
+        # namespace -> {key: value}; namespace -> the thread it goes with
+        self._kv: dict[str, dict] = {}
+        self._kv_threads: dict[str, str] = {}
 
     def _next_created_at(self) -> datetime:
         now = datetime.now(timezone.utc)
@@ -618,6 +625,10 @@ class InMemoryDataStore(BaseDataStore):
                     runs = self._runs.pop(thread_id, [])
                     for run in runs:
                         self._run_steps.pop(run.id, None)
+                        self._signals.pop(run.id, None)
+                    for ns in [ns for ns, tid in self._kv_threads.items() if tid == thread_id]:
+                        self._kv.pop(ns, None)
+                        self._kv_threads.pop(ns, None)
                     span.set_status(Status(StatusCode.OK))
                     span.set_attribute("output.value", _json_dump({"thread_id": thread_id, "deleted": True}))
                     return thread_id
@@ -634,6 +645,14 @@ class InMemoryDataStore(BaseDataStore):
         if thread_id not in self._threads:
             return None
         return next((r for r in self._runs[thread_id] if r.id == run_id), None)
+
+    async def heartbeat_run(self, thread_id: str, run_id: str) -> str | None:
+        """Record that a running run is alive; returns its status."""
+        run = next((r for r in self._runs.get(thread_id, []) if r.id == run_id), None)
+        if run is None:
+            return None
+        run.heartbeat_at = datetime.now(timezone.utc)
+        return run.status
 
     async def get_run_by_run_id(self, run_id: str) -> RunObject | None:
         for runs in self._runs.values():
@@ -1690,5 +1709,160 @@ class InMemoryDataStore(BaseDataStore):
                 span.set_status(Status(StatusCode.ERROR))
                 raise
     
+    # ── Durable runs ─────────────────────────────────────────────────────
+    # One event loop and no await between a check and its write: each of
+    # these is atomic.
+
+    supports_durable_runs = True
+
+    def _find_run(self, thread_id: str, run_id: str) -> Optional[RunObject]:
+        return next((r for r in self._runs.get(thread_id, []) if r.id == run_id), None)
+
+    def _pending_signal(self, run_id: str, name: str, correlation_id: Optional[str]) -> Optional[Signal]:
+        return next(
+            (
+                sig for sig in self._signals.get(run_id, [])
+                if sig.consumed_at is None and sig.name == name and sig.correlation_id == correlation_id
+            ),
+            None,
+        )
+
+    def _is_due(self, run: RunObject, now: datetime) -> bool:
+        """A waiting run whose time came, or whose signal arrived."""
+        action = run.required_action
+        if run.status != run_status.AWAITING_TOOLS or action is None or action.type not in WAIT_TYPES:
+            return False
+        if run.wake_at is not None and run.wake_at <= now:
+            return True
+        if action.type == WAIT_FOR_SIGNAL:
+            details = action.details or {}
+            return self._pending_signal(run.id, details.get("signal"), details.get("correlation_id")) is not None
+        return False
+
+    def _lease_expired(self, run: RunObject, now: datetime) -> bool:
+        return run.worker_id is None or run.lease_expires_at is None or run.lease_expires_at < now
+
+    async def claim_run(self, thread_id: str, run_id: str, worker_id: str, ttl: float) -> RunLease | None:
+        run = self._find_run(thread_id, run_id)
+        if run is None:
+            return None
+        now = datetime.now(timezone.utc)
+        resumed = None
+        if run.status == run_status.QUEUED:
+            pass
+        elif run.status == run_status.IN_PROGRESS and self._lease_expired(run, now):
+            pass
+        elif self._is_due(run, now):
+            resumed = run.required_action.model_dump()
+            run.required_action = None
+        else:
+            return None
+        run.status = run_status.IN_PROGRESS
+        run.started_at = run.started_at or now
+        run.worker_id = worker_id
+        run.lease_epoch += 1
+        run.lease_expires_at = now + timedelta(seconds=ttl)
+        run.heartbeat_at = now
+        run.wake_at = None
+        return RunLease(
+            run_id=run_id,
+            thread_id=thread_id,
+            worker_id=worker_id,
+            epoch=run.lease_epoch,
+            expires_at=run.lease_expires_at.timestamp(),
+            resumed=resumed,
+        )
+
+    async def renew_lease(self, thread_id: str, run_id: str, worker_id: str, ttl: float) -> str | None:
+        run = self._find_run(thread_id, run_id)
+        if run is None or run.worker_id != worker_id:
+            return None
+        now = datetime.now(timezone.utc)
+        run.lease_expires_at = now + timedelta(seconds=ttl)
+        run.heartbeat_at = now
+        return run.status
+
+    async def release_lease(self, thread_id: str, run_id: str, worker_id: str) -> None:
+        run = self._find_run(thread_id, run_id)
+        if run is not None and run.worker_id == worker_id:
+            run.worker_id = None
+            run.lease_expires_at = None
+
+    async def suspend_run(
+        self,
+        thread_id: str,
+        run_id: str,
+        worker_id: str,
+        required_action: dict,
+        wake_at: Optional[float] = None,
+    ) -> RunObject | None:
+        run = self._find_run(thread_id, run_id)
+        if run is None or run.worker_id != worker_id:
+            return None
+        run.status = run_status.AWAITING_TOOLS
+        run.required_action = RunObject.model_validate(
+            {**run.model_dump(), "required_action": required_action}
+        ).required_action
+        run.wake_at = datetime.fromtimestamp(wake_at, timezone.utc) if wake_at is not None else None
+        run.worker_id = None
+        run.lease_expires_at = None
+        return run
+
+    async def list_runs_to_recover(self, now: float, limit: int = 100) -> List[RunObject]:
+        at = datetime.fromtimestamp(now, timezone.utc)
+        found = [
+            run
+            for runs in self._runs.values()
+            for run in runs
+            if (run.status == run_status.IN_PROGRESS and self._lease_expired(run, at)) or self._is_due(run, at)
+        ]
+        found.sort(key=lambda r: r.created_at)
+        return found[:limit]
+
+    async def list_steps_for_replay(self, thread_id: str, run_id: str) -> List[RunStepObject]:
+        return sorted(self._run_steps.get(run_id, []), key=lambda s: s.created_at)
+
+    async def deliver_signal(
+        self,
+        thread_id: str,
+        run_id: str,
+        name: str,
+        payload=None,
+        correlation_id: Optional[str] = None,
+    ) -> Signal | None:
+        run = self._find_run(thread_id, run_id)
+        if run is None or run.status in _FINISHED:
+            return None
+        sig = Signal(
+            id=f"signal_{uuid.uuid4().hex}",
+            run_id=run_id,
+            name=name,
+            correlation_id=correlation_id,
+            payload=payload,
+            created_at=self._next_created_at(),
+        )
+        self._signals.setdefault(run_id, []).append(sig)
+        return sig
+
+    async def consume_signal(self, run_id: str, name: str, correlation_id: Optional[str] = None) -> Signal | None:
+        sig = self._pending_signal(run_id, name, correlation_id)
+        if sig is not None:
+            sig.consumed_at = datetime.now(timezone.utc)
+        return sig
+
+    # ── Key-value records ────────────────────────────────────────────────
+
+    async def kv_put(self, namespace: str, entries: dict, thread_id: Optional[str] = None) -> None:
+        self._kv.setdefault(namespace, {}).update(json.loads(json.dumps(entries)))
+        if thread_id is not None:
+            self._kv_threads[namespace] = thread_id
+
+    async def kv_get_all(self, namespace: str) -> dict:
+        return json.loads(json.dumps(self._kv.get(namespace, {})))
+
+    async def kv_delete(self, namespace: str) -> None:
+        self._kv.pop(namespace, None)
+        self._kv_threads.pop(namespace, None)
+
     async def close(self) -> None:
         return None

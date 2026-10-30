@@ -9,6 +9,7 @@
 | `AssistantAPIAdapter` | _(root)_ | OpenAI Assistants API — drop-in for the `openai` Python SDK | `assistant_api` |
 | `A2AAdapter` | _(root)_ | A2A JSON-RPC — interoperable agent-to-agent communication | `a2a` |
 | `CompassAdapter` | `/compass` | Full observability UI: threads, runs, traces, charts & dashboards | `compass` |
+| `AGUIAdapter` | `/ag-ui` | AG-UI — agent front-ends (CopilotKit, ...): streamed text, steps, shared state, interrupts | `ag_ui` |
 
 ## Feature comparison
 
@@ -156,6 +157,45 @@ A full observability UI mounted at `/compass` (default). Includes a Vue SPA and 
 | `GET/POST` | `/api/dashboards` | List / create dashboards |
 | `GET/PUT/DELETE` | `/api/dashboards/{id}` | Get / update / delete dashboard |
 | `POST` | `/api/dashboards/query` | Execute dashboard query |
+
+## AGUIAdapter
+
+Serves the agents over [AG-UI](https://docs.ag-ui.com) 1.0, the protocol
+agent front-ends speak. Needs `pip install llamphouse[ag-ui]`.
+
+| Route | |
+|---|---|
+| `POST /ag-ui` | runs the first agent |
+| `POST /ag-ui/agents/{agent_id}` | runs that agent |
+
+Each request is a `RunAgentInput`; the response streams AG-UI events (SSE):
+
+| In LLAMPHouse | Over AG-UI |
+|---|---|
+| `context.reply()` / `asend_chunk()` | `TEXT_MESSAGE_START` / `_CONTENT` / `_END` |
+| `@step` | `STEP_STARTED` / `STEP_FINISHED` |
+| tool-call steps | `TOOL_CALL_START` / `_ARGS` / `_END` / `_RESULT` |
+| `context.emit_state(state)` / `emit_state_delta(patch)` | `STATE_SNAPSHOT` / `STATE_DELTA` |
+| `context.emit(name, data)` | `CUSTOM` |
+| run completed / cancelled | `RUN_FINISHED` (`success` / `cancelled`) |
+| run failed or expired | `RUN_ERROR` |
+| `context.wait_for_input()` / `wait_for_signal()`, LangGraph `interrupt()` | `RUN_FINISHED` with an `interrupt` outcome |
+
+- The AG-UI `threadId` is the LLAMPHouse thread (created on first use);
+  messages keep their ids, and of the conversation each request sends, only
+  the new user messages are added.
+- **Human in the loop:** a run waiting for input finishes with an
+  `interrupt` outcome — one `Interrupt` per wait, its `message` the prompt,
+  its `responseSchema` the schema. The next request's `resume` entries
+  answer it (`status: "resolved"`, `payload`: the answer) and the same run
+  carries on; `status: "cancelled"` cancels it. A resumed run does not
+  stream again what it streamed before the wait.
+- The input's `state`, `context`, `tools` and `forwardedProps` reach the
+  agent: `ag_ui_input(context)` (from `llamphouse.core.adapters.ag_ui.routes`).
+- Frontend tools (`tools` the client runs) are passed on but not called
+  yet: the agent sees them in `ag_ui_input(context)["tools"]`.
+
+See the [AG-UI example](https://github.com/llamp-ai/llamphouse/tree/main/examples/18_AGUI).
 
 ## Using multiple adapters
 

@@ -9,6 +9,8 @@ from sqlalchemy import (
     Boolean,
     Enum,
     UniqueConstraint,
+    Index,
+    text,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -160,6 +162,13 @@ class Run(Base):
     cancelled_at = Column(Float)
     failed_at = Column(Float)
     completed_at = Column(Float)
+    heartbeat_at = Column(Float)
+    # Durable runs (docs/DURABLE_RUNS_PLAN.md): the worker holding the run
+    # and until when, the claim count, and when a waiting run is due.
+    worker_id = Column(String)
+    lease_expires_at = Column(Float)
+    lease_epoch = Column(Integer, nullable=False, server_default="0", default=0)
+    wake_at = Column(Float)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     reasoning_effort = Column(String, nullable=False, server_default='medium')
@@ -202,6 +211,11 @@ class Run(Base):
             "cancelled_at": round(float(self.cancelled_at), 3) if self.cancelled_at else None,
             "failed_at": round(float(self.failed_at), 3) if self.failed_at else None,
             "completed_at": round(float(self.completed_at), 3) if self.completed_at else None,
+            "heartbeat_at": round(float(self.heartbeat_at), 3) if self.heartbeat_at else None,
+            "worker_id": self.worker_id,
+            "lease_expires_at": round(float(self.lease_expires_at), 3) if self.lease_expires_at else None,
+            "lease_epoch": self.lease_epoch or 0,
+            "wake_at": round(float(self.wake_at), 3) if self.wake_at else None,
             "updated_at": round(self.updated_at.timestamp(), 3) if self.updated_at else None,
         }
     
@@ -268,6 +282,48 @@ class RunStep(Base):
     
     def to_event(self, event: str) -> Event:
         return Event(event=event, data=str(self))
+
+
+class Signal(Base):
+    """Input delivered to a run from outside (a human's answer, an event),
+    kept until the run consumes it - it may arrive before the run waits."""
+    __tablename__ = 'signals'
+
+    id = Column(String, primary_key=True)
+    run_id = Column(String, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String, nullable=False)
+    correlation_id = Column(String)
+    payload = Column(JSONType)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    consumed_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("idx_signals_pending", "run_id", "name", "correlation_id", postgresql_where=text("consumed_at IS NULL")),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "name": self.name,
+            "correlation_id": self.correlation_id,
+            "payload": self.payload,
+            "created_at": self.created_at,
+            "consumed_at": self.consumed_at,
+        }
+
+
+class KVEntry(Base):
+    """A small JSON record, grouped by namespace (BaseDataStore.kv_*):
+    what the framework keeps besides threads, messages and runs."""
+    __tablename__ = 'kv_entries'
+
+    namespace = Column(String, primary_key=True)
+    key = Column(String, primary_key=True)
+    value = Column(JSONType)
+    thread_id = Column(String, ForeignKey("threads.id", ondelete="CASCADE"), index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class WebhookIdempotencyClaim(Base):

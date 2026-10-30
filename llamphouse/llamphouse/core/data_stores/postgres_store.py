@@ -15,13 +15,14 @@ from opentelemetry.trace import Status, StatusCode
 from .retention import RetentionPolicy, PurgeStats
 from .base_data_store import BaseDataStore
 from ..tracing import get_tracer, span_context
-from ..database.models import Message, Run, Thread, RunStep, WebhookIdempotencyClaim
+from ..database.models import Message, Run, Thread, RunStep, WebhookIdempotencyClaim, Signal as SignalRow, KVEntry
 from ..streaming.event_queue.base_event_queue import BaseEventQueue
 from ..types.assistant import AgentObject, AssistantObject
 from ..types.enum import event_type, message_status, run_status, run_step_status
 from ..types.list import ListResponse
 from ..types.message import CreateMessageRequest, MessageObject, ModifyMessageRequest
 from ..types.run_step import CreateRunStepRequest, RunStepObject
+from ..types.durable import WAIT_FOR_SIGNAL, WAIT_TYPES, RunLease, Signal
 from ..types.run import ModifyRunRequest, RunCreateRequest, RunObject, ToolOutput
 from ..types.thread import CreateThreadRequest, ModifyThreadRequest, ThreadObject
 from ..types.webhook import (
@@ -33,6 +34,20 @@ from ..types.webhook import (
 from .. import telemetry as _telemetry
 
 store_tracer = get_tracer("llamphouse.data_store")
+
+_FINISHED = (run_status.COMPLETED, run_status.FAILED, run_status.CANCELLED, run_status.EXPIRED, run_status.INCOMPLETE)
+
+
+def _now_ts() -> float:
+    return round(datetime.now(timezone.utc).timestamp(), 3)
+
+
+def _wait(run: Run) -> Optional[dict]:
+    """The required_action of a run parked by a durable wait, else None."""
+    action = run.required_action
+    if run.status == run_status.AWAITING_TOOLS and isinstance(action, dict) and action.get("type") in WAIT_TYPES:
+        return action
+    return None
 logger = logging.getLogger("llamphouse.data_store.postgres")
 
 
@@ -1029,6 +1044,24 @@ class PostgresDataStore(BaseDataStore):
             except Exception:
                 await session.rollback()
                 logger.exception("get_run_by_id() failed")
+                return None
+
+    async def heartbeat_run(self, thread_id: str, run_id: str) -> str | None:
+        """Record that a running run is alive; returns its status."""
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(Run).where(Run.thread_id == thread_id, Run.id == run_id)
+                )
+                run = result.scalars().first()
+                if not run:
+                    return None
+                run.heartbeat_at = round(datetime.now(timezone.utc).timestamp(), 3)
+                await session.commit()
+                return run.status
+            except Exception:
+                await session.rollback()
+                logger.exception("heartbeat_run() failed")
                 return None
 
     async def get_run_by_run_id(self, run_id: str) -> RunObject | None:
@@ -2176,8 +2209,8 @@ class PostgresDataStore(BaseDataStore):
 
                     if isinstance(error, str):
                         error = {"message": error, "code": "server_error"}
-                    elif isinstance(error, dict) and "code" not in error:
-                        error = {**error, "code": "server_error"}
+                    elif isinstance(error, dict):
+                        error = {**error, "code": error.get("code", "server_error")}
                     elif error is not None:
                         error = {"message": str(error), "code": "server_error"}
 
@@ -2195,7 +2228,7 @@ class PostgresDataStore(BaseDataStore):
                     elif status == run_status.CANCELLED:
                         run.cancelled_at = now_ts
                     elif status == run_status.EXPIRED:
-                        run.expired_at = now_ts
+                        run.expires_at = now_ts
 
                     # ── Usage ──────────────────────────────────────────
                     if usage:
@@ -2422,6 +2455,271 @@ class PostgresDataStore(BaseDataStore):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    # ── Durable runs ─────────────────────────────────────────────────────
+    # Each check-and-write runs in one transaction on the run's row, locked
+    # (SELECT ... FOR UPDATE): two workers claiming one run serialize there.
+
+    supports_durable_runs = True
+
+    async def _locked_run(self, session: AsyncSession, thread_id: str, run_id: str) -> Optional[Run]:
+        result = await session.execute(
+            select(Run).where(Run.thread_id == thread_id, Run.id == run_id).with_for_update()
+        )
+        return result.scalars().first()
+
+    @staticmethod
+    async def _pending_signal_row(
+        session: AsyncSession, run_id: str, name: Optional[str], correlation_id: Optional[str], lock: bool = False
+    ) -> Optional[SignalRow]:
+        stmt = select(SignalRow).where(
+            SignalRow.run_id == run_id,
+            SignalRow.name == name,
+            SignalRow.consumed_at.is_(None),
+        )
+        stmt = stmt.where(
+            SignalRow.correlation_id.is_(None) if correlation_id is None else SignalRow.correlation_id == correlation_id
+        )
+        stmt = stmt.order_by(SignalRow.created_at.asc(), SignalRow.id.asc()).limit(1)
+        if lock:
+            stmt = stmt.with_for_update(skip_locked=True)
+        return (await session.execute(stmt)).scalars().first()
+
+    async def _is_due(self, session: AsyncSession, run: Run, now: float) -> bool:
+        action = _wait(run)
+        if action is None:
+            return False
+        if run.wake_at is not None and run.wake_at <= now:
+            return True
+        if action.get("type") == WAIT_FOR_SIGNAL:
+            details = action.get("details") or {}
+            row = await self._pending_signal_row(session, run.id, details.get("signal"), details.get("correlation_id"))
+            return row is not None
+        return False
+
+    @staticmethod
+    def _lease_expired(run: Run, now: float) -> bool:
+        return run.worker_id is None or run.lease_expires_at is None or run.lease_expires_at < now
+
+    async def claim_run(self, thread_id: str, run_id: str, worker_id: str, ttl: float) -> RunLease | None:
+        async with self._session_factory() as session:
+            try:
+                run = await self._locked_run(session, thread_id, run_id)
+                if run is None:
+                    return None
+                now = _now_ts()
+                resumed = None
+                if run.status == run_status.QUEUED:
+                    pass
+                elif run.status == run_status.IN_PROGRESS and self._lease_expired(run, now):
+                    pass
+                elif await self._is_due(session, run, now):
+                    resumed = dict(run.required_action)
+                    run.required_action = None
+                else:
+                    await session.rollback()
+                    return None
+                run.status = run_status.IN_PROGRESS
+                run.started_at = run.started_at or now
+                run.worker_id = worker_id
+                run.lease_epoch = (run.lease_epoch or 0) + 1
+                run.lease_expires_at = round(now + ttl, 3)
+                run.heartbeat_at = now
+                run.wake_at = None
+                lease = RunLease(
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    worker_id=worker_id,
+                    epoch=run.lease_epoch,
+                    expires_at=run.lease_expires_at,
+                    resumed=resumed,
+                )
+                await session.commit()
+                return lease
+            except Exception:
+                await session.rollback()
+                logger.exception("claim_run() failed")
+                return None
+
+    async def renew_lease(self, thread_id: str, run_id: str, worker_id: str, ttl: float) -> str | None:
+        async with self._session_factory() as session:
+            try:
+                run = await self._locked_run(session, thread_id, run_id)
+                if run is None or run.worker_id != worker_id:
+                    await session.rollback()
+                    return None
+                now = _now_ts()
+                run.lease_expires_at = round(now + ttl, 3)
+                run.heartbeat_at = now
+                status = run.status
+                await session.commit()
+                return status
+            except Exception:
+                await session.rollback()
+                # Not the lease lost: the database is unreachable. Raised, so
+                # the worker counts a missed beat instead of stopping the run.
+                raise
+
+    async def release_lease(self, thread_id: str, run_id: str, worker_id: str) -> None:
+        async with self._session_factory() as session:
+            try:
+                run = await self._locked_run(session, thread_id, run_id)
+                if run is not None and run.worker_id == worker_id:
+                    run.worker_id = None
+                    run.lease_expires_at = None
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.exception("release_lease() failed")
+
+    async def suspend_run(
+        self,
+        thread_id: str,
+        run_id: str,
+        worker_id: str,
+        required_action: dict,
+        wake_at: Optional[float] = None,
+    ) -> RunObject | None:
+        async with self._session_factory() as session:
+            try:
+                run = await self._locked_run(session, thread_id, run_id)
+                if run is None or run.worker_id != worker_id:
+                    await session.rollback()
+                    return None
+                run.status = run_status.AWAITING_TOOLS
+                run.required_action = _to_jsonable(required_action)
+                run.wake_at = round(wake_at, 3) if wake_at is not None else None
+                run.worker_id = None
+                run.lease_expires_at = None
+                await session.commit()
+                await session.refresh(run)
+                return RunObject.model_validate(run.to_dict())
+            except Exception:
+                await session.rollback()
+                logger.exception("suspend_run() failed")
+                return None
+
+    async def list_runs_to_recover(self, now: float, limit: int = 100) -> List[RunObject]:
+        async with self._session_factory() as session:
+            try:
+                lost = (
+                    Run.status == run_status.IN_PROGRESS
+                ) & (
+                    Run.worker_id.is_(None) | Run.lease_expires_at.is_(None) | (Run.lease_expires_at < now)
+                )
+                woken = (Run.status == run_status.AWAITING_TOOLS) & Run.wake_at.isnot(None) & (Run.wake_at <= now)
+                signalled = (Run.status == run_status.AWAITING_TOOLS) & Run.id.in_(
+                    select(SignalRow.run_id).where(SignalRow.consumed_at.is_(None))
+                )
+                result = await session.execute(
+                    select(Run).where(lost | woken | signalled).order_by(Run.created_at.asc()).limit(limit)
+                )
+                runs = []
+                for run in result.scalars().all():
+                    # A signalled run is due only for the signal it waits for.
+                    if run.status == run_status.AWAITING_TOOLS and not await self._is_due(session, run, now):
+                        continue
+                    runs.append(RunObject.model_validate(run.to_dict()))
+                return runs
+            except Exception:
+                await session.rollback()
+                logger.exception("list_runs_to_recover() failed")
+                return []
+
+    async def list_steps_for_replay(self, thread_id: str, run_id: str) -> List[RunStepObject]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(RunStep)
+                .where(RunStep.thread_id == thread_id, RunStep.run_id == run_id)
+                .order_by(RunStep.created_at.asc(), RunStep.id.asc())
+            )
+            return [RunStepObject.model_validate(row.to_dict()) for row in result.scalars().all()]
+
+    async def deliver_signal(
+        self,
+        thread_id: str,
+        run_id: str,
+        name: str,
+        payload=None,
+        correlation_id: Optional[str] = None,
+    ) -> Signal | None:
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(Run).where(Run.thread_id == thread_id, Run.id == run_id)
+                )
+                run = result.scalars().first()
+                if run is None or run.status in _FINISHED:
+                    return None
+                row = SignalRow(
+                    id=f"signal_{uuid.uuid4().hex}",
+                    run_id=run_id,
+                    name=name,
+                    correlation_id=correlation_id,
+                    payload=_to_jsonable(payload),
+                )
+                session.add(row)
+                await session.commit()
+                await session.refresh(row)
+                return Signal.model_validate(row.to_dict())
+            except Exception:
+                await session.rollback()
+                logger.exception("deliver_signal() failed")
+                return None
+
+    async def consume_signal(self, run_id: str, name: str, correlation_id: Optional[str] = None) -> Signal | None:
+        async with self._session_factory() as session:
+            try:
+                row = await self._pending_signal_row(session, run_id, name, correlation_id, lock=True)
+                if row is None:
+                    await session.rollback()
+                    return None
+                row.consumed_at = datetime.now(timezone.utc)
+                await session.commit()
+                await session.refresh(row)
+                return Signal.model_validate(row.to_dict())
+            except Exception:
+                await session.rollback()
+                logger.exception("consume_signal() failed")
+                return None
+
+    # ── Key-value records ────────────────────────────────────────────────
+
+    async def kv_put(self, namespace: str, entries: dict, thread_id: Optional[str] = None) -> None:
+        if not entries:
+            return
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        rows = [
+            {"namespace": namespace, "key": key, "value": _to_jsonable(value), "thread_id": thread_id}
+            for key, value in entries.items()
+        ]
+        stmt = pg_insert(KVEntry).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[KVEntry.namespace, KVEntry.key],
+            set_={"value": stmt.excluded.value, "updated_at": func.now()},
+        )
+        async with self._session_factory() as session:
+            try:
+                await session.execute(stmt)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def kv_get_all(self, namespace: str) -> dict:
+        async with self._session_factory() as session:
+            result = await session.execute(select(KVEntry.key, KVEntry.value).where(KVEntry.namespace == namespace))
+            return {key: value for key, value in result.all()}
+
+    async def kv_delete(self, namespace: str) -> None:
+        async with self._session_factory() as session:
+            try:
+                await session.execute(delete(KVEntry).where(KVEntry.namespace == namespace))
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
     async def close(self, timeout: float = 5.0) -> None:
         """Dispose the engine, with a bounded timeout.

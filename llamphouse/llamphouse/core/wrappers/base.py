@@ -31,6 +31,7 @@ class BaseAgentWrapper(Agent, ABC):
         tools: Optional[List[str]] = None,
         state_mapper: Optional[Callable[[Context], Dict[str, Any]]] = None,
         output_mapper: Optional[Callable[[Any], str]] = None,
+        session_manager: Any = None,
     ) -> None:
         super().__init__(
             id=id,
@@ -44,6 +45,8 @@ class BaseAgentWrapper(Agent, ABC):
             instructions=instructions,
             tools=tools,
         )
+        if session_manager is not None:
+            self.session_manager = session_manager
         self.state_mapper = state_mapper or self.default_state_mapper
         self.output_mapper = output_mapper or self.default_output_mapper
 
@@ -51,7 +54,18 @@ class BaseAgentWrapper(Agent, ABC):
         """Map LLAMPHouse context -> generic framework state.
 
         Default shape follows common chat-style state with a `messages` list.
+        `messages` are the session's messages (``context.session``; by default
+        the latest 20 - ``session_manager=FullHistory()`` for all) and
+        `summary` the summary of older ones.
         """
+        session = getattr(context, "session", None)
+        if session is not None:
+            return {
+                "thread_id": context.thread_id,
+                "run_id": context.run_id,
+                "summary": session.summary,
+                "messages": [self._message_to_dict(m) for m in session.messages],
+            }
         return {
             "thread_id": context.thread_id,
             "run_id": context.run_id,

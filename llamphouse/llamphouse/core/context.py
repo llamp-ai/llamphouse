@@ -1,4 +1,6 @@
+from types import SimpleNamespace
 import asyncio
+import time
 import uuid
 import traceback
 import json
@@ -22,6 +24,7 @@ from .streaming.event_queue.base_event_queue import BaseEventQueue
 from .streaming.llm_usage_metadata import apply_stream_metadata, apply_stream_usage
 from .data_stores.base_data_store import BaseDataStore
 from .triggers.base import TriggerInfo
+from .types.durable import WAIT_FOR_SIGNAL, WAIT_UNTIL, RunLease, WorkflowSuspended
 from .streaming.stream_events import (
     CanonicalStreamEvent,
     StreamError,
@@ -102,6 +105,8 @@ class Context:
             event_queues: Optional[Dict] = None,
             queue_class = None,
             assistants: Optional[List] = None,
+            # The worker's hold on this run (durable runs), None outside a worker.
+            lease: Optional[RunLease] = None,
     ):
         self.assistant_id = assistant_id
         self.thread_id = thread_id
@@ -130,6 +135,33 @@ class Context:
         self._run_usage: Dict[str, int] = {}
         # Populated when this run was started by a trigger; None for human runs.
         self.trigger: Optional[TriggerInfo] = self._resolve_trigger()
+        # Durable runs: what an earlier attempt of this run already did, by
+        # call key (see _call_key), and how many calls of each name this
+        # attempt made so far.
+        self._lease = lease
+        self._replay: Dict[str, RunStepObject] = {}
+        self._ordinals: Dict[str, int] = {}
+        # Messages this run said in an earlier attempt (replayed, not new input).
+        self._said_ids: set[str] = set()
+        # Completed calls of an earlier attempt not replayed yet: while there
+        # are some, the run redoes what the client already saw.
+        self._ahead: set[str] = set()
+        # The agent's view of the thread (see sessions.py): its session
+        # manager's, by default the latest 20 messages.
+        self.session = None
+
+    @property
+    def runtime(self) -> SimpleNamespace:
+        """What this run needs to start other runs: the data store, the run
+        queue and the agents - the same an app's own state holds, wherever
+        the run executes (the API's worker, or a distributed one)."""
+        return SimpleNamespace(
+            data_store=self.data_store,
+            run_queue=self._run_queue,
+            assistants=self._assistants,
+            event_queues=self._event_queues,
+            queue_class=self._queue_class,
+        )
 
     def _resolve_trigger(self) -> Optional[TriggerInfo]:
         """Extract TriggerInfo from run metadata, if present."""
@@ -154,14 +186,265 @@ class Context:
         return {p.key: p.default_value() for p in params}
 
     @classmethod
-    async def create(cls, **kwargs) -> "Context":
+    async def create(cls, load_session: bool = True, **kwargs) -> "Context":
+        """A run's context. ``load_session=False``: load ``session`` later,
+        with ``load_session()`` (the workers do, under the run's heartbeat
+        and time out - a compaction may take a while)."""
         self = cls(**kwargs)
         self.thread = await self._get_thread_by_id(self.thread_id)
         self.messages = await self._list_messages_by_thread_id(self.thread_id)
+        await self._load_replay()
+        if load_session:
+            await self.load_session()
         return self
+
+    async def load_session(self) -> None:
+        """Set ``session``: the agent's view of the thread, compacted first
+        if its session manager says so."""
+        if self.data_store is not None and self.thread_id:
+            from .sessions import session_manager_of
+
+            self.session = await session_manager_of(self.assistant).load(self)
+
+    async def compact(self, messages: List[Any], *, policy: Any = None, summary_role: str = "user") -> List[Any]:
+        """Compact an agent's own working transcript - the messages of its
+        tool loop, say - when it has grown past its budget; else return it as
+        it is. For agents whose context grows within a run (coding agents,
+        long-running agents)::
+
+            while not done:
+                messages = await context.compact(messages)
+                response = await llm(messages=messages, tools=tools)
+                ...
+
+        The policy is ``policy`` or the agent's session manager, a
+        ``Compacting`` (its budget, ``compact_at``, ``compact_to`` and
+        summarizer). Leading system messages stay; the latest messages that
+        fit stay as they are, never starting with a tool result whose call
+        would be gone; the rest becomes one summary message (``summary_role``,
+        ``"user"`` by default - accepted by every chat API) - folding in an
+        earlier one. Recorded as a step (a run that runs again replays it)
+        and told to the client (``session.compaction.*`` events). Messages:
+        dicts or objects with ``role`` / ``content`` (OpenAI, Anthropic and
+        LangChain shapes, tool calls included).
+        """
+        from .sessions import Compacting, session_manager_of
+
+        policy = policy or session_manager_of(self.assistant)
+        if not isinstance(policy, Compacting):
+            raise TypeError(
+                "context.compact() needs a Compacting policy: give the agent a Compacting session "
+                "manager, or pass policy=Compacting(summarizer, max_tokens=...)."
+            )
+        return await policy.compact_messages(self, messages, summary_role=summary_role)
+
+    # ── Durable runs ─────────────────────────────────────────────────────
+    #
+    # A run that runs again - resumed after a wait, retried, or taken over
+    # from a worker that died - runs ``Agent.run`` from the top. What the
+    # earlier attempts completed replays instead of running twice: each
+    # ``@step`` call, ``insert_message``/``reply``, ``sleep`` and
+    # ``wait_for_signal`` is recorded under a call key - its name and how
+    # many calls of that name came before it in the run - and a call whose
+    # key completed returns what it returned then. The code between them
+    # must therefore make the same calls in the same order each time: keep
+    # what may differ (LLM calls, the clock, random ids, other systems) in a
+    # ``@step``. See docs/DURABLE_RUNS_PLAN.md.
+
+    @property
+    def durable(self) -> bool:
+        """True when this run can wait (``sleep``, ``wait_for_signal``)."""
+        return self._lease is not None and bool(getattr(self.data_store, "supports_durable_runs", False))
+
+    def _call_key(self, name: str) -> str:
+        n = self._ordinals.get(name, 0) + 1
+        self._ordinals[name] = n
+        return f"{name}#{n}"
+
+    def _replayed(self, call_key: str) -> Optional[RunStepObject]:
+        """The step an earlier attempt recorded under ``call_key``, if any."""
+        self._ahead.discard(call_key)
+        return self._replay.get(call_key)
+
+    @property
+    def replaying(self) -> bool:
+        """True while the run redoes what an earlier attempt did: until it
+        has replayed every call that attempt completed. Events sent meanwhile
+        (``send_chunk``, ``emit``, ``emit_state``) are not sent again - the
+        client saw them the first time."""
+        return bool(self._ahead)
+
+    async def _load_replay(self) -> None:
+        if not getattr(self.data_store, "supports_durable_runs", False):
+            return
+        steps = await self.data_store.list_steps_for_replay(self.thread_id, self.run_id)
+        for step in steps:
+            key = (step.metadata or {}).get("call_key")
+            if not key:
+                continue
+            prior = self._replay.get(key)
+            # A key run more than once (a retried step): the completed one counts.
+            if prior is None or prior.status != run_step_status.COMPLETED:
+                self._replay[key] = step
+        if self._lease is not None and self._lease.resumed:
+            await self._finish_wait(self._lease.resumed)
+        self._ahead = {
+            key for key, step in self._replay.items()
+            if step.status == run_step_status.COMPLETED and not key.startswith("session.")
+        }
+        # What this run said already is not new input to it: an agent that
+        # reads context.messages sees the thread as its first attempt did.
+        self._said_ids = {
+            step.step_details.message_creation.message_id
+            for step in self._replay.values()
+            if step.type == "message_creation"
+        }
+        if self._said_ids:
+            self.messages = [m for m in self.messages if m.id not in self._said_ids]
+
+    async def _finish_wait(self, action: Dict[str, Any]) -> None:
+        """Complete the wait this run was woken from, before it runs again."""
+        details = action.get("details") or {}
+        step = self._replay.get(details.get("call_key"))
+        if step is None or step.status != run_step_status.IN_PROGRESS:
+            return
+        if action.get("type") == WAIT_UNTIL:
+            done = await self.complete_step(step.id, output=None)
+        else:
+            signal = await self.data_store.consume_signal(
+                self.run_id, details.get("signal"), details.get("correlation_id"),
+            )
+            if signal is not None:
+                done = await self.complete_step(step.id, output=signal.payload)
+            else:  # woken by its time out
+                done = await self.complete_step(
+                    step.id,
+                    error=f"No signal '{details.get('signal')}' before the time out",
+                    status=run_step_status.EXPIRED,
+                )
+        if done is not None:
+            self._replay[details["call_key"]] = done
+
+    def _require_durable(self, what: str) -> None:
+        if not self.durable:
+            raise RuntimeError(
+                f"context.{what}() needs a durable run: a worker running it, "
+                "and a data store that supports durable runs (InMemoryDataStore, PostgresDataStore)."
+            )
+
+    async def sleep(self, seconds: float = 0, *, until: Optional[float] = None) -> None:
+        """Wait ``seconds`` (or until the epoch time ``until``) without
+        holding a worker: the run is parked, and some worker resumes it when
+        the time comes - after a restart too.
+
+        The run then runs again from the top, replaying what it completed
+        (see the notes above); this call returns at once on that attempt.
+        """
+        key = self._call_key("sleep")
+        step = self._replayed(key)
+        if step is not None and step.status == run_step_status.COMPLETED:
+            return
+        self._require_durable("sleep")
+        if step is None:
+            wake_at = until if until is not None else time.time() + seconds
+            step = await self.start_step("sleep", input={"wake_at": wake_at}, call_key=key)
+        else:  # started by an attempt that stopped before it parked the run
+            wake_at = (step.step_details.input or {}).get("wake_at") or time.time()
+        if wake_at <= time.time():
+            await self.complete_step(step.id, output=None)
+            return
+        raise WorkflowSuspended(
+            {"type": WAIT_UNTIL, "details": {"step_id": step.id, "call_key": key, "wake_at": wake_at}},
+            wake_at=wake_at,
+        )
+
+    async def wait_for_signal(
+        self,
+        name: str,
+        *,
+        correlation_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+        request: Optional[Dict[str, Any]] = None,
+        key: Optional[str] = None,
+    ) -> Any:
+        """Wait, without holding a worker, for the signal ``name`` to be
+        delivered to this run (``POST /threads/{thread_id}/runs/{run_id}/signals``,
+        or ``data_store.deliver_signal``); returns its payload.
+
+        A signal delivered before the run waits for it is kept, and returned
+        at once. ``timeout`` (seconds): raise ``TimeoutError`` if none came.
+        ``request`` is shown to whoever answers, in the run's
+        ``required_action.details`` (what is asked, a form's schema, ...).
+        ``key``: a stable identity for this wait, replayed by it rather than
+        by its place among the run's waits for ``name`` - for code whose
+        waits are not made in the same order each time (a resumed LangGraph
+        graph, say).
+        """
+        key = f"wait_for_signal:{name}:{key}" if key is not None else self._call_key(f"wait_for_signal:{name}")
+        step = self._replayed(key)
+        if step is not None and step.status == run_step_status.COMPLETED:
+            return step.step_details.output
+        if step is not None and step.status == run_step_status.EXPIRED:
+            raise TimeoutError(f"No signal '{name}' within {timeout}s")
+        self._require_durable("wait_for_signal")
+        if step is None:
+            timeout_at = time.time() + timeout if timeout is not None else None
+            step = await self.start_step(
+                f"wait_for_signal:{name}",
+                input={"signal": name, "correlation_id": correlation_id, "timeout_at": timeout_at, "request": request},
+                call_key=key,
+            )
+        else:  # started by an attempt that stopped before it parked the run
+            timeout_at = (step.step_details.input or {}).get("timeout_at")
+        signal = await self.data_store.consume_signal(self.run_id, name, correlation_id)
+        if signal is not None:
+            await self.complete_step(step.id, output=signal.payload)
+            return signal.payload
+        if timeout_at is not None and timeout_at <= time.time():
+            await self.complete_step(step.id, error=f"No signal '{name}' before the time out", status=run_step_status.EXPIRED)
+            raise TimeoutError(f"No signal '{name}' within {timeout}s")
+        raise WorkflowSuspended(
+            {
+                "type": WAIT_FOR_SIGNAL,
+                "details": {
+                    "signal": name,
+                    "correlation_id": correlation_id,
+                    "step_id": step.id,
+                    "call_key": key,
+                    "timeout_at": timeout_at,
+                    "request": request,
+                },
+            },
+            wake_at=timeout_at,
+        )
+
+    async def wait_for_input(
+        self,
+        prompt: str,
+        *,
+        schema: Optional[Dict[str, Any]] = None,
+        name: str = "human_input",
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """Ask a human and wait for the answer (human in the loop): the run
+        is parked with ``prompt`` (and the answer's JSON ``schema``, if any)
+        in its ``required_action``, until the answer is delivered as the
+        signal ``name``. Returns the answer."""
+        return await self.wait_for_signal(
+            name, timeout=timeout, request={"prompt": prompt, "schema": schema},
+        )
         
     async def insert_message(self, content: str, attachment: Attachment = None, metadata: Optional[Dict[str, str]] = None, role: str = "assistant"):
         metadata = metadata or {}
+        call_key = self._call_key("message")
+        said = self._replayed(call_key)
+        if said is not None and said.type == "message_creation":
+            # Said by an earlier attempt of this run: not said twice.
+            message = await self.data_store.get_message_by_id(
+                self.thread_id, said.step_details.message_creation.message_id,
+            )
+            if message is not None:
+                return message
         message_request = CreateMessageRequest(role=role, content=content, attachments=attachment, metadata=metadata)
         new_message = await self.data_store.insert_message(
             thread_id=self.thread_id,
@@ -185,7 +468,7 @@ class Context:
             step=CreateRunStepRequest(
                 assistant_id=self.assistant_id,
                 step_details=step_details,
-                metadata={},
+                metadata={"call_key": call_key},
             ),
             event_queue=self.__queue,
         )
@@ -218,6 +501,7 @@ class Context:
         name: str,
         input: Any = None,
         metadata: Optional[Dict[str, Any]] = None,
+        call_key: Optional[str] = None,
     ) -> RunStepObject:
         """Record the start of a workflow step (typically used by ``@step``).
 
@@ -238,7 +522,7 @@ class Context:
             step=CreateRunStepRequest(
                 assistant_id=self.assistant_id,
                 step_details=step_details,
-                metadata=metadata or {},
+                metadata={**(metadata or {}), **({"call_key": call_key} if call_key else {})},
             ),
             status=run_step_status.IN_PROGRESS,
             event_queue=self.__queue,
@@ -340,10 +624,10 @@ class Context:
     async def _list_messages_by_thread_id(self, thread_id):
         if not thread_id:
             return []
-        resp = await self.data_store.list_messages(thread_id=thread_id, limit=100, order="asc", after=None, before=None)
-        if not resp or not resp.data:
-            print(f"No messages found in thread {thread_id}.")
-        return resp.data if resp else []
+        # The latest 100, oldest first (a thread's first 100 would miss what
+        # was said last). context.session holds a whole thread's view.
+        resp = await self.data_store.list_messages(thread_id=thread_id, limit=100, order="desc", after=None, before=None)
+        return list(reversed(resp.data)) if resp and resp.data else []
     
     def _get_function_from_tools(self, function_name: str):
         for tool in self.assistant.tools:
@@ -378,7 +662,7 @@ class Context:
         }
     
     def _send_event(self, event):
-        if not self.__queue:
+        if not self.__queue or self.replaying:
             return
         if self.__loop:
             # run_coroutine_threadsafe is for cross-thread calls.  When we are
@@ -453,6 +737,16 @@ class Context:
         else:
             payload = _json.dumps(data, ensure_ascii=True, default=str)
         self._send_event(Event(event=event_name, data=payload))
+
+    def emit_state(self, state: Any) -> None:
+        """Send the agent's whole shared state to the client (AG-UI:
+        ``STATE_SNAPSHOT``)."""
+        self.emit("state.snapshot", state)
+
+    def emit_state_delta(self, patch: List[Dict[str, Any]]) -> None:
+        """Send a change of the shared state as a JSON Patch (RFC 6902)
+        list of operations (AG-UI: ``STATE_DELTA``)."""
+        self.emit("state.delta", patch)
 
     # ── Internal agent dispatch helpers ─────────────────────────────────
 
@@ -823,9 +1117,9 @@ class Context:
 
         :param text: The text fragment to send.
         """
-        events = self._build_chunk_events(text)
-        if not self.__queue:
+        if not self.__queue or self.replaying:
             return
+        events = self._build_chunk_events(text)
         for evt in events:
             await self.__queue.add(evt)
 

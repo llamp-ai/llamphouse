@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from .context import Context
 from .types.config import BaseParam
+from .sessions import SessionManager
 
 class Agent(ABC):
     """Base class for all LLAMPHouse agents.
@@ -18,6 +19,15 @@ class Agent(ABC):
     ``AssistantAPIAdapter`` is mounted.
     """
     config: List[BaseParam] = []
+    # True: a run whose worker died is taken over by another worker and
+    # resumes where it was (its completed steps replay). Set it on agents
+    # written for replay - what may differ between attempts kept in @step
+    # (see Context's notes on durable runs). False: such a run fails.
+    durable: bool = False
+    # The agent's view of a thread on each run, as context.session (see
+    # sessions.py). None: the server's default (LLAMPHouse(session_manager=)),
+    # else the latest 20 messages (sessions.DEFAULT_SESSION_MANAGER).
+    session_manager: Optional["SessionManager"] = None
     def __init__(
         self,
         id: str,

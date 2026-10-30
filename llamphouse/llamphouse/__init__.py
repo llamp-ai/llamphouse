@@ -1,74 +1,63 @@
 __version__ = "1.3.0"
 
-# Initialize tracing before anything else so the real TracerProvider
-# is always in place — any instrumentor called later (e.g.
-# OpenAIInstrumentor) will automatically attach to it.
-from .core.tracing import setup_tracing as _setup_tracing
-_setup_tracing()
+# The names below load on first use (PEP 562), so `import llamphouse.sdk`
+# doesn't pull in the runtime (FastAPI, SQLAlchemy, Redis, OpenTelemetry).
+# Tracing is set up by `llamphouse.core` when it is first imported, before
+# anything else in it.
+import importlib
+from typing import Any
 
-from .core.llamphouse import LLAMPHouse
-from .core.assistant import Agent, Assistant
-from .core.context import Context
-from .core.workflow import step
-from .core.adapters import BaseAPIAdapter, AssistantAPIAdapter, A2AAdapter
-from .core.auth import AuthResult, BaseAuth, KeyAuth
-from .core.types.config import (
-    BaseParam,
-    NumberParam,
-    StringParam,
-    PromptParam,
-    BooleanParam,
-    SelectParam,
-)
-from .core.config_store import BaseConfigStore, InMemoryConfigStore
-from .core.queue import BaseQueue, InMemoryQueue, RedisQueue
-from .core.workers import AsyncWorker, DistributedWorker
-from .core.types.message import TextPart, ImagePart, FilePart, DataPart
-from .core.wrappers import BaseAgentWrapper, LangGraphAgent
-from .core.triggers import BaseTrigger, TriggerInfo, WebhookTrigger
-from .core.tracing import (
-    BaseTracingStore,
-    InMemoryTracingStore,
-    PostgresTracingStore,
-    ClickHouseTracingStore,
-)
+_EXPORTS = {
+    "LLAMPHouse": "llamphouse.core.llamphouse",
+    "Agent": "llamphouse.core.assistant",
+    "Assistant": "llamphouse.core.assistant",
+    "Context": "llamphouse.core.context",
+    "step": "llamphouse.core.workflow",
+    "BaseAPIAdapter": "llamphouse.core.adapters",
+    "AssistantAPIAdapter": "llamphouse.core.adapters",
+    "A2AAdapter": "llamphouse.core.adapters",
+    "AuthResult": "llamphouse.core.auth",
+    "BaseAuth": "llamphouse.core.auth",
+    "KeyAuth": "llamphouse.core.auth",
+    "BaseParam": "llamphouse.core.types.config",
+    "NumberParam": "llamphouse.core.types.config",
+    "StringParam": "llamphouse.core.types.config",
+    "PromptParam": "llamphouse.core.types.config",
+    "BooleanParam": "llamphouse.core.types.config",
+    "SelectParam": "llamphouse.core.types.config",
+    "BaseConfigStore": "llamphouse.core.config_store",
+    "InMemoryConfigStore": "llamphouse.core.config_store",
+    "BaseQueue": "llamphouse.core.queue",
+    "InMemoryQueue": "llamphouse.core.queue",
+    "RedisQueue": "llamphouse.core.queue",
+    "AsyncWorker": "llamphouse.core.workers",
+    "DistributedWorker": "llamphouse.core.workers",
+    "TextPart": "llamphouse.core.types.message",
+    "ImagePart": "llamphouse.core.types.message",
+    "FilePart": "llamphouse.core.types.message",
+    "DataPart": "llamphouse.core.types.message",
+    "BaseAgentWrapper": "llamphouse.core.wrappers",
+    "LangGraphAgent": "llamphouse.core.wrappers",
+    "BaseTrigger": "llamphouse.core.triggers",
+    "TriggerInfo": "llamphouse.core.triggers",
+    "WebhookTrigger": "llamphouse.core.triggers",
+    "BaseTracingStore": "llamphouse.core.tracing",
+    "InMemoryTracingStore": "llamphouse.core.tracing",
+    "PostgresTracingStore": "llamphouse.core.tracing",
+    "ClickHouseTracingStore": "llamphouse.core.tracing",
+}
 
-__all__ = [
-    "LLAMPHouse",
-    "Agent",
-    "Assistant",
-    "Context",
-    "BaseAPIAdapter",
-    "AssistantAPIAdapter",
-    "A2AAdapter",
-    "AuthResult",
-    "BaseAuth",
-    "KeyAuth",
-    "BaseParam",
-    "NumberParam",
-    "StringParam",
-    "PromptParam",
-    "BooleanParam",
-    "SelectParam",
-    "BaseConfigStore",
-    "InMemoryConfigStore",
-    "BaseQueue",
-    "InMemoryQueue",
-    "RedisQueue",
-    "AsyncWorker",
-    "DistributedWorker",
-    "TextPart",
-    "ImagePart",
-    "FilePart",
-    "DataPart",
-    "BaseAgentWrapper",
-    "LangGraphAgent",
-    "BaseTracingStore",
-    "InMemoryTracingStore",
-    "PostgresTracingStore",
-    "ClickHouseTracingStore",
-    "BaseTrigger",
-    "TriggerInfo",
-    "WebhookTrigger",
-    "step",
-]
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module 'llamphouse' has no attribute {name!r}")
+    value = getattr(importlib.import_module(module), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted([*globals(), *_EXPORTS])
