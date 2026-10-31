@@ -22,10 +22,12 @@ dependencies = [
 where = ["llamphouse"]
 include = ["llamphouse", "llamphouse.core", "llamphouse.core.*", "llamphouse.cli", "llamphouse.cli.*",
            "llamphouse.sdk", "llamphouse.sdk.*", "llamphouse.runtime", "llamphouse.runtime.*"]
+exclude = ["*.frontend", "*.frontend.*"]  # app sources; the built app ships in static/
 namespaces = true
 
 [tool.setuptools.package-data]
 "llamphouse.runtime.migrations" = ["*.mako", "versions/*.py"]
+"llamphouse.runtime.compass" = ["static/**/*"]
 "llamphouse.core.adapters.dashboard" = ["static/**/*"]
 "llamphouse.core.adapters.compass" = ["static/**/*"]
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .base import TERMINAL, Due, EventRow, Row, Rows, Store, StoreTx
+from .base import TERMINAL, Due, EventRow, Row, Rows, Store, StoreTx, _stats
 
 _MISSING = object()
 
@@ -24,6 +24,7 @@ class _Stored:
     claims: dict[str, str] = field(default_factory=dict)
     subscriptions: dict[str, dict[str, Any]] = field(default_factory=dict)
     outbox: dict[str, dict[str, Any]] = field(default_factory=dict)
+    documents: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     schedules: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -156,6 +157,54 @@ class MemoryStore(Store):
 
     async def release_claim(self, key: str) -> None:
         self.data.claims.pop(key, None)
+
+    def _thread_ok(self, thread_id: str, wanted: dict[str, Any] | None) -> bool:
+        if not wanted:
+            return True
+        found = self.data.threads.get(thread_id)
+        labels = found[2].meta.get("metadata", {}) if found else {}
+        return all(labels.get(k, _MISSING) == v for k, v in wanted.items())
+
+    async def list_runs(self, *, agent: str | None = None, status: str | None = None,
+                        thread_metadata: dict[str, Any] | None = None, limit: int = 50,
+                        before: datetime | None = None) -> list[dict[str, Any]]:
+        out = []
+        for _, _, r in self.data.runs.values():
+            m = r.meta
+            if (agent and m["agent"] != agent) or (status and m["status"] != status):
+                continue
+            if before and m.get("created_at") and m["created_at"] >= before:
+                continue
+            if not self._thread_ok(m["thread_id"], thread_metadata):
+                continue
+            out.append({"id": r.id, "thread_id": m["thread_id"], "agent": m["agent"], "status": m["status"],
+                        "created_at": m.get("created_at"), "ended_at": m.get("ended_at")})
+        out.sort(key=lambda x: x["created_at"].timestamp() if x["created_at"] else 0.0, reverse=True)
+        return out[:limit]
+
+    async def stats(self, since: datetime, *, thread_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        runs = [r.meta for _, _, r in self.data.runs.values() if self._thread_ok(r.meta["thread_id"], thread_metadata)]
+        return _stats(runs, since, sum(1 for _, _, t in self.data.threads.values()
+                                       if t.meta.get("created_by") is None and self._thread_ok(t.id, thread_metadata)))
+
+    async def put_document(self, kind: str, doc_id: str, data: dict[str, Any]) -> None:
+        self.data.documents[(kind, doc_id)] = dict(data)
+
+    async def get_document(self, kind: str, doc_id: str) -> dict[str, Any] | None:
+        found = self.data.documents.get((kind, doc_id))
+        return dict(found) if found is not None else None
+
+    async def list_documents(self, kind: str) -> list[dict[str, Any]]:
+        return [dict(d) for (k, _), d in sorted(self.data.documents.items()) if k == kind]
+
+    async def delete_document(self, kind: str, doc_id: str) -> None:
+        self.data.documents.pop((kind, doc_id), None)
+
+    async def set_schedule_next(self, schedule_id: str, at: datetime) -> bool:
+        if schedule_id not in self.data.schedules:
+            return False
+        self.data.schedules[schedule_id]["next_at"] = at
+        return True
 
     async def put_subscription(self, subscription: dict[str, Any]) -> None:
         self.data.subscriptions[subscription["id"]] = dict(subscription)

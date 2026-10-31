@@ -169,8 +169,10 @@ async def test_agents_and_compass(client):
     agents = {a["name"]: a for a in (await client.get("/v2/agents")).json()}
     assert agents["echo"]["description"] == "Says back what it was told."
     assert agents["add"]["input_schema"]["required"] == ["a", "b"]
-    page = await client.get("/compass")
-    assert page.status_code == 200 and "<title>Compass</title>" in page.text
+    assert (await client.get("/compass")).headers["location"] == "/compass/"
+    page = await client.get("/compass/threads/anything")  # the app's own routes serve the app
+    assert page.status_code == 200 and "<title>Compass" in page.text
+    assert page.headers["cache-control"] == "no-cache"
     assert (await client.get("/")).status_code == 307
 
 

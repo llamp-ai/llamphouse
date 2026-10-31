@@ -16,7 +16,7 @@ def head():
 
 
 V2_TABLES = {"llamphouse_claims", "llamphouse_schedules", "llamphouse_subscriptions", "llamphouse_outbox", "llamphouse_trees", "llamphouse_threads", "llamphouse_events", "llamphouse_runs", "llamphouse_sessions",
-             "llamphouse_run_events", "llamphouse_blobs", "llamphouse_files", "llamphouse_traces", "llamphouse_agent_config"}
+             "llamphouse_run_events", "llamphouse_blobs", "llamphouse_files", "llamphouse_traces", "llamphouse_agent_config", "llamphouse_documents"}
 
 
 async def empty():

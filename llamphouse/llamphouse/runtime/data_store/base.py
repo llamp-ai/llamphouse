@@ -157,6 +157,40 @@ class Store(ABC):
     @abstractmethod
     async def due_schedules(self, now: datetime) -> list[dict[str, Any]]: ...
 
+    # ── for Compass: runs across threads, statistics, documents, read-only queries ──
+
+    @abstractmethod
+    async def list_runs(self, *, agent: str | None = None, status: str | None = None,
+                        thread_metadata: dict[str, Any] | None = None, limit: int = 50,
+                        before: datetime | None = None) -> list[dict[str, Any]]:
+        """Runs newest first: id, thread_id, agent, status, created_at, ended_at. `thread_metadata`: only runs
+        on threads with all these labels."""
+
+    @abstractmethod
+    async def stats(self, since: datetime, *, thread_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        """For an overview: {threads, active, by_status, by_agent: {agent: {status: n, p50_ms, p95_ms}},
+        timeline: [{at, status, count}] (hourly, since `since`)}."""
+
+    @abstractmethod
+    async def put_document(self, kind: str, doc_id: str, data: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    async def get_document(self, kind: str, doc_id: str) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    async def list_documents(self, kind: str) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    async def delete_document(self, kind: str, doc_id: str) -> None: ...
+
+    async def query(self, sql: str, *, limit: int = 1000, timeout: float = 10.0) -> dict[str, Any]:
+        """A read-only SQL query (dashboards): {columns, rows}. Not every store can."""
+        raise NotImplementedError(f"{type(self).__name__} can't run SQL: dashboards need the Postgres data store")
+
+    @abstractmethod
+    async def set_schedule_next(self, schedule_id: str, at: datetime) -> bool:
+        """Move a schedule's next fire (Compass's "fire now")."""
+
     # ── subscriptions and their outbox ──
 
     @abstractmethod
@@ -191,3 +225,34 @@ class Store(ABC):
     async def advance_schedule(self, schedule_id: str, expected: datetime, next_at: datetime | None) -> bool:
         """Move a due schedule on (None: it's done, gone) - only if it is still at `expected`: of several
         processes looking at it, exactly one fires it."""
+
+
+def _stats(runs: list[dict[str, Any]], since: datetime, threads: int) -> dict[str, Any]:
+    """Statistics over runs' columns (status, agent, created_at, ended_at): what both stores answer."""
+    from collections import Counter, defaultdict
+
+    recent = [r for r in runs if r.get("created_at") and r["created_at"] >= since]
+    by_status = Counter(r["status"] for r in recent)
+    by_agent: dict[str, Any] = defaultdict(lambda: {"statuses": Counter(), "durations": []})
+    timeline: Counter = Counter()
+    for r in recent:
+        agent = by_agent[r["agent"]]
+        agent["statuses"][r["status"]] += 1
+        if r.get("ended_at"):
+            agent["durations"].append((r["ended_at"] - r["created_at"]).total_seconds() * 1000)
+        hour = r["created_at"].replace(minute=0, second=0, microsecond=0)
+        timeline[(hour, r["status"])] += 1
+
+    def pct(values: list[float], p: float) -> float | None:
+        if not values:
+            return None
+        values = sorted(values)
+        return round(values[min(len(values) - 1, int(p * len(values)))], 1)
+
+    return {"threads": threads, "active": sum(1 for r in runs if r["status"] not in TERMINAL),
+            "runs": len(recent), "by_status": dict(by_status),
+            "by_agent": {a: {"statuses": dict(v["statuses"]), "runs": sum(v["statuses"].values()),
+                             "p50_ms": pct(v["durations"], 0.5), "p95_ms": pct(v["durations"], 0.95)}
+                         for a, v in sorted(by_agent.items())},
+            "timeline": [{"at": at.isoformat(), "status": status, "count": n}
+                         for (at, status), n in sorted(timeline.items())]}

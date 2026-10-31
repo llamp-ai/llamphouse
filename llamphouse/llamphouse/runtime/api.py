@@ -92,6 +92,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     app = FastAPI(title="llamphouse 2.0", version="2.0.0a")
     gw = Gateway(engine, auth=auth, access=access, api_key=api_key)
     app.state.gateway = gw
+    app.state.adapters = list(adapters)
     access = gw.access
     authenticate = gw.authenticate
     known = gw.known
@@ -484,19 +485,13 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     async def health() -> dict[str, Any]:
         return {"ok": True, "engine": engine.id, "workers": engine.n_workers}
 
-    for adapter in adapters:
+    for adapter in app.state.adapters:
         adapter.mount(app, gw)
 
     if compass:
-        from .compass import PAGE
+        from .compass import mount as mount_compass
 
-        @app.get("/compass", response_class=HTMLResponse, include_in_schema=False)
-        async def compass_page() -> str:
-            return PAGE
-
-        @app.get("/", include_in_schema=False)
-        async def root() -> Response:
-            return Response(status_code=307, headers={"Location": "/compass"})
+        mount_compass(app, gw)
 
     return app
 

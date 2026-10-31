@@ -129,6 +129,30 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   `auth/`, `sessions/`, `tracing/stores/`, `triggers/`, `notifications/`, `adapters/`. The earlier module
   paths (`runtime.store`, `runtime.queue`, `runtime.bus`, `runtime.files`) still import.
 - httpx is a base dependency (deliveries).
+- **Compass 2.0** (`llamphouse.runtime.compass`, at `/compass`, its API at `/v2/compass`) - to see, debug
+  and learn what agents do, behind the deployment's auth and access (a tenant sees its own):
+  - **Overview**: threads, runs per hour by status, who is waiting for someone (asked a question, needs
+    auth), what failed recently, per-agent runs and p50/p95 durations, this deployment's components.
+  - **Why**: for any run, in plain words, why it is where it is - queued (the next ring), running (whose
+    lease, until when), waiting (on which threads, a signal, its inbox, a time), asking (the question or the
+    client tool), ended (with a handover, a cancel, the error) - and how many times it was executed.
+  - **A run's story**: its input, what it said and asked, what was answered, state it changed, threads and
+    runs it started, messages sent to it and read; its steps (recorded, replayed), what it waits on, the
+    tree of runs from the root (forks, calls), the session it saw (revisions), its trace, the raw record.
+  - **Threads**: the conversation live, the timeline, the state at any position, the tree of threads, its
+    runs; a composer offering exactly the primitives the thread's state allows (append / start, or send /
+    answer / signal / cancel).
+  - **Agents**: try one (a form from a workflow's input schema), its config (the effective config, what
+    differs from the file, save or reset), its triggers (a webhook's curl, schedules with "fire now"), its
+    schemas, permissions and session provider.
+  - Runs (filter and compare two), traces, triggers, subscriptions (deliveries, retry), dashboards (charts
+    on read-only SQL, Postgres only, admins only), a jump-to-id box (thread, run, response, session), dark
+    theme, and **Learn** - each idea of 2.0 with code and a link to it in your own data.
+  - Runs record `created_at` / `ended_at`; dashboards and charts are kept as store documents
+    (`llamphouse_documents`, Alembic revision `c2e5a6b7d8f9`).
+  - The app is built into the package (`runtime/compass/static`; sources in `frontend/`): no CDN, no
+    build at runtime.
+- The wheel no longer carries app sources, `node_modules` or bytecode (50 MB -> 0.7 MB).
 
 ### Changed (before 2.0.0a0 was released)
 

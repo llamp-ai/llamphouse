@@ -280,6 +280,8 @@ class RunRecord:
     stream_seq: int = field(default=0, repr=False)  # its run events so far
     root: str | None = field(default=None, repr=False)  # the run started from outside it descends from
     depth: int = field(default=0, repr=False)  # runs between it and that root
+    created_at: datetime | None = field(default=None, repr=False)
+    ended_at: datetime | None = field(default=None, repr=False)
     tree: str = field(default="", repr=False)
     active: int = field(default=0, repr=False)
 
@@ -434,7 +436,8 @@ class _Tree:
             if self.digests.get(f"run:{rec.id}") != _digest(text):
                 out.runs.append(Row(rec.id, {"thread_id": rec.thread_id, "agent": rec.agent, "status": str(rec.status),
                                              "wake_at": rec.wake_at, "lease_until": rec.lease_until,
-                                             "ring_at": rec.ring_at}, text))
+                                             "ring_at": rec.ring_at, "created_at": rec.created_at,
+                                             "ended_at": rec.ended_at}, text))
         for ses in self.sessions.values():
             text = _json(ses)
             if self.digests.get(f"session:{ses.id}") != _digest(text):
@@ -1448,6 +1451,7 @@ class Engine:
                 raise _RunLimit(f"more than {self.max_runs_per_root} runs started under {root}: a loop?")
         rec = RunRecord(id=self._id("run"), thread_id=thread_id, agent=agent, input=input, agent_uid=entry.uid,
                         parent=parent.ref if parent else None, detach=detach, tree=t.tree, root=root, depth=depth,
+                        created_at=self.now,
                         request=request or (parent.request if parent else Request()),
                         identity=identity or (parent.identity if parent else Identity(subject="scenario")))
         self.records[rec.id] = rec
@@ -1637,6 +1641,7 @@ class Engine:
         """Its end, on its own thread - whoever created the thread hears it by listening. Nothing is
         copied anywhere else."""
         rec.status, rec.ring_at, rec.wake_at, rec.lease_owner, rec.lease_until = status, None, None, None, None
+        rec.ended_at = self.now
         self._append(rec.thread_id, kind, run=rec, data=data, key=f"{rec.id}:{kind}")
         if rec.session_id in self.sessions:  # the provider hears the run ended, and may revise
             s = self.sessions[rec.session_id]

@@ -1,0 +1,1 @@
+import{d as s,o as e,c as t,p as n,q as o,Q as r,t as c}from"./index.js";const m=s({__name:"Badge",props:{status:{}},setup(a){return(p,l)=>(e(),t("span",{class:n(["badge",o(r)(a.status)])},c(a.status.replace("_"," ")),3))}});export{m as _};

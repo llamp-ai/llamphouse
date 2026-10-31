@@ -56,12 +56,14 @@ class _PostgresTx(StoreTx):
             ordered = sorted(rows.runs, key=lambda r: r.meta["status"] not in TERMINAL)
             await con.executemany(
                 "insert into llamphouse_runs (id, tree_id, version, thread_id, agent, status, wake_at, lease_until, "
-                "ring_at, data) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::json) on conflict (id) do update set "
+                "ring_at, created_at, ended_at, data) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json) "
+                "on conflict (id) do update set "
                 "version = excluded.version, agent = excluded.agent, status = excluded.status, "
                 "wake_at = excluded.wake_at, lease_until = excluded.lease_until, ring_at = excluded.ring_at, "
-                "data = excluded.data",
+                "ended_at = excluded.ended_at, data = excluded.data",
                 [(r.id, t, version, r.meta["thread_id"], r.meta["agent"], r.meta["status"], r.meta["wake_at"],
-                  r.meta["lease_until"], r.meta["ring_at"], r.text) for r in ordered])
+                  r.meta["lease_until"], r.meta["ring_at"], r.meta.get("created_at"), r.meta.get("ended_at"), r.text)
+                 for r in ordered])
         if rows.outbox:
             await con.executemany(
                 "insert into llamphouse_outbox (id, subscription_id, payload, next_at, created_at) "
@@ -204,6 +206,72 @@ class PostgresStore(Store):
         async with self.pool.acquire() as con:
             await con.execute("delete from llamphouse_claims where key = $1", key)
 
+    _SCOPE = "and ($THREADS::jsonb is null or exists (select 1 from llamphouse_threads t where t.id = r.thread_id " \
+             "and t.metadata @> $THREADS::jsonb))"
+
+    async def list_runs(self, *, agent: str | None = None, status: str | None = None,
+                        thread_metadata: dict[str, Any] | None = None, limit: int = 50,
+                        before: datetime | None = None) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as con:
+            rows = await con.fetch(
+                "select r.id, r.thread_id, r.agent, r.status, r.created_at, r.ended_at from llamphouse_runs r "
+                "where ($1::text is null or r.agent = $1) and ($2::text is null or r.status = $2) "
+                "and ($3::timestamptz is null or r.created_at < $3) " + self._SCOPE.replace("$THREADS", "$5") +
+                " order by r.created_at desc nulls last limit $4", agent, status, before, limit,
+                json.dumps(thread_metadata) if thread_metadata else None)
+        return [dict(r) for r in rows]
+
+    async def stats(self, since: datetime, *, thread_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        from .base import _stats
+
+        scope = json.dumps(thread_metadata) if thread_metadata else None
+        async with self.pool.acquire() as con:
+            runs = [dict(r) for r in await con.fetch(
+                "select r.agent, r.status, r.created_at, r.ended_at from llamphouse_runs r "
+                "where (r.created_at >= $1 or r.status not in ('completed', 'failed', 'cancelled', 'rejected')) "
+                + self._SCOPE.replace("$THREADS", "$2"), since, scope)]
+            threads = await con.fetchval(
+                "select count(*) from llamphouse_threads where created_by is null "
+                "and ($1::jsonb is null or metadata @> $1::jsonb)", scope)
+        return _stats(runs, since, threads)
+
+    async def put_document(self, kind: str, doc_id: str, data: dict[str, Any]) -> None:
+        async with self.pool.acquire() as con:
+            await con.execute("insert into llamphouse_documents (kind, id, data) values ($1, $2, $3::json) "
+                              "on conflict (kind, id) do update set data = excluded.data, updated_at = now()",
+                              kind, doc_id, json.dumps(data, default=str))
+
+    async def get_document(self, kind: str, doc_id: str) -> dict[str, Any] | None:
+        async with self.pool.acquire() as con:
+            found = await con.fetchval("select data::text from llamphouse_documents where kind = $1 and id = $2",
+                                       kind, doc_id)
+        return json.loads(found) if found else None
+
+    async def list_documents(self, kind: str) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as con:
+            return [json.loads(r["data"]) for r in await con.fetch(
+                "select data::text from llamphouse_documents where kind = $1 order by id", kind)]
+
+    async def delete_document(self, kind: str, doc_id: str) -> None:
+        async with self.pool.acquire() as con:
+            await con.execute("delete from llamphouse_documents where kind = $1 and id = $2", kind, doc_id)
+
+    async def query(self, sql: str, *, limit: int = 1000, timeout: float = 10.0) -> dict[str, Any]:
+        """Read-only (a read-only transaction, a statement timeout), at most `limit` rows."""
+        async with self.pool.acquire() as con:
+            async with con.transaction(readonly=True):
+                await con.execute(f"set local statement_timeout = {int(timeout * 1000)}")
+                statement = await con.prepare(sql)
+                columns = [a.name for a in statement.get_attributes()]
+                records = await statement.fetch()
+        return {"columns": columns, "rows": [[_cell(v) for v in r] for r in records[:limit]],
+                "truncated": len(records) > limit}
+
+    async def set_schedule_next(self, schedule_id: str, at: datetime) -> bool:
+        async with self.pool.acquire() as con:
+            done = await con.execute("update llamphouse_schedules set next_at = $2 where id = $1", schedule_id, at)
+        return done.endswith(" 1")
+
     async def put_subscription(self, subscription: dict[str, Any]) -> None:
         async with self.pool.acquire() as con:
             await con.execute("insert into llamphouse_subscriptions (id, data) values ($1, $2::json) "
@@ -303,3 +371,18 @@ class PostgresStore(Store):
                 done = await con.execute("update llamphouse_schedules set next_at = $3, updated_at = now() "
                                          "where id = $1 and next_at = $2", schedule_id, expected, next_at)
         return done.endswith(" 1")
+
+
+def _cell(value: Any) -> Any:
+    """A query's value as JSON can carry it."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        return f"<{len(value)} bytes>"
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return str(value)

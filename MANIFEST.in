@@ -17,5 +17,9 @@ recursive-include llamphouse *
 recursive-include examples *
 
 # Exclude unwanted files
-exclude *.pyc
-exclude __pycache__
+global-exclude *.py[cod]
+prune **/__pycache__
+
+# App sources (and their node_modules): the built apps ship in static/
+prune llamphouse/llamphouse/runtime/compass/frontend
+prune llamphouse/llamphouse/core/adapters/compass/frontend
