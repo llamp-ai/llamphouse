@@ -163,6 +163,10 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
 - **Stream a run from its first event:** `"stream": true` when starting a run (`POST
   /v2/threads/{id}/runs`, `POST /v2/runs`) answers with the run's stream (SSE), so no text delta is
   missed. `Engine.start(run_id=)` and `new_run_id()` let any caller listen before a run starts.
+  The stream says when the run waits for the client (an `input_required` event) and stays open.
+- **Client tools over `/v2`:** `"tools": [...]` when starting a run declares the tools the caller runs
+  itself, for that run (`ctx.client.tools`), as the adapters already did. A call is answered with a
+  `tool_result` part on `/answer`.
 - **`POST /v2/runs`** makes a thread and its first run in one call. The input is checked first, so a bad
   one returns 422 and makes nothing.
 - **`GET /v2/runs/{id}/session`** has `view`, what the agent sees (the session provider's view), next to

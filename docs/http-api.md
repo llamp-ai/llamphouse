@@ -120,7 +120,13 @@ against the workflow's `Input` before the run exists (`422` if it doesn't fit).
 
 With `"stream": true` in the body, the answer is the run's stream from its first event (server-sent events,
 status `201`): a `run` event with the run, then everything it does - `message.delta` text included - and `end`
-when it ends. Nothing is missed, as nothing happens before the stream listens. If the run can't start (a run is
+when it ends. Nothing is missed, as nothing happens before the stream listens. When the run waits for the
+client (a question, a client tool call) the stream sends an `input_required` event with the request and stays
+open: answer with `POST /v2/runs/{id}/answer` and it carries on.
+
+`"tools": [{"name", "description", "input_schema"}]` declares the tools the caller runs itself for this run
+(`ctx.client.tools`); a call to one is an `input_required` with the `tool_call` part, answered with a
+`tool_result` part. If the run can't start (a run is
 active, the thread is closed) the stream has one `error` event; a bad workflow input is still `422`.
 
 ### `POST /v2/runs`

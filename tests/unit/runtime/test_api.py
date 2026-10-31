@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from llamphouse.runtime import Engine
 from llamphouse.runtime.api import create_app
 from llamphouse.runtime.server import app as server_app
-from llamphouse.sdk import Agent, Config, Workflow
+from llamphouse.sdk import Agent, Config, ToolCallPart, Workflow
 
 POSTGRES = os.environ.get("LLAMPHOUSE_TEST_POSTGRES")
 
@@ -68,7 +68,20 @@ class Streamer(Agent):
                 await out.write(word)
 
 
-AGENTS = {"echo": Echo, "asker": Asker, "listener": Listener, "add": Add, "streamer": Streamer}
+class Guide(Agent):
+    """Uses the caller's own location tool when it has one."""
+
+    async def run(self, ctx) -> str:
+        if any(t.name == "get_location" for t in ctx.client.tools):
+            result = await ctx.client.call_tool(ToolCallPart(call_id="loc-1", name="get_location", arguments={}))
+            city = result.output[0].text
+        else:
+            city = (await ctx.ask("Which city are you in?")).text
+        await ctx.send(f"tonight in {city}")
+        return city
+
+
+AGENTS = {"echo": Echo, "asker": Asker, "listener": Listener, "add": Add, "streamer": Streamer, "guide": Guide}
 
 
 @pytest.fixture
@@ -190,6 +203,60 @@ async def test_a_run_streams_from_its_first_event(client):
     assert again[-1] == ("end", {"status": "completed"})
     bad = await client.post("/v2/runs", json={"agent": "add", "data": {"a": 1}, "stream": True})
     assert bad.status_code == 422  # before any stream
+
+
+async def test_tools_the_caller_runs_are_declared_with_the_run(client):
+    tools = [{"name": "get_location", "description": "The user's city", "input_schema": {"type": "object"}}]
+    run = (await client.post("/v2/runs", json={"agent": "guide", "text": "what's on?", "tools": tools})).json()
+    waiting = await until(client, run["id"], "input_required")
+    call = waiting["pending"]["prompt"][0]
+    assert (call["kind"], call["name"], call["call_id"]) == ("tool_call", "get_location", "loc-1")
+    result = {"parts": [{"kind": "tool_result", "call_id": "loc-1", "output": [{"kind": "text", "text": "Lisbon"}]}]}
+    assert (await client.post(f"/v2/runs/{run['id']}/answer", json=result)).status_code == 200
+    assert (await until(client, run["id"], "completed"))["output"] == "Lisbon"
+    # without the tool, it asks instead
+    plain = (await client.post("/v2/runs", json={"agent": "guide", "text": "what's on?"})).json()
+    assert (await until(client, plain["id"], "input_required"))["pending"]["reason"] == "Which city are you in?"
+    bad = await client.post("/v2/runs", json={"agent": "guide", "text": "x", "tools": [{"description": "no name"}]})
+    assert bad.status_code == 422
+
+
+async def test_a_streamed_run_says_when_it_waits_for_the_client_and_carries_on():
+    """Over a real server: in-process ASGI transports hold a streamed answer until it ends."""
+    server, task, url = await serving(server_app(AGENTS))
+    try:
+        async with httpx.AsyncClient(base_url=url, timeout=10) as client:
+            await streamed_tool_call(client)
+    finally:
+        server.should_exit = True
+        await task
+
+
+async def streamed_tool_call(client):
+    tools = [{"name": "get_location", "description": "The user's city", "input_schema": {"type": "object"}}]
+    body = {"agent": "guide", "text": "hi", "tools": tools, "stream": True}
+    names, said = [], []
+    async with client.stream("POST", "/v2/runs", json=body) as r:
+        buffer = ""
+        async for chunk in r.aiter_text():
+            buffer += chunk
+            while "\n\n" in buffer:
+                block, buffer = buffer.split("\n\n", 1)
+                name = next((line[7:] for line in block.split("\n") if line.startswith("event: ")), None)
+                data = [line[6:] for line in block.split("\n") if line.startswith("data: ")]
+                if not data:
+                    continue
+                event = json.loads("\n".join(data))
+                names.append(name)
+                if name == "input_required":  # the client runs its tool, answers, and keeps reading
+                    call = event["request"]["prompt"][0]
+                    assert call["name"] == "get_location"
+                    await client.post(f"/v2/runs/{event['run']}/answer", json={"parts": [
+                        {"kind": "tool_result", "call_id": call["call_id"], "output": [{"kind": "text", "text": "Rome"}]}]})
+                elif name == "message.completed":
+                    said.append(event["message"]["parts"][0]["text"])
+    assert names[0] == "run" and names.count("input_required") == 1 and names[-1] == "end"
+    assert said == ["tonight in Rome"]
 
 
 async def test_cancel_signal_and_missing_things(client):

@@ -60,17 +60,19 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
-from llamphouse.sdk import (DataPart, Message, NoActiveRun, RunRef, Sender, SenderKind, TextPart, ThreadBusy,
-                            ThreadClosed, ThreadRef)
+from llamphouse.sdk import (DataPart, Message, NoActiveRun, RunRef, RunStatus, Sender, SenderKind, TextPart,
+                            ThreadBusy, ThreadClosed, ThreadRef)
+from llamphouse.sdk.thread import Request as RunRequest
 from llamphouse.sdk.wire import part_from_dict, to_dict
 
 from .auth import ANONYMOUS, Access, Authenticator
 from .codec import jsonable
 from .config_store import ConfigConflict
-from .engine import TERMINAL, Engine, StoreUnavailable
+from .engine import CLIENT_TOOLS, TERMINAL, Engine, StoreUnavailable
 from .gateway import Gateway
 from .file_store import FileNotFound
 
+WAITING_FOR_CLIENT = (RunStatus.INPUT_REQUIRED, RunStatus.AUTH_REQUIRED)
 KEEP_ALIVE = 15.0  # seconds without news before a stream says it's still there
 
 
@@ -150,17 +152,31 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         async with engine.reading(run_id):
             return run_view(engine.records[run_id])
 
-    async def started(agent: str, message: Any, thread: ThreadRef, identity: Any, stream: bool) -> Any:
+    def client_tools(body: dict[str, Any]) -> RunRequest:
+        """The tools the caller runs itself, declared for this run: `ctx.client.tools`; a call to one waits
+        (input_required) for its `tool_result`, answered with `POST /v2/runs/{id}/answer`."""
+        tools = []
+        for i, t in enumerate(body.get("tools") or []):
+            if not isinstance(t, dict) or not t.get("name"):
+                raise HTTPException(422, f"tools[{i}]: a tool needs a name")
+            tools.append({"name": t["name"], "description": t.get("description") or "",
+                          "input_schema": t.get("input_schema") or t.get("parameters") or {"type": "object"}})
+        return RunRequest(metadata={CLIENT_TOOLS: tools} if tools else {})
+
+    async def started(agent: str, message: Any, thread: ThreadRef, identity: Any, body: dict[str, Any]) -> Any:
         """Start a run: its view, or (`"stream": true`) its stream from the first event - a `run` event
         with its view, then everything it does, text deltas included, then `end`."""
-        if not stream:
-            ref = await engine.start(agent, message, thread=thread, by=message.sender, identity=identity)
+        request = client_tools(body)
+        if not body.get("stream"):
+            ref = await engine.start(agent, message, thread=thread, by=message.sender, identity=identity,
+                                     request=request)
             return await read_run(ref.id)
         engine._validated(agent, message)  # a bad input: 422, before the stream begins
         run_id = engine.new_run_id()
 
         async def start() -> None:
-            await engine.start(agent, message, thread=thread, by=message.sender, identity=identity, run_id=run_id)
+            await engine.start(agent, message, thread=thread, by=message.sender, identity=identity, run_id=run_id,
+                               request=request)
 
         return StreamingResponse(follow(run_id, thread.id, start=start), media_type="text/event-stream",
                                  status_code=201)
@@ -192,7 +208,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         metadata = {**(body.get("metadata") or {}), **access.stamp(gw.who())}
         thread = await engine.thread(agent, metadata=metadata, state=body.get("state"), config=body.get("config"))
         who = gw.who()
-        return await started(agent, message, thread, None if who is ANONYMOUS else who, bool(body.get("stream")))
+        return await started(agent, message, thread, None if who is ANONYMOUS else who, body)
 
     @app.get("/v2/threads", dependencies=deps)
     async def threads(request: Request, limit: int = 50, agent: str | None = None,
@@ -256,8 +272,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
             agent = engine.threads[thread_id].agent
         message = _message(body)
         who = gw.who()
-        return await started(agent, message, ThreadRef(thread_id), None if who is ANONYMOUS else who,
-                             bool(body.get("stream")))
+        return await started(agent, message, ThreadRef(thread_id), None if who is ANONYMOUS else who, body)
 
     @app.get("/v2/threads/{thread_id}/runs", dependencies=deps)
     async def thread_runs(thread_id: str) -> list[dict[str, Any]]:
@@ -337,10 +352,20 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
                      start: Callable[[], Awaitable[Any]] | None = None) -> AsyncIterator[str]:
         """A run's stream: what it did before (as stored), then live - text deltas too - until it ends.
         `start`: the run isn't started yet; it is, once this listens, so nothing it does is missed."""
+        asked: list[str] = []  # the requests announced
+
         async def ended() -> str | None:
             async with engine.reading(run_id):
-                status = engine.records[run_id].status
+                rec = engine.records[run_id]
+                status = rec.status
+                if rec.pending is not None and rec.pending[0] not in asked and status in WAITING_FOR_CLIENT:
+                    asked.append(rec.pending[0])
+                    waiting.append(_sse("input_required", {"run": run_id, "key": rec.pending[0],
+                                                           "status": str(status),
+                                                           "request": jsonable(rec.pending_request)}))
             return str(status) if status in TERMINAL else None
+
+        waiting: list[str] = []  # an announcement to send: the run waits for the client (a question, a tool)
 
         async def stored(cursor: int) -> list[tuple[int, str]]:
             return [(seq, _sse(str(ev.kind), {"seq": seq, **jsonable(ev)}, seq))
@@ -372,7 +397,10 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
                 while (got := news.get_nowait()) is not None:  # what came meanwhile, in order
                     if (line := live(got)) is not None:
                         yield line
-                if (status := await ended()) is not None:
+                status = await ended()
+                while waiting:  # it waits: answer with POST /v2/runs/{id}/answer, and this stream carries on
+                    yield waiting.pop(0)
+                if status is not None:
                     while (got := news.get_nowait()) is not None:
                         if (line := live(got)) is not None:
                             yield line

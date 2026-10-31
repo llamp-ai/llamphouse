@@ -107,8 +107,10 @@ See [Sessions](../concepts/sessions.md).
 ## Client tools
 
 Some tools run where the user is: in a browser (show a form, read the page), in a desktop app, in the client's
-own backend. A client declares them when it starts a run, through an adapter (the function `tools` of the
-OpenAI Responses or Assistants API, the `tools` of an AG-UI request). The agent reads them from `ctx.client.tools`
+own backend. A client declares them when it starts a run - they belong to the run, as the client connected now
+may differ from the next one on the thread: `tools` when starting a run over `/v2`
+(`[{"name", "description", "input_schema"}]`), the function `tools` of the OpenAI Responses or Assistants API,
+the `tools` of an AG-UI request. The agent reads them from `ctx.client.tools`
 and calls them with `ctx.client.call_tool`:
 
 ```python
@@ -138,7 +140,7 @@ How the client sees the call and answers it depends on the protocol:
 | OpenAI Responses | the response completes with `function_call` items | the next response, with `previous_response_id` (or the same `conversation`) and `function_call_output` items; the same run carries on |
 | OpenAI Assistants | the run is `requires_action` with `submit_tool_outputs` | `POST .../runs/{id}/submit_tool_outputs` |
 | AG-UI | the AG-UI run ends with its `TOOL_CALL_*` events | the next request's tool message (`toolCallId`) |
-| `/v2` | the run is `input_required`, `pending.reason` is `client_tool` and `pending.prompt` holds the `tool_call` part | `POST /v2/runs/{id}/answer` with `{"parts": [{"kind": "tool_result", "call_id": "...", "output": [{"kind": "text", "text": "..."}]}]}` |
+| `/v2` | the run is `input_required`, `pending.reason` is `client_tool` and `pending.prompt` holds the `tool_call` part; a streamed run (`"stream": true`) sends an `input_required` event with it and stays open | `POST /v2/runs/{id}/answer` with `{"parts": [{"kind": "tool_result", "call_id": "...", "output": [{"kind": "text", "text": "..."}]}]}` |
 
 With the official `openai` client against the Responses adapter:
 
