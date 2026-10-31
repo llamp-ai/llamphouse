@@ -60,8 +60,10 @@ async def stream_anthropic(ctx, model, conversation) -> Streamed:
 ```
 
 `streams.openai`, `streams.anthropic` and `streams.gemini` turn each provider's stream events into the same
-deltas; `pipe` returns what was said (`.text`, `.tool_calls`, `.finished`, `.usage`). Text deltas are live
-only: a client that starts listening late gets the whole message from `message.completed`.
+deltas; `pipe` returns what was said (`.text`, `.tool_calls`, `.finished`, `.usage`). The client starts
+each run with `"stream": true`, so the answer to that request is the run's stream from its first event: no
+delta is missed. (Text deltas are live only: a client that opens `GET /v2/runs/{id}/events/stream` later gets
+the whole message from `message.completed`.)
 
 Which provider and model is the agent's `Config` (`StreamingConfig`), filled in `agents.yaml` from
 `MODEL_PROVIDER` and `MODEL`.

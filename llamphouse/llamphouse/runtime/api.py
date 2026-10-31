@@ -12,6 +12,8 @@
     POST /v2/threads/{id}/runs               a message                             start a run (409 while one is active)
     POST /v2/runs                            {"agent": ..., a message, "metadata",  a thread and its first run in one call
                                               "state", "config"}                      (a bad input: 422, nothing made)
+             (both starts: "stream": true)                                           the run's stream from its first event (SSE):
+                                                                                     `run`, its events, `end`
     GET  /v2/threads/{id}/runs                                                     its runs
     POST /v2/threads/{id}/close                                                    no more messages; its run cancelled
     GET  /v2/runs/{id}                                                             a run
@@ -52,7 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator, Iterable
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -148,6 +150,21 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         async with engine.reading(run_id):
             return run_view(engine.records[run_id])
 
+    async def started(agent: str, message: Any, thread: ThreadRef, identity: Any, stream: bool) -> Any:
+        """Start a run: its view, or (`"stream": true`) its stream from the first event - a `run` event
+        with its view, then everything it does, text deltas included, then `end`."""
+        if not stream:
+            ref = await engine.start(agent, message, thread=thread, by=message.sender, identity=identity)
+            return await read_run(ref.id)
+        engine._validated(agent, message)  # a bad input: 422, before the stream begins
+        run_id = engine.new_run_id()
+
+        async def start() -> None:
+            await engine.start(agent, message, thread=thread, by=message.sender, identity=identity, run_id=run_id)
+
+        return StreamingResponse(follow(run_id, thread.id, start=start), media_type="text/event-stream",
+                                 status_code=201)
+
     deps = [Depends(authenticate)]
 
     @app.get("/v2/agents", dependencies=deps)
@@ -175,9 +192,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         metadata = {**(body.get("metadata") or {}), **access.stamp(gw.who())}
         thread = await engine.thread(agent, metadata=metadata, state=body.get("state"), config=body.get("config"))
         who = gw.who()
-        ref = await engine.start(agent, message, thread=thread, by=message.sender,
-                                 identity=None if who is ANONYMOUS else who)
-        return await read_run(ref.id)
+        return await started(agent, message, thread, None if who is ANONYMOUS else who, bool(body.get("stream")))
 
     @app.get("/v2/threads", dependencies=deps)
     async def threads(request: Request, limit: int = 50, agent: str | None = None,
@@ -241,9 +256,8 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
             agent = engine.threads[thread_id].agent
         message = _message(body)
         who = gw.who()
-        ref = await engine.start(agent, message, thread=ThreadRef(thread_id), by=message.sender,
-                                 identity=None if who is ANONYMOUS else who)
-        return await read_run(ref.id)
+        return await started(agent, message, ThreadRef(thread_id), None if who is ANONYMOUS else who,
+                             bool(body.get("stream")))
 
     @app.get("/v2/threads/{thread_id}/runs", dependencies=deps)
     async def thread_runs(thread_id: str) -> list[dict[str, Any]]:
@@ -319,12 +333,10 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         await known(run_id, "run")
         return [{"seq": seq, **jsonable(ev)} for seq, ev in await engine.run_events(RunRef(run_id), after)]
 
-    @app.get("/v2/runs/{run_id}/events/stream", dependencies=deps)
-    async def run_stream(run_id: str, after: int = 0) -> StreamingResponse:
-        await known(run_id, "run")
-        async with engine.reading(run_id):
-            thread_id = engine.records[run_id].thread_id
-
+    async def follow(run_id: str, thread_id: str, after: int = 0,
+                     start: Callable[[], Awaitable[Any]] | None = None) -> AsyncIterator[str]:
+        """A run's stream: what it did before (as stored), then live - text deltas too - until it ends.
+        `start`: the run isn't started yet; it is, once this listens, so nothing it does is missed."""
         async def ended() -> str | None:
             async with engine.reading(run_id):
                 status = engine.records[run_id].status
@@ -334,29 +346,53 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
             return [(seq, _sse(str(ev.kind), {"seq": seq, **jsonable(ev)}, seq))
                     for seq, ev in await engine.run_events(RunRef(run_id), cursor)]
 
-        async def events() -> AsyncIterator[str]:
-            cursor = after
-            async with engine.bus.listen(f"run:{run_id}", f"thread:{thread_id}") as news:
-                for seq, line in await stored(cursor):  # what happened before: as stored
+        cursor = after
+        async with engine.bus.listen(f"run:{run_id}", f"thread:{thread_id}") as news:
+            if start is not None:
+                try:
+                    await start()
+                except (ThreadBusy, ThreadClosed, NoActiveRun, ValidationError, StoreUnavailable) as e:
+                    yield _sse("error", {"error": type(e).__name__, "detail": str(e)})
+                    return
+                yield _sse("run", await read_run(run_id))
+            else:  # it started before this listened: what it did so far, as stored
+                for seq, line in await stored(cursor):
                     cursor = seq
                     yield line
-                while True:
-                    if (status := await ended()) is not None:
-                        for seq, line in await stored(cursor):  # the last ones
-                            cursor = seq
-                            yield line
-                        yield _sse("end", {"status": status})
-                        return
-                    got = await news.get(KEEP_ALIVE)
-                    if got is None:
-                        yield ": keep-alive\n\n"
-                        continue
-                    channel, data = got
-                    if channel == f"run:{run_id}" and data["seq"] > cursor:  # live: text deltas too
-                        cursor = data["seq"]
-                        yield _sse(data["event"].get("kind", "event"), {"seq": cursor, **data["event"]}, cursor)
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+            def live(got: Any) -> str | None:
+                nonlocal cursor
+                channel, data = got
+                if channel == f"run:{run_id}" and data["seq"] > cursor:  # text deltas too
+                    cursor = data["seq"]
+                    return _sse(data["event"].get("kind", "event"), {"seq": cursor, **data["event"]}, cursor)
+                return None
+
+            while True:
+                while (got := news.get_nowait()) is not None:  # what came meanwhile, in order
+                    if (line := live(got)) is not None:
+                        yield line
+                if (status := await ended()) is not None:
+                    while (got := news.get_nowait()) is not None:
+                        if (line := live(got)) is not None:
+                            yield line
+                    for seq, line in await stored(cursor):  # the last ones, if any came only to the store
+                        cursor = seq
+                        yield line
+                    yield _sse("end", {"status": status})
+                    return
+                got = await news.get(KEEP_ALIVE)
+                if got is None:
+                    yield ": keep-alive\n\n"
+                elif (line := live(got)) is not None:
+                    yield line
+
+    @app.get("/v2/runs/{run_id}/events/stream", dependencies=deps)
+    async def run_stream(run_id: str, after: int = 0) -> StreamingResponse:
+        await known(run_id, "run")
+        async with engine.reading(run_id):
+            thread_id = engine.records[run_id].thread_id
+        return StreamingResponse(follow(run_id, thread_id, after), media_type="text/event-stream")
 
     @app.get("/v2/runs/{run_id}/session", dependencies=deps)
     async def session(run_id: str) -> dict[str, Any]:

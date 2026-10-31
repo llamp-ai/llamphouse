@@ -13,7 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from llamphouse.sdk import Message, RunResult, ThreadEvent
+from llamphouse.sdk import EventKind, InputRequest, Message, RunResult, Sender, ThreadEvent
+
+INPUT_ANSWERED = "run.input_answered"  # an answer to the run's question (the engine's event)
 
 
 @dataclass(frozen=True)
@@ -48,8 +50,27 @@ class SessionProvider:
         """What `ctx.session.messages()` shows. Cheap: no model calls."""
         return session.messages
 
+    def admit(self, session: SessionInfo, event: ThreadEvent) -> Sequence[Message]:
+        """What an event on the thread adds to the session - every event its runs may see comes here
+        (messages, questions and answers, state changes, runs starting and ending, events of other
+        systems), in order. The default: a message; the run's question (`ctx.ask`: the agent's prompt,
+        as its own message) and the answer to it; nothing else. Override to keep more (a state change
+        as a note) or less. A message made here needs a stable id (from the event's position, say): one
+        already in the session isn't added again."""
+        if event.message is not None:
+            return [event.message]
+        kind = str(event.kind)
+        if kind == EventKind.RUN_INPUT_REQUIRED and isinstance(event.data, InputRequest) and event.data.prompt:
+            question = Message(id=f"ask_{event.thread.id if event.thread else session.thread_id}_{event.position}",
+                               sender=Sender.agent(event.agent or session.agent, run=event.run),
+                               parts=list(event.data.prompt), metadata={"llamphouse.asked": True})
+            return [question]
+        if kind == INPUT_ANSWERED and isinstance(event.data, Mapping) and isinstance(event.data.get("answer"), Message):
+            return [event.data["answer"]]
+        return []
+
     def on_event(self, session: SessionInfo, event: ThreadEvent) -> Revise | None:
-        """A message on the thread came into the session."""
+        """Something happened on the thread (after `admit`): revise now?"""
         return None
 
     def on_entry(self, session: SessionInfo, entry: Message) -> Revise | None:

@@ -3,9 +3,9 @@
     python client.py                 # a new conversation
     python client.py <thread id>     # carry on with one
 
-The run's live stream (`GET /v2/runs/{id}/events/stream`, server-sent events) carries `message.delta`
-events with the text as it comes - live only: they are not stored - then `message.completed` with the whole
-message (stored), the agent's own events (`progress`, `usage`), and `end` when the run has ended.
+Each run is started with `"stream": true`: the answer is the run's stream from its first event (server-sent
+events) - `run` (the run), `message.delta` with the text as it comes, `message.completed` with the whole
+message, the agent's own events (`progress`, `usage`), and `end` when the run has ended.
 
 The server: `llamphouse up --memory --agents agents.yaml` (LLAMPHOUSE_URL points elsewhere than :8000).
 """
@@ -22,44 +22,43 @@ AGENT = "streaming"
 ME = {"kind": "person", "id": "ada", "name": "Ada"}
 
 
-def follow(http: httpx.Client, run_id: str) -> Iterator[tuple[str, dict]]:
-    """The run's live stream, as (event, data) pairs; it ends with the run."""
-    with http.stream("GET", f"/v2/runs/{run_id}/events/stream") as r:
-        r.raise_for_status()
-        event, data = "", []
-        for line in r.iter_lines():
-            if line.startswith("event: "):
-                event = line[7:]
-            elif line.startswith("data: "):
-                data.append(line[6:])
-            elif not line and data:
-                yield event, json.loads("\n".join(data))
-                event, data = "", []
-
-
 def turn(http: httpx.Client, thread_id: str, text: str) -> None:
-    r = http.post(f"/v2/threads/{thread_id}/runs", json={"text": text, "sender": ME})
-    r.raise_for_status()
-    run_id = r.json()["id"]
-    shown: dict[str, str] = {}  # message id -> the text printed so far
-    for event, data in follow(http, run_id):
-        if event == "progress":
-            print(f"  [{data['label']}]")
-        elif event == "message.delta":  # a piece of text, as the model writes it
-            if data["message_id"] not in shown:
-                print(f"{AGENT}: ", end="")
-            shown[data["message_id"]] = shown.get(data["message_id"], "") + data["delta"]
-            print(data["delta"], end="", flush=True)
-        elif event == "message.completed":  # the whole message: print it if its deltas came before we listened
-            message = data["message"]
-            full = "".join(p.get("text", "") for p in message["parts"])
-            if shown.get(message["id"]) != full:
-                print(f"{AGENT}: {full}" if message["id"] not in shown else f"\n{AGENT}: {full}", end="")
-            print()
-        elif event == "usage":
-            print(f"  [{data['model']}: {data['input_tokens']} tokens in, {data['output_tokens']} out]")
-        elif event == "end" and data["status"] != "completed":
-            print(f"[run {data['status']}: {http.get(f'/v2/runs/{run_id}').json()['error']}]")
+    body = {"text": text, "sender": ME, "stream": True}  # the run's stream, from its first event
+    with http.stream("POST", f"/v2/threads/{thread_id}/runs", json=body) as r:
+        r.raise_for_status()
+        run_id, started = None, False
+        for event, data in events(r):
+            if event == "run":
+                run_id = data["id"]
+            elif event == "progress":
+                print(f"  [{data['label']}]")
+            elif event == "message.delta":  # a piece of text, as the model writes it
+                if not started:
+                    print(f"{AGENT}: ", end="")
+                    started = True
+                print(data["delta"], end="", flush=True)
+            elif event == "message.completed":
+                print()
+                started = False
+            elif event == "usage":
+                print(f"  [{data['model']}: {data['input_tokens']} tokens in, {data['output_tokens']} out]")
+            elif event == "error":  # it couldn't start (a run is active on the thread, say)
+                print(f"[{data['error']}: {data['detail']}]")
+            elif event == "end" and data["status"] != "completed":
+                print(f"[run {data['status']}: {http.get(f'/v2/runs/{run_id}').json()['error']}]")
+
+
+def events(r: httpx.Response) -> Iterator[tuple[str, dict]]:
+    """Server-sent events, as (event, data) pairs."""
+    event, data = "", []
+    for line in r.iter_lines():
+        if line.startswith("event: "):
+            event = line[7:]
+        elif line.startswith("data: "):
+            data.append(line[6:])
+        elif not line and data:
+            yield event, json.loads("\n".join(data))
+            event, data = "", []
 
 
 def main() -> None:

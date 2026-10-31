@@ -61,7 +61,14 @@ class Add(Workflow[Config, Sum, Total]):
         return Total(total=ctx.input.data.a + ctx.input.data.b)
 
 
-AGENTS = {"echo": Echo, "asker": Asker, "listener": Listener, "add": Add}
+class Streamer(Agent):
+    async def run(self, ctx) -> None:
+        async with ctx.stream() as out:  # at once: a client that subscribes after starting would miss these
+            for word in ("one ", "two ", "three"):
+                await out.write(word)
+
+
+AGENTS = {"echo": Echo, "asker": Asker, "listener": Listener, "add": Add, "streamer": Streamer}
 
 
 @pytest.fixture
@@ -154,6 +161,35 @@ async def test_a_thread_and_its_first_run_in_one_call(client):
     assert (await until(client, run["id"], "completed"))["output"] == {"total": 5}
     assert (await client.get(f"/v2/threads/{run['thread']}")).json()["metadata"] == {"org": "acme"}
     assert (await client.post("/v2/runs", json={"agent": "nobody", "text": "x"})).status_code == 404
+
+
+async def posted_sse(c, path, body):
+    """A POST answered with a stream: its events, as (name, data)."""
+    got = []
+    async with c.stream("POST", path, json=body) as r:
+        assert r.status_code == 201, await r.aread()
+        buffer = ""
+        async for chunk in r.aiter_text():
+            buffer += chunk
+            while "\n\n" in buffer:
+                block, buffer = buffer.split("\n\n", 1)
+                name = next((line[7:] for line in block.split("\n") if line.startswith("event: ")), None)
+                data = [line[6:] for line in block.split("\n") if line.startswith("data: ")]
+                if data:
+                    got.append((name, json.loads("\n".join(data))))
+    return got
+
+
+async def test_a_run_streams_from_its_first_event(client):
+    got = await posted_sse(client, "/v2/runs", {"agent": "streamer", "text": "go", "stream": True})
+    assert got[0][0] == "run" and got[0][1]["agent"] == "streamer"
+    assert "".join(d["delta"] for name, d in got if name == "message.delta") == "one two three"  # none missed
+    assert got[-1] == ("end", {"status": "completed"})
+    t = got[0][1]["thread"]
+    again = await posted_sse(client, f"/v2/threads/{t}/runs", {"text": "again", "stream": True})
+    assert again[-1] == ("end", {"status": "completed"})
+    bad = await client.post("/v2/runs", json={"agent": "add", "data": {"a": 1}, "stream": True})
+    assert bad.status_code == 422  # before any stream
 
 
 async def test_cancel_signal_and_missing_things(client):

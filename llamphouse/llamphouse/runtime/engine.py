@@ -944,9 +944,10 @@ class Engine:
 
     async def start(self, agent: str, input: Value = None, *, thread: ThreadRef | None = None,
                     by: Sender = Sender.service("api"), request: Request | None = None,
-                    identity: Identity | None = None) -> RunRef:
+                    identity: Identity | None = None, run_id: str | None = None) -> RunRef:
         """The primitive: a run, as the API starts one - e.g. a workflow with its Input as data. On a thread
-        with an active run: ThreadBusy."""
+        with an active run: ThreadBusy. `run_id`: one chosen beforehand (`new_run_id()`), so a stream can
+        listen to the run before it starts."""
         message = as_input(input, by)
         self._validated(agent, message)  # a bad input never becomes a run
         if thread is None:
@@ -955,7 +956,11 @@ class Engine:
         message = await self._file_message(thread.id, message, by.id)
         async with self._tx(tree):
             return self._start_on(thread.id, message, request=request or Request(),
-                                  identity=identity or Identity(subject=by.id)).ref
+                                  identity=identity or Identity(subject=by.id), run_id=run_id).ref
+
+    def new_run_id(self) -> str:
+        """An id for a run not started yet (`start(run_id=...)`)."""
+        return self._id("run")
 
     def _validated(self, agent: str, message: Message) -> Message:
         """For a Workflow: the input message with its data validated against Input."""
@@ -1355,10 +1360,10 @@ class Engine:
         tree.notes[thread_id] = ev.position
         if key is not None:
             t.keys[key] = ev
-        if message is not None:  # the provider sees what is added: its sessions catch up, and may revise
-            for session in [x for x in self.sessions.values() if x.thread_id == thread_id]:
-                for added in self._sync(session, added=True):
-                    self._decide(session, self._provider(session.agent).on_event(self._info(session), added))
+        # the provider hears every event: its sessions catch up (it decides what goes in), and may revise
+        for session in [x for x in self.sessions.values() if x.thread_id == thread_id]:
+            for added in self._sync(session, added=True):
+                self._decide(session, self._provider(session.agent).on_event(self._info(session), added))
         self._wake(thread_id, ev)
         return ev
 
@@ -1413,7 +1418,8 @@ class Engine:
         return next((r for r in self.records.values() if r.thread_id == thread_id and r.status not in TERMINAL), None)
 
     def _start_on(self, thread_id: str, message: Message, *, parent: RunRecord | None = None,
-                  request: Request | None = None, identity: Identity | None = None) -> RunRecord:
+                  request: Request | None = None, identity: Identity | None = None,
+                  run_id: str | None = None) -> RunRecord:
         """A run on the thread, with this message as its input - appended unless it is on the thread
         already (unread by the run before, say). ThreadBusy while a run is active."""
         t = self.threads[thread_id]
@@ -1427,7 +1433,8 @@ class Engine:
         request, identity = (request, identity) if request is not None else self._incoming.get(
             message.id, (Request(), Identity(subject=message.sender.id)))
         return self._create_run(t.agent, thread_id, self._validated(t.agent, message), parent=parent,
-                                start_pos=ev.position, request=request, identity=identity, detach=t.detach)
+                                start_pos=ev.position, request=request, identity=identity, detach=t.detach,
+                                run_id=run_id)
 
     def _deliver(self, thread_id: str, message: Message, *, sender: RunRecord | None = None) -> RunRecord:
         """A message to the thread's active run: on the thread, addressed to it - the record, at the moment
@@ -1471,7 +1478,8 @@ class Engine:
 
     def _create_run(self, agent: str, thread_id: str, input: Message, *, parent: RunRecord | None = None,
                     start_pos: int | None = None, request: Request | None = None, identity: Identity | None = None,
-                    seed: Any = None, seed_from: RunRecord | None = None, detach: bool = False) -> RunRecord:
+                    seed: Any = None, seed_from: RunRecord | None = None, detach: bool = False,
+                    run_id: str | None = None) -> RunRecord:
         entry = self._entry(agent)
         t = self.threads[thread_id]
         if (active := self._active(thread_id)) is not None:  # one active run per thread
@@ -1486,7 +1494,7 @@ class Engine:
                 raise _RunLimit(f"{depth} runs deep under {root}: a loop?")
             if sum(self._root_id(r) == root for r in self.records.values()) >= self.max_runs_per_root:
                 raise _RunLimit(f"more than {self.max_runs_per_root} runs started under {root}: a loop?")
-        rec = RunRecord(id=self._id("run"), thread_id=thread_id, agent=agent, input=input, agent_uid=entry.uid,
+        rec = RunRecord(id=run_id or self._id("run"), thread_id=thread_id, agent=agent, input=input, agent_uid=entry.uid,
                         parent=parent.ref if parent else None, detach=detach, tree=t.tree, root=root, depth=depth,
                         created_at=self.now,
                         request=request or (parent.request if parent else Request()),
@@ -1554,14 +1562,21 @@ class Engine:
         """The session catches up with its thread: the messages its runs may see, in order (not what
         is addressed to another run). Never revises: that is the provider's job, in the background."""
         new = []
+        provider = self._provider(s.agent)
         for ev in self._read(s.thread_id):
             if ev.position <= s.cursor:
                 continue
-            visible = ev.to is None or ev.run in s.runs  # sent to a run: in its session once it reads it
-            if ev.message is not None and visible and all(ev.message.id != m.id for m in s.messages):
-                s.messages.append(ev.message)
-                new.append(ev)
             s.cursor = ev.position
+            if ev.message is not None:  # a message sent to a run: in its session once the run reads it
+                visible = ev.to is None or ev.run in s.runs
+            else:  # other events: the thread's, and what concerns its runs (an answer to one of them)
+                visible = ev.to is None or ev.to in s.runs or ev.run in s.runs
+            if not visible:
+                continue
+            for m in provider.admit(self._info(s), ev):  # the provider decides what it adds
+                if all(m.id != x.id for x in s.messages):
+                    s.messages.append(m)
+            new.append(ev)
         return new if added else s
 
     def _provider(self, agent: str) -> SessionProvider:
@@ -1662,7 +1677,10 @@ class Engine:
             return False  # nothing asked, or already answered: the first answer wins
         key = rec.pending[0]
         rec.answers[key] = _as_message(value, by)
-        self._append(rec.thread_id, INPUT_ANSWERED, to=rec.ref, data={"key": key, "by": by.id})
+        data: dict[str, Any] = {"key": key, "by": by.id}
+        if isinstance(rec.pending[1], InputRequest):  # the answer, on the record (never credentials: an auth answer)
+            data["answer"] = rec.answers[key]
+        self._append(rec.thread_id, INPUT_ANSWERED, to=rec.ref, data=data)
         if rec.status in (RunStatus.INPUT_REQUIRED, RunStatus.AUTH_REQUIRED):
             self._enqueue(rec)
         return True

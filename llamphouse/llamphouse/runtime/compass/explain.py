@@ -157,8 +157,11 @@ def story(engine: Any, rec: Any) -> list[dict[str, Any]]:
             reason = getattr(ev.data, "reason", None) or "?"
             out.append({"position": ev.position, "at": _at(ev.at), "kind": "asked", "text": f"It asked: {reason}"})
         elif kind == INPUT_ANSWERED:
+            data = ev.data or {}
+            answer = data.get("answer")
+            text = f": {said(answer.parts)}" if hasattr(answer, "parts") else ""
             out.append({"position": ev.position, "at": _at(ev.at), "kind": "answered",
-                        "text": f"Answered by {(ev.data or {}).get('by', '?')}"})
+                        "text": f"Answered by {data.get('by', '?')}{text}"})
         elif kind == str(EventKind.STATE_CHANGED):
             changes = (ev.data or {}).get("changes", [])
             out.append({"position": ev.position, "at": _at(ev.at), "kind": "state",

@@ -141,7 +141,15 @@ An agent emits only these kinds; message events come from `ctx.send` / `ctx.stre
 
 ### A run's stream
 
-`GET /v2/runs/{id}/events/stream` is the run's stream as server-sent events. What was stored is sent first, then
+Start the run with `"stream": true` (`POST /v2/threads/{id}/runs` or `POST /v2/runs`) and the answer is its
+stream from the first event: a `run` event, then everything below, so not one delta is missed.
+
+```python
+with http.stream("POST", f"/v2/threads/{thread_id}/runs", json={"text": "hi", "stream": True}) as r:
+    ...  # event: run, then message.delta ..., message.completed, end
+```
+
+`GET /v2/runs/{id}/events/stream` is the stream of a run that started already as server-sent events. What was stored is sent first, then
 live events, including `message.delta` with the text as it is written. It ends with an `end` event when the run
 ends:
 

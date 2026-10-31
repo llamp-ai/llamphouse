@@ -118,6 +118,17 @@ Start a run with this message as its input. `201` with the run (status `queued`)
 is active. For a [Workflow](concepts/agents.md#workflow), send its input as `{"data": {...}}`; it is validated
 against the workflow's `Input` before the run exists (`422` if it doesn't fit).
 
+With `"stream": true` in the body, the answer is the run's stream from its first event (server-sent events,
+status `201`): a `run` event with the run, then everything it does - `message.delta` text included - and `end`
+when it ends. Nothing is missed, as nothing happens before the stream listens. If the run can't start (a run is
+active, the thread is closed) the stream has one `error` event; a bad workflow input is still `422`.
+
+### `POST /v2/runs`
+
+A thread and its first run in one call: `{"agent": "...", <the message>, "metadata": {...}, "state": {...},
+"config": {...}, "stream": false}`. The input is checked first: a bad one is `422` and nothing is made.
+`201` with the run, or its stream with `"stream": true`.
+
 ### `GET /v2/threads/{id}/runs`
 
 The thread's runs, oldest first.
@@ -138,7 +149,8 @@ The thread's record: every event after position `N`, in order.
 
 Kinds include `message`, `run.created`, `run.waiting`, `run.input_required`, `run.input_answered`,
 `run.completed`, `run.failed`, `run.cancelled`, `run.rejected`, `state.changed`, `session.*`, and custom
-`x-...` kinds that agents post. `to` is set on a message sent to one run's inbox.
+`x-...` kinds that agents post. `run.input_answered` has the answer in its data (`{"key", "by", "answer"}`;
+never for an auth request: credentials aren't kept). `to` is set on a message sent to one run's inbox.
 
 ### `GET /v2/threads/{id}/events/stream?after=N`
 

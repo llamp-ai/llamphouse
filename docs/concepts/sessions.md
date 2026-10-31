@@ -159,11 +159,31 @@ class DropOldToolResults(SessionProvider):
 
 | hook | when | returns |
 |---|---|---|
+| `admit(session, event)` | every event on the thread its runs may see | the messages it adds to the session |
 | `view(session)` | every `ctx.session.messages()` | the messages to show |
-| `on_event(session, event)` | a thread message came into the session | `Revise(options)` or `None` |
+| `on_event(session, event)` | after `admit`, for every such event | `Revise(options)` or `None` |
 | `on_entry(session, entry)` | the agent added an entry | `Revise(options)` or `None` |
 | `after_run(session, run)` | a run of the agent on the thread ended | `Revise(options)` or `None` |
 | `revise(session, options)` | the revision, as a job | the new messages, or `None` to decline |
+
+`admit` decides what goes in. The session hears everything on its thread that its runs may see:
+messages, the run's questions (`ctx.ask`) and their answers, state changes, runs starting and ending,
+events other systems post. The default admits messages, a question (as the agent's own message: the
+prompt it asked) and its answer, and nothing else - so a model given the session sees "Which month?" and
+"March". Override it to keep more, or less:
+
+```python
+class WithStateNotes(RollingWindow):
+    def admit(self, session, event):
+        if str(event.kind) == "state.changed":
+            keys = ", ".join(c["key"] for c in event.data["changes"])
+            return [Message(id=f"note_{event.position}", sender=Sender.system("state"),
+                            parts=[TextPart(text=f"(state changed: {keys})")])]
+        return super().admit(session, event)
+```
+
+A message made in `admit` needs a stable id (from the event's position, say): one already in the session
+isn't added again. A message sent to a run's inbox enters its session when the run reads it, not before.
 
 A request from agent code (`ctx.session.revise(**options)`) goes straight to `revise`, with
 `reason="requested"` added. `SessionInfo` is read-only: `id`, `thread_id`, `agent`, `messages`,
