@@ -20,7 +20,7 @@ from langgraph.types import interrupt  # noqa: E402
 from llamphouse.runtime.data_store import MemoryStore, PostgresStore  # noqa: E402
 from llamphouse.runtime.engine import Crash  # noqa: E402
 from llamphouse.sdk import Agent, RunStatus, Sender  # noqa: E402
-from llamphouse.sdk.langgraph import LangGraphAgent, LlamphouseCheckpointer, run_graph  # noqa: E402
+from llamphouse.helpers.langgraph import LangGraphAgent, LlamphouseCheckpointer, run_graph  # noqa: E402
 from llamphouse.sdk.testing import FakeRun, Scenario  # noqa: E402
 
 POSTGRES = os.environ.get("LLAMPHOUSE_TEST_POSTGRES")

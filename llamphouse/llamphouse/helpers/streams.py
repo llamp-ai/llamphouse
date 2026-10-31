@@ -4,7 +4,7 @@
         said = await pipe(ctx, anthropic(raw))                      # streamed into the run's message
     said.text, said.tool_calls, said.usage                          # what it said, asked to call, cost
 
-    openai_chat(stream)   OpenAI Chat Completions chunks (and the many APIs compatible with it)
+    openai(stream)        OpenAI Responses API stream events
     anthropic(stream)     Anthropic Messages stream events
     gemini(stream)        Google Gen AI `generate_content_stream` chunks
 
@@ -19,8 +19,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterable, AsyncIterator, Iterable, Literal
 
-from .content import ToolCallPart
-from .events import Usage
+from llamphouse.sdk import ToolCallPart, Usage
 
 FinishReason = Literal["stop", "tool_calls", "length", "content_filter", "unknown"]
 
@@ -96,34 +95,54 @@ def _details(**values: Any) -> dict[str, int]:
 # ── providers ───────────────────────────────────────────────────────────────
 
 
-async def openai_chat(stream: Any) -> AsyncIterator[Delta]:
-    """OpenAI Chat Completions chunks (`stream=True`; for token counts, `stream_options={"include_usage": True}`)."""
-    reason: str | None = None
-    last: Any = None
-    async for chunk in _chunks(stream):
-        last = chunk
-        for choice in _get(chunk, "choices") or ():
-            delta = _get(choice, "delta")
-            for tc in (_get(delta, "tool_calls") or ()) if delta is not None else ():
-                fn = _get(tc, "function")
-                yield ToolCallDelta(index=_get(tc, "index") or 0, id=_get(tc, "id"),
-                                    name=_get(fn, "name") if fn else None,
-                                    arguments=(_get(fn, "arguments") if fn else None) or "")
-            text = _get(delta, "content") if delta is not None else None
-            if text:
-                yield TextDelta(text)
-            reason = _get(choice, "finish_reason") or reason
-    usage = _get(last, "usage") if last is not None else None
-    prompt, completion = (_get(usage, "prompt_tokens_details"), _get(usage, "completion_tokens_details")) if usage else (None, None)
+class StreamFailed(Exception):
+    """The provider reported the answer failed, in its stream."""
+
+
+async def openai(stream: Any) -> AsyncIterator[Delta]:
+    """OpenAI Responses API stream events (`responses.create(..., stream=True)` or `responses.stream(...)`).
+    A function call's id is its `call_id`: what its `function_call_output` answers."""
+    calls: dict[int, int] = {}  # output index -> tool call index
+    response: Any = None
+    reason: FinishReason = "stop"
+    async for event in _chunks(stream):
+        kind = _get(event, "type")
+        if kind == "response.output_text.delta":
+            if _get(event, "delta"):
+                yield TextDelta(_get(event, "delta"))
+        elif kind == "response.output_item.added":
+            item = _get(event, "item")
+            if _get(item, "type") == "function_call":
+                calls[_get(event, "output_index") or 0] = len(calls)
+                yield ToolCallDelta(index=len(calls) - 1, id=_get(item, "call_id"), name=_get(item, "name"),
+                                    arguments=_get(item, "arguments") or "")
+        elif kind == "response.function_call_arguments.delta":
+            index = calls.get(_get(event, "output_index") or 0)
+            if index is not None:
+                yield ToolCallDelta(index=index, arguments=_get(event, "delta") or "")
+        elif kind in ("response.created", "response.in_progress"):
+            response = _get(event, "response") or response
+        elif kind == "response.completed":
+            response = _get(event, "response")
+            break
+        elif kind == "response.incomplete":
+            response = _get(event, "response")
+            why = _get(_get(response, "incomplete_details"), "reason") if response is not None else None
+            reason = "content_filter" if why == "content_filter" else "length"
+            break
+        elif kind in ("response.failed", "error"):
+            error = _get(_get(event, "response"), "error") if kind == "response.failed" else event
+            raise StreamFailed(f"{_get(error, 'code') or 'error'}: {_get(error, 'message') or ''}".strip())
+    usage = _get(response, "usage") if response is not None else None
+    inputs, outputs = (_get(usage, "input_tokens_details"), _get(usage, "output_tokens_details")) if usage else (None, None)
     yield Finished(
-        reason={"stop": "stop", "tool_calls": "tool_calls", "function_call": "tool_calls", "length": "length",
-                "content_filter": "content_filter"}.get(reason or "stop", "unknown"),
-        model=_get(last, "model") if last is not None else None,
-        response_id=_get(last, "id") if last is not None else None,
-        input_tokens=_int(_get(usage, "prompt_tokens")) if usage else None,
-        output_tokens=_int(_get(usage, "completion_tokens")) if usage else None,
-        details=_details(cached_tokens=_get(prompt, "cached_tokens") if prompt else None,
-                         reasoning_tokens=_get(completion, "reasoning_tokens") if completion else None))
+        reason="tool_calls" if calls and reason == "stop" else reason,
+        model=_get(response, "model") if response is not None else None,
+        response_id=_get(response, "id") if response is not None else None,
+        input_tokens=_int(_get(usage, "input_tokens")) if usage else None,
+        output_tokens=_int(_get(usage, "output_tokens")) if usage else None,
+        details=_details(cached_tokens=_get(inputs, "cached_tokens") if inputs else None,
+                         reasoning_tokens=_get(outputs, "reasoning_tokens") if outputs else None))
 
 
 async def anthropic(stream: Any) -> AsyncIterator[Delta]:
@@ -250,5 +269,5 @@ async def pipe(ctx: Any, deltas: AsyncIterable[Delta | str] | Iterable[Delta | s
     return out
 
 
-__all__ = ["TextDelta", "ToolCallDelta", "Finished", "Delta", "Streamed", "openai_chat", "anthropic", "gemini",
-           "pipe"]
+__all__ = ["TextDelta", "ToolCallDelta", "Finished", "Delta", "Streamed", "StreamFailed", "openai", "anthropic",
+           "gemini", "pipe"]

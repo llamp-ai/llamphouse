@@ -1,23 +1,27 @@
-"""Models' streamed answers into a run: OpenAI, Anthropic and Gemini chunks, read by their shape."""
+"""Models' streamed answers into a run: OpenAI (Responses), Anthropic and Gemini events, read by their shape."""
 
 from types import SimpleNamespace as O
 
+import pytest
+
 from llamphouse.sdk import Agent, Usage
-from llamphouse.sdk.streams import Finished, TextDelta, ToolCallDelta, anthropic, gemini, openai_chat, pipe
+from llamphouse.helpers.streams import (Finished, StreamFailed, TextDelta, ToolCallDelta, anthropic, gemini, openai,
+                                        pipe)
 from llamphouse.sdk.testing import FakeRun
 
 
-def openai_chunks():
-    def chunk(delta=None, finish=None, usage=None):
-        return O(id="chatcmpl-1", model="gpt-x", usage=usage,
-                 choices=[O(delta=delta or O(content=None, tool_calls=None), finish_reason=finish)] if delta or finish else [])
-    yield chunk(O(content="Hel", tool_calls=None))
-    yield chunk(O(content="lo", tool_calls=None))
-    yield chunk(O(content=None, tool_calls=[O(index=0, id="call_1", function=O(name="weather", arguments='{"ci'))]))
-    yield chunk(O(content=None, tool_calls=[O(index=0, id=None, function=O(name=None, arguments='ty": "Lisbon"}'))]))
-    yield chunk(finish="tool_calls")
-    yield chunk(usage=O(prompt_tokens=12, completion_tokens=7, prompt_tokens_details=O(cached_tokens=4),
-                        completion_tokens_details=None))
+def openai_events():  # the Responses API's stream, as `responses.create(..., stream=True)` gives
+    yield O(type="response.created", response=O(id="resp_1", model="gpt-x", usage=None))
+    yield O(type="response.output_item.added", output_index=0, item=O(type="message", id="msg_1"))
+    yield O(type="response.output_text.delta", item_id="msg_1", output_index=0, delta="Hel")
+    yield O(type="response.output_text.delta", item_id="msg_1", output_index=0, delta="lo")
+    yield O(type="response.output_item.added", output_index=1,
+            item=O(type="function_call", id="fc_1", call_id="call_1", name="weather", arguments=""))
+    yield O(type="response.function_call_arguments.delta", item_id="fc_1", output_index=1, delta='{"ci')
+    yield O(type="response.function_call_arguments.delta", item_id="fc_1", output_index=1, delta='ty": "Lisbon"}')
+    yield O(type="response.completed", response=O(id="resp_1", model="gpt-x", usage=O(
+        input_tokens=12, output_tokens=7, input_tokens_details=O(cached_tokens=4),
+        output_tokens_details=O(reasoning_tokens=0))))
 
 
 async def anthropic_events():  # an async stream, as `AsyncAnthropic` gives
@@ -47,11 +51,23 @@ async def collect(deltas):
 
 
 async def test_openai():
-    deltas = await collect(openai_chat(openai_chunks()))
+    deltas = await collect(openai(openai_events()))
     assert deltas[:2] == [TextDelta("Hel"), TextDelta("lo")]
-    assert deltas[2] == ToolCallDelta(index=0, id="call_1", name="weather", arguments='{"ci')
-    assert deltas[-1] == Finished(reason="tool_calls", model="gpt-x", response_id="chatcmpl-1", input_tokens=12,
-                                  output_tokens=7, details={"cached_tokens": 4})
+    assert deltas[2] == ToolCallDelta(index=0, id="call_1", name="weather", arguments="")
+    assert deltas[-1] == Finished(reason="tool_calls", model="gpt-x", response_id="resp_1", input_tokens=12,
+                                  output_tokens=7, details={"cached_tokens": 4, "reasoning_tokens": 0})
+    said = await pipe(FakeRun("x"), openai(openai_events()))
+    assert [(c.call_id, c.name, dict(c.arguments)) for c in said.tool_calls] == [("call_1", "weather", {"city": "Lisbon"})]
+
+
+async def test_openai_failed_and_cut_off():
+    failed = [O(type="response.failed", response=O(error=O(code="server_error", message="try again")))]
+    with pytest.raises(StreamFailed, match="server_error: try again"):
+        await collect(openai(failed))
+    cut = [O(type="response.output_text.delta", delta="Once upon"),
+           O(type="response.incomplete", response=O(id="r", model="m", usage=None,
+                                                    incomplete_details=O(reason="max_output_tokens")))]
+    assert (await collect(openai(cut)))[-1].reason == "length"
 
 
 async def test_anthropic():

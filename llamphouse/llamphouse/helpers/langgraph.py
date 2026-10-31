@@ -26,9 +26,9 @@ from typing import Any, AsyncIterator, ClassVar, Literal, Mapping, Sequence
 try:
     from langgraph.checkpoint.memory import InMemorySaver
 except ImportError as e:  # pragma: no cover - the extra
-    raise ImportError("llamphouse.sdk.langgraph needs LangGraph: pip install llamphouse[langgraph]") from e
+    raise ImportError("llamphouse.helpers.langgraph needs LangGraph: pip install llamphouse[langgraph]") from e
 
-from .agent import Agent
+from llamphouse.sdk import Agent
 
 Scope = Literal["run", "thread"]
 _RESUME = "__resume__"  # LangGraph's channel for the answers a task's interrupts got so far
