@@ -182,7 +182,8 @@ def mount_api(app: Any, gw: Any) -> None:
         working = [i for i in items if i.get("revising")]
         return {"sessions": items, "revising": len(working),
                 "waiting_for_worker": sum(1 for i in working if (i.get("working") or {}).get("worker") is None),
-                "workers_here": engine.n_workers}
+                "workers_here": engine.n_workers, "revision_workers_here": engine.revision_workers,
+                "queued": await engine.queue.depth()}
 
     @app.get(f"{P}/sessions/{{session_id}}", dependencies=auth)
     async def session_detail(session_id: str) -> dict[str, Any]:

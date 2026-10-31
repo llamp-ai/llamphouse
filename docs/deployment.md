@@ -109,9 +109,29 @@ that can't be lost: queued runs are rung again from Postgres after `redeliver` s
   on it while it executes (`engine.lease_ttl`, 30 s by default, renewed while it runs). `--workers` sets how
   many runs one process executes at once; a run that waits (an answer, the clock, a signal, another thread)
   holds no worker.
+- **Session revisions** (a provider summarizing or trimming a session) are jobs too, in a lane of their own
+  on the same queue. By default every slot takes both, runs first. A slow summary then holds a slot, so where
+  runs keep every slot busy, give revisions slots of their own: `engine: {revision_workers: 2}` (or
+  `--revision-workers`, `LLAMPHOUSE_REVISION_WORKERS`). Run slots then take only runs. A process can be a
+  revision worker alone: `--role worker --workers 0 --revision-workers 4`.
 - **The unit of work** is a conversation: a thread people talk to and every thread its runs create. Everything
   that happens in it is one transaction under a lock on it, so different conversations run in parallel across
   all processes. Each process keeps copies of the conversations it works on and reads only what changed since.
+
+### Autoscaling
+
+llamphouse doesn't start processes; your platform does. `GET /metrics` (Prometheus text, behind the API's
+auth) gives it what to scale on:
+
+| metric | |
+|---|---|
+| `llamphouse_jobs_queued{lane="runs"\|"revisions"}` | jobs waiting for a slot, deployment-wide: work piles up when every slot of that lane is busy |
+| `llamphouse_sessions_revising`, `llamphouse_sessions_waiting_for_worker` | revisions in flight, and those no worker has picked up yet |
+| `llamphouse_worker_slots{takes}`, `llamphouse_jobs_running{lane}`, `llamphouse_jobs_done_total{lane}` | this process's slots, how many are busy, what it finished |
+
+Scale run workers on `llamphouse_jobs_queued{lane="runs"}` and revision workers on `lane="revisions"` (KEDA's
+Prometheus or Redis-list scalers, or an HPA on an external metric). Worker processes serve no API; give them
+`--metrics-port 9100` and they serve `/health` and `/metrics` there (bind to an internal address).
 
 ## Stopping
 
@@ -125,8 +145,8 @@ that can't be lost: queued runs are rung again from Postgres after `redeliver` s
 ## Health
 
 `GET /health` answers `{"ok": true, "engine": "<id>", "workers": <n>}` without authentication. Use it for
-readiness and liveness checks on API processes. Worker processes serve no HTTP; check that the process is
-running.
+readiness and liveness checks on API processes. Worker processes serve no HTTP unless started with
+`--metrics-port`: then `/health` and `/metrics` on that port.
 
 ## A Postgres and a Redis for development
 
@@ -145,8 +165,8 @@ The same image runs every role; only the command changes.
   --agents /app/agents.yaml`, behind a Service, with `/health` as its readiness probe. Turn off response
   buffering for `text/event-stream` in proxies in front of it, and allow long-lived connections.
 - **Workers:** a Deployment running `llamphouse up --role worker ...`. Set `terminationGracePeriodSeconds`
-  long enough for the current step of a run to finish; the worker then hands its runs back. Scale it on CPU or
-  on the run queue's length.
+  long enough for the current step of a run to finish; the worker then hands its runs back. Scale it on
+  `llamphouse_jobs_queued` (see Autoscaling), with `--metrics-port` for probes.
 - **Configuration:** the runtime file and agent files from a ConfigMap; secrets as environment variables (from
   a Secret), referenced with `${VAR}` or through `secrets` / `secrets_store`.
 - **Tracing:** a tracing store in the runtime file, and `OTEL_EXPORTER_OTLP_ENDPOINT` to send spans to a

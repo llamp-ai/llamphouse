@@ -50,9 +50,14 @@ function last(s: SessionRow) {
       </div>
       <div class="callout" :class="{ 'callout--attention': data.waiting_for_worker }">
         <b>{{ data.waiting_for_worker }}</b> waiting for a worker
-        <Hint v-if="data.waiting_for_worker" text="Asked for, not picked up yet: every worker slot is busy (with runs or other revisions). It is picked up when a slot frees, or by another worker process." />
+        <Hint v-if="data.waiting_for_worker" text="Asked for, not picked up yet: every slot that takes revisions is busy. It is picked up when one frees, or by another worker process." />
       </div>
-      <div class="callout"><b>{{ data.workers_here }}</b> worker slot(s) in this process</div>
+      <div class="callout"><div>
+        <template v-if="data.revision_workers_here"><b>{{ data.revision_workers_here }}</b> revision slot(s), <b>{{ data.workers_here }}</b> run slot(s)</template>
+        <template v-else><b>{{ data.workers_here }}</b> slot(s) for runs and revisions</template> in this process
+        <div class="callout__hint">{{ data.queued?.revisions ?? 0 }} revision(s) and {{ data.queued?.runs ?? 0 }} run(s) queued in the deployment
+          <Hint text="Each lane's queue is shared by every worker process. Scale workers on llamphouse_jobs_queued (GET /metrics); give revisions slots of their own with revision_workers." /></div>
+      </div></div>
     </div>
 
     <div class="toolbar">

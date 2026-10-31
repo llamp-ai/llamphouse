@@ -50,6 +50,10 @@ def parser() -> argparse.ArgumentParser:
     up.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     up.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     up.add_argument("--workers", type=int, default=None, help="runs this process executes at once")
+    up.add_argument("--revision-workers", type=int, default=None,
+                    help="slots that only revise sessions (default 0: every slot takes runs and revisions)")
+    up.add_argument("--metrics-port", type=int, default=None,
+                    help="role worker: serve /health and /metrics on this port (API processes serve /metrics)")
     up.add_argument("--database-url", default=None)
     up.add_argument("--redis-url", default=None)
     up.add_argument("--api-key", default=None)
@@ -113,6 +117,12 @@ def up(args: argparse.Namespace) -> None:
                                "redis_url": args.redis_url, "memory": args.memory}
     if args.workers is not None:
         options["workers"] = args.workers
+    if args.revision_workers is not None:
+        options["revision_workers"] = args.revision_workers
+    if args.metrics_port is not None:
+        if args.role != "worker":
+            raise ConfigError("--metrics-port is for role worker: API processes serve /metrics on their own port")
+        options["metrics_port"] = args.metrics_port
     serve(args.agents or None, role=args.role, host=args.host, port=args.port, api_key=args.api_key,
           compass=not args.no_compass, log_level=args.log_level, **options)
 

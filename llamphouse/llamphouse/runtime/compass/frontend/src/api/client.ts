@@ -169,7 +169,10 @@ export interface SessionRow {
 export interface SessionDetail extends SessionRow {
   compactions: Compaction[]; log: any[]; messages: (Message & { own: boolean })[]; view: (Message & { own: boolean })[]
 }
-export interface SessionList { sessions: SessionRow[]; revising: number; waiting_for_worker: number; workers_here: number }
+export interface SessionList {
+  sessions: SessionRow[]; revising: number; waiting_for_worker: number; workers_here: number
+  revision_workers_here: number; queued: Record<string, number>
+}
 
 export const v2 = {
   info: () => api<Info>(`${C}/info`),

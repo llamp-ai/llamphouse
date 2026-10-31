@@ -564,9 +564,17 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
             raise HTTPException(404, f"no undelivered delivery {delivery_id}")
         return {"id": delivery_id, "retrying": True}
 
+    @app.get("/metrics", dependencies=deps, include_in_schema=False)
+    async def metrics() -> Response:
+        """Prometheus text (`llamphouse.runtime.metrics`): queue depth per lane, revisions, this process's slots."""
+        from .metrics import render
+
+        return Response(await render(engine), media_type="text/plain; version=0.0.4")
+
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, Any]:
-        return {"ok": True, "engine": engine.id, "workers": engine.n_workers}
+        return {"ok": True, "engine": engine.id, "workers": engine.n_workers,
+                "revision_workers": engine.revision_workers}
 
     for adapter in app.state.adapters:
         adapter.mount(app, gw)

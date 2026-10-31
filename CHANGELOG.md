@@ -169,6 +169,14 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   kept; and each compaction (asked when and why, how long it took, its outcome, the messages before and
   after). Backed by `GET /v2/compass/sessions[/{id}]` and `Store.list_sessions`. Sessions record their
   agent and when they changed (Alembic revision `d3f6a7b8c9e0`), and session log entries have a time.
+- **Revision workers and metrics.**
+  - The run queue has lanes: runs, and session revisions. By default every slot takes both, runs first.
+  - `engine: {revision_workers: N}` (`--revision-workers`) gives revisions slots of their own, so a slow
+    summary never holds up a run.
+  - `GET /metrics` (Prometheus text) has jobs queued per lane, revisions in flight or waiting for a worker,
+    and this process's slots, busy slots and finished jobs, for an autoscaler.
+  - Worker processes serve `/health` and `/metrics` with `--metrics-port`.
+  - Compass's Sessions page shows the slots and the queues.
 - **Client tools over `/v2`:** `"tools": [...]` when starting a run declares the tools the caller runs
   itself, for that run (`ctx.client.tools`), as the adapters already did. A call is answered with a
   `tool_result` part on `/answer`.

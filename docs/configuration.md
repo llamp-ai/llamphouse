@@ -191,6 +191,7 @@ Backends that need an extra say which one to install when it is missing (`pip in
 | Option | Default | Meaning |
 |---|---|---|
 | `workers` | 4 under `llamphouse up` (2 in code) | How many runs this process executes at once. `0` for a process that only serves the API (`--role api` sets it). Also `--workers` or `LLAMPHOUSE_WORKERS`. |
+| `revision_workers` | 0 | Slots that only revise sessions. 0: every slot takes runs and revisions (runs first). Also `--revision-workers` or `LLAMPHOUSE_REVISION_WORKERS`. |
 | `lease_ttl` | 30 | Seconds a run's lease lasts. It is renewed while the run executes; when a worker dies, another takes the run over once the lease expires. |
 | `redeliver` | 30 | Seconds a queued run may wait for a worker before its job is rung again. |
 | `tick` | 0.5 | Seconds between sweeps for due work: sleeps that end, expired leases, schedules, deliveries. |

@@ -1,9 +1,10 @@
-"""The run queue on Redis: a list - LPUSH to ring, BRPOP to take (`pip install 'llamphouse[redis]'`)."""
+"""The run queue on Redis: a list per lane - LPUSH to ring, BRPOP to take (`pip install 'llamphouse[redis]'`).
+Runs on `key`, revisions on `key:revisions`."""
 
 from __future__ import annotations
 
 from .._extras import need
-from .base import JobQueue
+from .base import LANES, JobQueue, lane_of
 
 
 class RedisQueue(JobQueue):
@@ -25,9 +26,16 @@ class RedisQueue(JobQueue):
             await self._redis.aclose()
             self._redis = None
 
-    async def put(self, job: str) -> None:
-        await self._redis.lpush(self.key, job)
+    def _key(self, lane: str) -> str:
+        return self.key if lane == "runs" else f"{self.key}:{lane}"  # runs keep the key they always had
 
-    async def get(self, timeout: float | None = None) -> str | None:
-        found = await self._redis.brpop([self.key], timeout=max(1, round(timeout)) if timeout else 0)
+    async def put(self, job: str) -> None:
+        await self._redis.lpush(self._key(lane_of(job)), job)
+
+    async def get(self, timeout: float | None = None, lanes: tuple[str, ...] = LANES) -> str | None:
+        found = await self._redis.brpop([self._key(lane) for lane in lanes],  # in this order: the first non-empty
+                                        timeout=max(1, round(timeout)) if timeout else 0)
         return found[1] if found else None
+
+    async def depth(self) -> dict[str, int]:
+        return {lane: await self._redis.llen(self._key(lane)) for lane in LANES}

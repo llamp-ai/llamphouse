@@ -71,6 +71,7 @@ from llamphouse.runtime.event_queue import Bus, MemoryBus
 from llamphouse.runtime.codec import decode, encode, jsonable
 from llamphouse.runtime.config_store import AgentConfig, ConfigStore, MemoryConfigStore
 from llamphouse.runtime.run_queue import JobQueue, MemoryQueue
+from llamphouse.runtime.run_queue.base import LANES, lane_of
 from llamphouse.runtime.data_store import EventRow, MemoryStore, Row, Rows, Store, StoreTx
 from llamphouse.runtime.tracing import REVISE, RUN, STEP, Tracing
 
@@ -518,6 +519,7 @@ class Engine:
         agents: Mapping[str, type[Agent] | tuple[type[Agent], Config]],
         *,
         workers: int = 2,
+        revision_workers: int = 0,
         lease_ttl: float = 30,
         redeliver: float = 30,
         window: int = 50,
@@ -557,6 +559,10 @@ class Engine:
                                         uid=f"agt_{uuid.uuid5(uuid.NAMESPACE_URL, f'{name}:{cls.__module__}.{cls.__qualname__}').hex[:16]}")
         self.id = f"engine_{uuid.uuid4().hex[:12]}"  # who holds a lease
         self.n_workers, self.lease_ttl, self.window = workers, timedelta(seconds=lease_ttl), window
+        # slots that only revise sessions; 0: every slot takes runs and revisions (revisions first)
+        self.revision_workers = revision_workers
+        self.busy: Counter = Counter()  # lane -> jobs this process works on now (metrics)
+        self.done_jobs: Counter = Counter()  # lane -> jobs this process finished (metrics)
         self.redeliver = timedelta(seconds=redeliver)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._tick = tick if clock is None else 0.0  # a real clock looks for due runs itself; a fake one is advanced
@@ -618,7 +624,9 @@ class Engine:
             if hasattr(part, "open"):
                 await part.open()
         await self._register_schedules()
-        self._workers = [asyncio.create_task(self._worker()) for _ in range(self.n_workers)]
+        run_lanes = ("runs",) if self.revision_workers else LANES
+        self._workers = [asyncio.create_task(self._worker(run_lanes)) for _ in range(self.n_workers)]
+        self._workers += [asyncio.create_task(self._worker(("revisions",))) for _ in range(self.revision_workers)]
         self._workers.append(asyncio.create_task(self._config_news()))
         if self._tick:
             self._workers.append(asyncio.create_task(self._janitor()))
@@ -807,7 +815,7 @@ class Engine:
         while True:
             await asyncio.sleep(self._tick)
             try:
-                if self.n_workers:
+                if self.n_workers or self.revision_workers:
                     await self._sweep()
                     await self.deliver()
                     if time.monotonic() >= self._next_cleanup:  # abandoned uploads, now and then
@@ -1729,12 +1737,14 @@ class Engine:
 
     # ── workers ─────────────────────────────────────────────────────────────
 
-    async def _worker(self) -> None:
+    async def _worker(self, lanes: tuple[str, ...] = LANES) -> None:
         while True:
-            job = await self.queue.get(timeout=None if isinstance(self.queue, MemoryQueue) else 1.0)
+            job = await self.queue.get(timeout=None if isinstance(self.queue, MemoryQueue) else 1.0, lanes=lanes)
             if job is None:
                 continue
             await asyncio.sleep(0)  # fair: a run that keeps requeueing can't freeze the event loop
+            lane = lane_of(job)
+            self.busy[lane] += 1
             try:
                 kind, tree_id, entity_id = job.split("|", 2)
                 if kind == "revision":
@@ -1749,6 +1759,8 @@ class Engine:
                 log.exception("job %s failed", job)
                 self.errors.append(e)
             finally:
+                self.busy[lane] -= 1
+                self.done_jobs[lane] += 1
                 self.queue.done(job)
 
     async def _activate(self, tree_id: str, run_id: str) -> None:

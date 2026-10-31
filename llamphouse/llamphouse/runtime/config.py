@@ -33,7 +33,7 @@ A runtime file - one per environment:
     file_store: {postgres: {dsn: ${LLAMPHOUSE_DATABASE_URL}}}
     tracing:    {postgres: {database_url: ${LLAMPHOUSE_DATABASE_URL}}}
     sessions:   {rolling_window: {size: 50}}  # the default provider; an Agent's `session` overrides it
-    engine:     {workers: 8, lease_ttl: 30}   # Engine options
+    engine:     {workers: 8, revision_workers: 2, lease_ttl: 30}   # Engine options
     env: {LOG_LEVEL: info}
     secrets: {OPENAI_API_KEY: openai-key}
     secrets_store:
@@ -93,7 +93,7 @@ REGISTRY: dict[str, dict[str, str]] = {
 }
 LISTS = {"auth", "adapters"}  # kinds given as a list of entries
 
-ENGINE_OPTIONS = {"workers", "lease_ttl", "redeliver", "window", "upload_ttl", "max_runs_per_root", "max_depth",
+ENGINE_OPTIONS = {"workers", "revision_workers", "lease_ttl", "redeliver", "window", "upload_ttl", "max_runs_per_root", "max_depth",
                   "max_runs_per_thread", "tick", "cache_ttl", "delivery_attempts"}
 
 
@@ -407,7 +407,7 @@ class Deployment:
             options["sessions"] = default
         options.update(overrides)
         if role == "api":
-            options["workers"] = 0
+            options["workers"] = options["revision_workers"] = 0
         permissions = {}
         for name, spec in self.agents.items():
             if spec.permissions:

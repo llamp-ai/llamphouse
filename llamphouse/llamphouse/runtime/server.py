@@ -100,6 +100,9 @@ def build(agents: Mapping[str, Any] | Deployment | str | Iterable[str] | None = 
         overrides["workers"] = workers
     elif "workers" not in found.runtime.engine and "workers" not in overrides:
         overrides["workers"] = int(os.environ.get("LLAMPHOUSE_WORKERS", "4"))  # a server process: 4 at once
+    if ("revision_workers" not in found.runtime.engine and "revision_workers" not in overrides
+            and os.environ.get("LLAMPHOUSE_REVISION_WORKERS")):
+        overrides["revision_workers"] = int(os.environ["LLAMPHOUSE_REVISION_WORKERS"])
     engine = found.build(role="api" if role in ("api", "compass") else role, **overrides)
     engine.deployment = found  # its auth and access, for the API
     if role != "all" and (isinstance(engine.store, MemoryStore) or isinstance(engine.queue, MemoryQueue)
@@ -140,9 +143,10 @@ def app(agents: Any = None, *, role: str = "all", api_key: str | None = None, co
     return api
 
 
-async def work(agents: Any = None, *, stop: asyncio.Event | None = None, **options: Any) -> None:
+async def work(agents: Any = None, *, stop: asyncio.Event | None = None, metrics_port: int | None = None,
+               metrics_host: str = "127.0.0.1", **options: Any) -> None:
     """A worker process: executes runs until it's told to stop (SIGINT, SIGTERM, or `stop`), then hands back
-    what it was running."""
+    what it was running. `metrics_port`: /health and /metrics (Prometheus) there, for probes and autoscalers."""
     engine = agents if isinstance(agents, Engine) else build(agents, role="worker", **options)
     stop = stop or asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -152,12 +156,45 @@ async def work(agents: Any = None, *, stop: asyncio.Event | None = None, **optio
         except (NotImplementedError, RuntimeError):  # pragma: no cover - Windows, or not the main thread
             pass
     await engine.open()
-    logging.getLogger("llamphouse.runtime").info("worker %s: %d workers", engine.id, engine.n_workers)
+    logging.getLogger("llamphouse.runtime").info("worker %s: %d workers, %d revision workers", engine.id,
+                                                 engine.n_workers, engine.revision_workers)
+    probe = None
+    if metrics_port is not None:
+        import uvicorn
+
+        server = uvicorn.Server(uvicorn.Config(_probe_app(engine), host=metrics_host, port=metrics_port,
+                                               log_level="warning", lifespan="off"))
+        server.install_signal_handlers = lambda: None  # type: ignore[method-assign]  # this process's signals: ours
+        probe = (server, asyncio.create_task(server.serve()))
     try:
         await stop.wait()
     finally:
+        if probe is not None:
+            probe[0].should_exit = True
+            await probe[1]
         await engine.close()
         shutdown_tracing()  # the process ends: the last spans out, the exporters closed
+
+
+def _probe_app(engine: Engine) -> Any:
+    """A worker's own HTTP: /health and /metrics - nothing else (bind it to an internal address)."""
+    from fastapi import FastAPI
+    from fastapi.responses import Response
+
+    from .metrics import render
+
+    probe = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @probe.get("/health")
+    async def health() -> dict[str, Any]:
+        return {"ok": True, "engine": engine.id, "workers": engine.n_workers,
+                "revision_workers": engine.revision_workers}
+
+    @probe.get("/metrics")
+    async def metrics() -> Response:
+        return Response(await render(engine), media_type="text/plain; version=0.0.4")
+
+    return probe
 
 
 def serve(agents: Any = None, *, role: str = "all", host: str = "127.0.0.1", port: int = 8000,
@@ -166,7 +203,7 @@ def serve(agents: Any = None, *, role: str = "all", host: str = "127.0.0.1", por
     a worker (role `worker`)."""
     logging.basicConfig(level=log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if role == "worker":
-        asyncio.run(work(agents, **options))
+        asyncio.run(work(agents, metrics_host=host, **options))
         return
     import uvicorn
 
