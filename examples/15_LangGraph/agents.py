@@ -1,285 +1,144 @@
-"""LangGraph branching workflow agent definitions.
+"""A LangGraph graph on llamphouse: as a whole agent (`LangGraphAgent`), and inside an agent of its own
+(`run_graph`).
 
-This file contains only graph/agent construction so deployments can be
-bootstrapped from ``llamphouse.yaml`` (like example 13).
+The graph is a small support desk: it routes a message (order status, refund, anything else), refunds small
+amounts at once, and asks a person to approve larger ones with LangGraph's `interrupt()`. Plain nodes, no
+model: it runs without keys. A node that calls a model works the same; its output is streamed into the run's
+messages.
 """
 
-from dotenv import load_dotenv
-from typing import Any, TypedDict
-import os
-import logging
+from __future__ import annotations
 
-load_dotenv(override=True)
+import operator
+import re
+from typing import Annotated, Literal, TypedDict
 
-from llamphouse.core.wrappers import LangGraphAgent
+from langchain_core.messages import AIMessage
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
+from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
+from llamphouse.helpers.langgraph import LangGraphAgent, run_graph
+from llamphouse.sdk import Agent, step
 
-
-try:
-    from opentelemetry.instrumentation.langchain import LangchainInstrumentor  # type: ignore[import-not-found]
-except ImportError:
-    LangchainInstrumentor = None
-
-
-if LangchainInstrumentor is not None:
-    LangchainInstrumentor().instrument()
-else:
-    logger.warning(
-        "LangChain instrumentor not available. Install opentelemetry-instrumentation-langchain for node-level spans."
-    )
+APPROVAL_LIMIT = 100  # EUR: above it, a person approves
 
 
-try:
-    from langgraph.graph import END, START, StateGraph
-    from langgraph.types import interrupt
-except ImportError as exc:
-    raise RuntimeError(
-        "This example requires langgraph. Install dependencies with: pip install -r requirements.txt"
-    ) from exc
+# ── the graph ───────────────────────────────────────────────────────────────
+
+class Support(TypedDict, total=False):
+    messages: Annotated[list, add_messages]
+    intent: str
+    amount: float
+    approved: bool
+    refunds: Annotated[list, operator.add]  # every refund made: kept across runs with scope="thread"
 
 
-try:
-    from langchain_openai import ChatOpenAI  # type: ignore[import-not-found]
-except ImportError:
-    ChatOpenAI = None
+def classify(state: Support) -> Support:
+    text = state["messages"][-1].content.lower()
+    if "refund" in text:
+        found = re.search(r"(?<![-\w])\d+(?:\.\d+)?", text)  # an amount, not an order number
+        return {"intent": "refund", "amount": float(found.group()) if found else 0.0}
+    return {"intent": "status" if "order" in text else "other"}
 
 
-def _build_graph():
-    llm = None
-    if ChatOpenAI is not None and os.getenv("OPENAI_API_KEY"):
-        llm = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0)
-    elif ChatOpenAI is None:
-        logger.warning("langchain-openai not installed. Using deterministic fallback responses.")
-    else:
-        logger.warning("OPENAI_API_KEY is not set. Using deterministic fallback responses.")
-
-    async def _call_llm(system_prompt: str, user_prompt: str, fallback: str) -> str:
-        if llm is None:
-            return fallback
-        try:
-            response = await llm.ainvoke(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ]
-            )
-            content = getattr(response, "content", "")
-            if isinstance(content, str):
-                return content.strip() or fallback
-            if isinstance(content, list):
-                chunks: list[str] = []
-                for part in content:
-                    if isinstance(part, dict) and isinstance(part.get("text"), str):
-                        chunks.append(part["text"])
-                joined = "\n".join(chunks).strip()
-                return joined or fallback
-        except Exception as exc:
-            logger.warning("LLM call failed; using fallback response: %s", exc)
-        return fallback
-
-    class GraphState(TypedDict, total=False):
-        messages: list[dict[str, Any]]
-        user_text: str
-        intent: str
-        plan: str
-        math_answer: str
-        facts: str
-        risks: str
-        general_answer: str
-        refund_draft: str
-        refund_approved: bool
-        output: str
-
-    def _extract_text(parts_or_text: Any) -> str:
-        if isinstance(parts_or_text, str):
-            return parts_or_text
-        if isinstance(parts_or_text, list):
-            chunks: list[str] = []
-            for part in parts_or_text:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "text" and isinstance(part.get("text"), str):
-                    chunks.append(part["text"])
-            return "\n".join(chunks)
-        return str(parts_or_text)
-
-    def ingest_user_input(state: GraphState) -> GraphState:
-        messages = state.get("messages", [])
-        if not messages:
-            return {"user_text": ""}
-        last = messages[-1]
-        return {"user_text": _extract_text(last.get("content", ""))}
-
-    def route_intent(state: GraphState) -> GraphState:
-        text = state.get("user_text", "").lower()
-        if "refund" in text:
-            intent = "refund"
-        elif any(tok in text for tok in ["solve", "equation", "calculate", "math"]):
-            intent = "math"
-        elif any(tok in text for tok in ["compare", "plan", "research", "analyze"]):
-            intent = "research"
-        else:
-            intent = "general"
-        return {"intent": intent}
-
-    def choose_branch(state: GraphState) -> str:
-        return state.get("intent", "general")
-
-    async def solve_math(state: GraphState) -> GraphState:
-        text = state.get("user_text", "")
-        compact = text.replace(" ", "")
-        if "x+1=4" in compact:
-            answer = "x = 3"
-        else:
-            answer = "I detected a math request. I would solve it step-by-step here."
-        answer = await _call_llm(
-            system_prompt="You are a precise math tutor. Show concise reasoning and a final answer.",
-            user_prompt=f"Solve this math request: {text}",
-            fallback=answer,
-        )
-        return {"math_answer": answer}
-
-    def format_math_output(state: GraphState) -> GraphState:
-        return {
-            "output": (
-                "[math branch]\n"
-                f"Input: {state.get('user_text', '')}\n"
-                f"Answer: {state.get('math_answer', '')}"
-            )
-        }
-
-    def make_research_plan(state: GraphState) -> GraphState:
-        return {
-            "plan": (
-                "1) Extract requirements\n"
-                "2) Gather supporting facts\n"
-                "3) Surface risks/tradeoffs\n"
-                "4) Synthesize recommendation"
-            )
-        }
-
-    async def collect_facts(state: GraphState) -> GraphState:
-        text = state.get("user_text", "")
-        fallback = (
-            f"Key facts for '{text}': scope clarified, constraints identified, "
-            "and candidate approaches listed."
-        )
-        facts = await _call_llm(
-            system_prompt="Extract practical facts and constraints. Keep it to 3 bullet-style sentences.",
-            user_prompt=f"Create actionable facts for: {text}",
-            fallback=fallback,
-        )
-        return {"facts": facts}
-
-    def collect_risks(state: GraphState) -> GraphState:
-        return {
-            "risks": (
-                "Risks: unclear success metrics, hidden integration effort, "
-                "and timeline pressure."
-            )
-        }
-
-    def synthesize_research(state: GraphState) -> GraphState:
-        return {
-            "output": (
-                "[research branch]\n"
-                f"Plan:\n{state.get('plan', '')}\n\n"
-                f"Facts: {state.get('facts', '')}\n"
-                f"Risks: {state.get('risks', '')}\n\n"
-                "Recommendation: start with a thin vertical slice, then iterate."
-            )
-        }
-
-    async def general_reply(state: GraphState) -> GraphState:
-        text = state.get("user_text", "")
-        fallback = f"You said: {text}"
-        llm_reply = await _call_llm(
-            system_prompt="You are a helpful assistant. Reply in 1-2 concise sentences.",
-            user_prompt=text,
-            fallback=fallback,
-        )
-        return {
-            "general_answer": llm_reply,
-            "output": "[general branch]\n" + f"Response: {llm_reply}",
-        }
-
-    async def draft_refund(state: GraphState) -> GraphState:
-        text = state.get("user_text", "")
-        draft = await _call_llm(
-            system_prompt="Draft a one-sentence refund proposal for a support agent to approve.",
-            user_prompt=text,
-            fallback="Refund 25 EUR for order A-1042 (item arrived broken).",
-        )
-        return {"refund_draft": draft}
-
-    def human_approval(state: GraphState) -> GraphState:
-        # Human in the loop: the run parks here - holding no worker - until
-        # someone answers. Over A2A the task is `input-required` with this
-        # prompt; the answer resumes this node, with `answer` set to it.
-        answer = interrupt({
-            "prompt": f"Approve this refund? {state.get('refund_draft', '')}",
-            "schema": {"type": "object", "properties": {"approved": {"type": "boolean"}}},
-        })
-        approved = answer.get("approved") if isinstance(answer, dict) else str(answer).strip().lower() in {"y", "yes", "approve"}
-        return {"refund_approved": bool(approved)}
-
-    def finalize_refund(state: GraphState) -> GraphState:
-        verdict = "approved and paid" if state.get("refund_approved") else "rejected"
-        return {"output": f"[refund branch]\nDraft: {state.get('refund_draft', '')}\nDecision: {verdict}"}
-
-    graph = StateGraph(GraphState)
-    graph.add_node("ingest_user_input", ingest_user_input)
-    graph.add_node("route_intent", route_intent)
-    graph.add_node("solve_math", solve_math)
-    graph.add_node("format_math_output", format_math_output)
-    graph.add_node("make_research_plan", make_research_plan)
-    graph.add_node("collect_facts", collect_facts)
-    graph.add_node("collect_risks", collect_risks)
-    graph.add_node("synthesize_research", synthesize_research)
-    graph.add_node("general_reply", general_reply)
-    graph.add_node("draft_refund", draft_refund)
-    graph.add_node("human_approval", human_approval)
-    graph.add_node("finalize_refund", finalize_refund)
-
-    graph.add_edge(START, "ingest_user_input")
-    graph.add_edge("ingest_user_input", "route_intent")
-
-    graph.add_conditional_edges(
-        "route_intent",
-        choose_branch,
-        {
-            "math": "solve_math",
-            "research": "make_research_plan",
-            "general": "general_reply",
-            "refund": "draft_refund",
-        },
-    )
-
-    graph.add_edge("solve_math", "format_math_output")
-    graph.add_edge("format_math_output", END)
-
-    graph.add_edge("make_research_plan", "collect_facts")
-    graph.add_edge("make_research_plan", "collect_risks")
-    graph.add_edge("collect_facts", "synthesize_research")
-    graph.add_edge("collect_risks", "synthesize_research")
-    graph.add_edge("synthesize_research", END)
-
-    graph.add_edge("general_reply", END)
-
-    graph.add_edge("draft_refund", "human_approval")
-    graph.add_edge("human_approval", "finalize_refund")
-    graph.add_edge("finalize_refund", END)
-    return graph.compile()
+def route(state: Support) -> Literal["status", "check", "other"]:
+    return "check" if state["intent"] == "refund" else state["intent"]
 
 
-def create_agent(_deployment_cfg=None):
-    graph = _build_graph()
-    return LangGraphAgent(
-        id="langgraph-agent",
-        name="LangGraph Agent",
-        description="A branched LangGraph workflow running inside LLAMPHouse.",
-        graph=graph,
-        stream=True,
-        map_nodes_to_steps=True,
-    )
+def status(state: Support) -> Support:
+    return {"messages": [AIMessage("Your order shipped yesterday; it arrives on Friday.")]}
+
+
+def other(state: Support) -> Support:
+    return {"messages": [AIMessage("I can tell you where your order is, or refund it.")]}
+
+
+def check(state: Support) -> Support:
+    return {"approved": state["amount"] <= APPROVAL_LIMIT}
+
+
+def needs_approval(state: Support) -> Literal["approve", "refund"]:
+    return "refund" if state["approved"] else "approve"
+
+
+def approve(state: Support) -> Support:
+    # the run waits here (input_required, no worker held); the answer resumes this node
+    answer = interrupt({"prompt": f"Approve a refund of {state['amount']:.2f} EUR? (yes/no)"})
+    return {"approved": str(answer).strip().lower() in ("yes", "y", "approve")}
+
+
+def refund_or_decline(state: Support) -> Literal["refund", "decline"]:
+    return "refund" if state["approved"] else "decline"
+
+
+def refund(state: Support) -> Support:
+    total = sum(state.get("refunds", [])) + state["amount"]
+    count = len(state.get("refunds", [])) + 1
+    return {"refunds": [state["amount"]],
+            "messages": [AIMessage(f"Refunded {state['amount']:.2f} EUR. "
+                                   f"{count} refund(s) so far, {total:.2f} EUR in all.")]}
+
+
+def decline(state: Support) -> Support:
+    return {"messages": [AIMessage(f"The refund of {state['amount']:.2f} EUR was not approved.")]}
+
+
+def build() -> StateGraph:
+    g = StateGraph(Support)
+    for name, fn in [("classify", classify), ("status", status), ("other", other), ("check", check),
+                     ("approve", approve), ("refund", refund), ("decline", decline)]:
+        g.add_node(name, fn)
+    g.add_edge(START, "classify")
+    g.add_conditional_edges("classify", route)
+    g.add_conditional_edges("check", needs_approval)
+    g.add_conditional_edges("approve", refund_or_decline)
+    for last in ("status", "other", "refund", "decline"):
+        g.add_edge(last, END)
+    return g
+
+
+GRAPH = build().compile()  # no checkpointer: llamphouse gives each run its own
+
+
+# ── the graph as the whole agent ────────────────────────────────────────────
+
+class SupportDesk(LangGraphAgent):
+    """Order status and refunds; a person approves refunds above 100 EUR."""
+
+    graph = GRAPH
+    scope = "thread"  # the graph's state carries over to the thread's next run: its messages, its refunds
+
+
+# ── the graph inside an agent of its own ────────────────────────────────────
+
+ORDERS = {"A-17": "Oak chair", "B-42": "Desk lamp"}
+
+
+class RefundResult(BaseModel):
+    order: str
+    item: str | None
+    amount: float
+    refunded: bool
+
+
+class Refunds(Agent):
+    """Refunds an order: looks it up, runs the support graph on the request, reports the outcome."""
+
+    @step
+    async def lookup(self, ctx, order: str) -> str | None:  # done once: recorded, replayed after the interrupt
+        return ORDERS.get(order)
+
+    async def run(self, ctx) -> RefundResult:
+        found = re.search(r"[A-Z]-\d+", ctx.input.text or "")
+        order = found.group() if found else "unknown"
+        item = await self.lookup(ctx, order)
+        if item is None:
+            await ctx.reject(f"no order {order!r}")
+        # the graph runs as part of this run: an interrupt is asked with ctx.ask; when the run executes again,
+        # the graph carries on from its checkpoint and never gets its input twice
+        values = await run_graph(ctx, GRAPH, {"messages": [("user", ctx.input.text)]}, stream=False)
+        refunded = bool(values.get("refunds"))
+        await ctx.send(f"{order} ({item}): {values['messages'][-1].content}")
+        return RefundResult(order=order, item=item, amount=values.get("amount", 0.0), refunded=refunded)

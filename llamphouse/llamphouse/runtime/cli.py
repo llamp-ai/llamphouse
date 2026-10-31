@@ -54,7 +54,8 @@ def parser() -> argparse.ArgumentParser:
     up.add_argument("--redis-url", default=None)
     up.add_argument("--api-key", default=None)
     up.add_argument("--memory", action="store_true",
-                    help="in memory, one process: ignore the runtime file's components and LLAMPHOUSE_* URLs")
+                    help="in memory, one process: the runtime file's stores and queues (and LLAMPHOUSE_* URLs) ignored; "
+                         "its adapters, auth, triggers and sessions kept")
     up.add_argument("--no-compass", action="store_true")
     up.add_argument("--log-level", default="info")
 
@@ -136,7 +137,8 @@ def check(config: str | None, agents: list[str]) -> int:
               + (f"  session={type(spec.session).__name__}" if spec.session is not None else ""))
     for kind, entry in deployment.runtime.components.items():
         for i, one in enumerate(entry if kind in LISTS else [entry]):  # constructs; opens nothing
-            built = component(kind, one, f"{deployment.runtime.source}: {kind}" + (f"[{i}]" if kind in LISTS else ""))
+            built = component(kind, one, f"{deployment.runtime.source}: {kind}" + (f"[{i}]" if kind in LISTS else ""),
+                              base=deployment.runtime.base)
             print(f"{kind:<8} {type(built).__name__}")
     if not deployment.runtime.components:
         print("runtime  in memory (no runtime file, or no components in it)")

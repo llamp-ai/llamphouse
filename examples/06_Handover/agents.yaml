@@ -1,0 +1,16 @@
+# Two agents; the thread starts with `triage` and moves between them with ctx.handover.
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: triage}
+spec:
+  entrypoint: agents.py:Triage
+  display_name: Front desk
+  permissions: {agents: [billing]}   # whom it may call or hand over to
+---
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: billing}
+spec:
+  entrypoint: agents.py:Billing
+  display_name: Billing
+  permissions: {agents: [triage]}

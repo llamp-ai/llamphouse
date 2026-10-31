@@ -1,0 +1,6 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: reports}
+spec:
+  entrypoint: agents.py:ReportAgent
+  display_name: Reports

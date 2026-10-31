@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import functools
 import inspect
@@ -193,16 +194,32 @@ class Workflow(Agent[ConfigT], Generic[ConfigT, InputT, OutputT]):
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
 
 
-def step(fn: F | None = None, *, name: str | None = None) -> Any:
+def step(fn: F | None = None, *, name: str | None = None, retries: int = 0, backoff: float = 1.0,
+         retry_on: tuple[type[BaseException], ...] = (Exception,)) -> Any:
     """`ctx.step` as a decorator, for agent methods: `@step async def fetch(self, ctx, query)`.
-    The context is the first argument after `self`."""
+    The context is the first argument after `self`.
+
+    `retries`: tried again in place when it raises one of `retry_on`, after `backoff` seconds, doubling
+    each time - inside one execution, holding its worker (for long waits between attempts, loop over
+    `ctx.sleep` in the run instead). What it returns, or what it raises in the end, is recorded: a
+    replay gives back the same result or raises the same error, and never calls it again."""
 
     def wrap(f: F) -> F:
         step_name = name or f.__name__
 
+        async def attempts(self: Any, ctx: Any, *args: Any, **kwargs: Any) -> Any:
+            for attempt in range(retries + 1):
+                try:
+                    result = f(self, ctx, *args, **kwargs)
+                    return await result if inspect.isawaitable(result) else result
+                except retry_on:
+                    if attempt == retries:
+                        raise
+                    await asyncio.sleep(backoff * 2 ** attempt)
+
         @functools.wraps(f)
         async def wrapper(self: Any, ctx: Any, *args: Any, **kwargs: Any) -> Any:
-            return await ctx.step(step_name, functools.partial(f, self, ctx), *args, **kwargs)
+            return await ctx.step(step_name, functools.partial(attempts, self, ctx), *args, **kwargs)
 
         wrapper.__llamphouse_step__ = step_name  # type: ignore[attr-defined]
         return wrapper  # type: ignore[return-value]

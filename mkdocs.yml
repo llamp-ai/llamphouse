@@ -31,23 +31,30 @@ nav:
     - Quickstart: getting-started/quickstart.md
     - Adding an LLM: getting-started/adding-llm.md
   - Core Concepts:
+    - Threads and Runs: concepts/threads-and-runs.md
     - Agents: concepts/agents.md
-    - Context: concepts/context.md
-    - Adapters: concepts/adapters.md
-    - Multi-Agent: concepts/multi-agent.md
-    - Durable Runs: concepts/durable-runs.md
+    - The Run Context: concepts/context.md
+    - State: concepts/state.md
     - Sessions: concepts/sessions.md
+    - Durable Runs: concepts/durable-runs.md
+    - Working with Other Agents: concepts/multi-agent.md
   - Guides:
     - Streaming: guides/streaming.md
     - Tool Calls: guides/tool-calls.md
+    - LangGraph: guides/langgraph.md
+    - Config: guides/config.md
+    - Files: guides/files.md
+    - Triggers: guides/triggers.md
+    - Subscriptions: guides/subscriptions.md
+    - Adapters: guides/adapters.md
+    - Auth: guides/auth.md
     - Tracing: guides/tracing.md
-    - Config Store: guides/config-store.md
-    - Compass Dashboard: guides/compass.md
+    - Compass: guides/compass.md
   - Configuration: configuration.md
   - Deployment: deployment.md
-  - Telemetry: telemetry.md
+  - HTTP API: http-api.md
   - Examples: examples.md
-  - API Compatibility: api-compatibility.md
+  - Migrating from 1.x: migrating-from-1x.md
   - Contributing: contributing.md
 
 markdown_extensions:

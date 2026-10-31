@@ -322,8 +322,8 @@ class LangGraphAgent(Agent):
                              for m in messages]}
 
     def reply(self, values: Any) -> str | None:
-        """What it says at the end when nothing was streamed: the graph's `output` if a string, else
-        the content of its last message."""
+        """What it says at the end with stream=False: the graph's `output` if a string, else the content
+        of its last message. (Streamed, its messages were said as they came, and `output` at the end.)"""
         if isinstance(values, Mapping):
             if isinstance(values.get("output"), str):
                 return values["output"]
@@ -339,7 +339,11 @@ class LangGraphAgent(Agent):
         if self.graph is None:
             raise TypeError(f"{type(self).__name__}: set `graph` (a compiled LangGraph graph)")
         values = await run_graph(ctx, self.graph, await self.graph_input(ctx), scope=self.scope, stream=self.stream)
-        if not self.stream and (text := self.reply(values)):
+        if self.stream:  # its messages were streamed as they came; an `output` string is no message: said now
+            text = values.get("output") if isinstance(values, Mapping) else None
+        else:
+            text = self.reply(values)
+        if isinstance(text, str) and text:
             await ctx.send(text)
 
 

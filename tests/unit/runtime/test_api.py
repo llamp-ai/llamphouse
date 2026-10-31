@@ -145,6 +145,17 @@ async def test_a_workflow_input_is_validated_before_it_becomes_a_run(client):
     assert (await until(client, run["id"], "completed"))["output"] == {"total": 3}
 
 
+async def test_a_thread_and_its_first_run_in_one_call(client):
+    before = len((await client.get("/v2/threads")).json())
+    bad = await client.post("/v2/runs", json={"agent": "add", "data": {"a": 1}})
+    assert bad.status_code == 422 and len((await client.get("/v2/threads")).json()) == before  # nothing made
+    run = (await client.post("/v2/runs", json={"agent": "add", "data": {"a": 2, "b": 3},
+                                               "metadata": {"org": "acme"}})).json()
+    assert (await until(client, run["id"], "completed"))["output"] == {"total": 5}
+    assert (await client.get(f"/v2/threads/{run['thread']}")).json()["metadata"] == {"org": "acme"}
+    assert (await client.post("/v2/runs", json={"agent": "nobody", "text": "x"})).status_code == 404
+
+
 async def test_cancel_signal_and_missing_things(client):
     t = (await client.post("/v2/threads", json={"agent": "asker"})).json()
     run = (await client.post(f"/v2/threads/{t['id']}/runs", json={"text": "go"})).json()

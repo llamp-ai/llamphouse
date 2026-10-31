@@ -1,0 +1,26 @@
+# The same agent class three times, each with its own session provider.
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: window}
+spec:
+  entrypoint: agents.py:Mirror
+  display_name: Rolling window
+  session: {rolling_window: {size: 4}}            # the latest 4 messages (the default provider, size 50)
+---
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: summary}
+spec:
+  entrypoint: agents.py:Mirror
+  display_name: Summarizing
+  # past 6 messages, all but the latest 2 become one summary - written by our function, in the background
+  session: {summarizing: {summarize: {import: providers:summarize}, max_messages: 6, keep: 2}}
+  env: {SUMMARY_MODEL: gpt-5-mini}                # only used when OPENAI_API_KEY is set
+---
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: facts}
+spec:
+  entrypoint: agents.py:Mirror
+  display_name: Facts
+  session: {providers.py:Facts: {keep: 2}}        # a provider of our own, by path (or module:Class)

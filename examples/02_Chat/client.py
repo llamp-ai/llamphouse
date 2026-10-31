@@ -1,65 +1,72 @@
-import asyncio
-from uuid import uuid4
+"""Chat with the agent from a terminal, over the native HTTP API (/v2): one thread, a run per message.
+
+    python client.py                 # a new conversation
+    python client.py <thread id>     # carry on with one
+
+The server: `llamphouse up --memory --agents agents.yaml` (LLAMPHOUSE_URL points elsewhere than :8000).
+"""
+
+import json
+import os
+import sys
+from typing import Iterator
+
 import httpx
-from a2a.client import A2ACardResolver, ClientFactory, ClientConfig
-from a2a.types import (
-    Message,
-    Part,
-    TextPart,
-    Role,
-)
 
-BASE_URL = "http://127.0.0.1:8000"
+URL = os.environ.get("LLAMPHOUSE_URL", "http://127.0.0.1:8000")
+AGENT = "chat"
+ME = {"kind": "person", "id": "ada", "name": "Ada"}
 
 
-async def main():
+def follow(http: httpx.Client, run_id: str) -> Iterator[tuple[str, dict]]:
+    """The run's live stream (server-sent events), as (event, data) pairs; it ends with the run."""
+    with http.stream("GET", f"/v2/runs/{run_id}/events/stream") as r:
+        r.raise_for_status()
+        event, data = "", []
+        for line in r.iter_lines():
+            if line.startswith("event: "):
+                event = line[7:]
+            elif line.startswith("data: "):
+                data.append(line[6:])
+            elif not line and data:
+                yield event, json.loads("\n".join(data))
+                event, data = "", []
 
-    # Create an async HTTP client with a longer timeout to accommodate LLM response times
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as httpx_client:
 
-        # 1. Discover the agent
-        resolver = A2ACardResolver(httpx_client=httpx_client, base_url=BASE_URL)
-        card = await resolver.get_agent_card()
-        print("=== Agent Card ===")
-        print(f"Name       : {card.name}")
-        print(f"Description: {card.description}")
-        print(f"Version    : {card.version}")
-        if card.provider:
-            print(f"Provider   : {card.provider.organization} ({card.provider.url})")
-        if card.skills:
-            print(f"Skills     : {', '.join(s.name for s in card.skills)}")
-        print("==================\n")
+def text_of(message: dict) -> str:
+    return "".join(p.get("text", "") for p in message["parts"])
 
-        factory = ClientFactory(
-            ClientConfig(httpx_client=httpx_client, streaming=False)
-        )
-        client = factory.create(card)
 
-        # 2. Interactive chat loop
-        print("Type your message (or 'quit' to exit):\n")
+def turn(http: httpx.Client, thread_id: str, text: str) -> None:
+    """A message starts a run on the thread; its reply is on the run's stream."""
+    r = http.post(f"/v2/threads/{thread_id}/runs", json={"text": text, "sender": ME})
+    r.raise_for_status()
+    run_id = r.json()["id"]
+    for event, data in follow(http, run_id):
+        if event == "message.completed":
+            print(f"{AGENT}: {text_of(data['message'])}")
+        elif event == "end" and data["status"] != "completed":
+            print(f"[run {data['status']}: {http.get(f'/v2/runs/{run_id}').json()['error']}]")
 
+
+def main() -> None:
+    with httpx.Client(base_url=URL, timeout=httpx.Timeout(30, read=None)) as http:
+        if len(sys.argv) > 1:
+            thread_id = sys.argv[1]
+        else:
+            r = http.post("/v2/threads", json={"agent": AGENT})
+            r.raise_for_status()
+            thread_id = r.json()["id"]
+        print(f"thread {thread_id} - Compass: {URL}/compass - empty line or Ctrl-D to stop")
         while True:
-            user_input = input("> User: ")
-            if user_input.strip().lower() in ("quit", "exit", "q"):
-                print("Goodbye!")
+            try:
+                text = input("you: ").strip()
+            except EOFError:
                 break
-
-            msg = Message(
-                messageId=uuid4().hex,
-                role=Role.user,
-                parts=[Part(root=TextPart(text=user_input))],
-            )
-
-            result = await anext(client.send_message(msg))
-            task, _ = result  # Non-streaming yields a single (Task, None)
-
-            for artifact in task.artifacts or []:
-                for part in artifact.parts:
-                    if hasattr(part.root, "text"):
-                        print(f"> Agent: {part.root.text}")
-
-            print()  # blank line between turns
+            if not text:
+                break
+            turn(http, thread_id, text)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

@@ -142,8 +142,7 @@ class PostgresSpanExporter(SpanExporter):
     def __init__(self, database_url: str) -> None:
         self._url = _normalize_url(database_url)
         self._lock = threading.Lock()
-        self._table_ready = False
-        self._ensure_table()
+        self._table_ready = False  # made on the first export: constructing connects to nothing
 
     def _connect(self):
         import psycopg2

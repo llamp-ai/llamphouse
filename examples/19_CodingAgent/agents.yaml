@@ -1,0 +1,8 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: coder}
+spec:
+  entrypoint: agents.py:Coder
+  display_name: Coder
+  # past 5 messages, the older ones become one summary (here `summarize` stands in for a model call)
+  session: {summarizing: {summarize: {import: agents:summarize}, max_messages: 5, keep: 3}}

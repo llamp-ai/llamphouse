@@ -306,7 +306,7 @@ class PostgresStore(Store):
 
     async def delivered(self, delivery_id: str, at: datetime) -> None:
         async with self.pool.acquire() as con:
-            await con.execute("update llamphouse_outbox set delivered_at = $2 where id = $1", delivery_id, at)
+            await con.execute("update llamphouse_outbox set delivered_at = $2, attempts = attempts + 1 where id = $1", delivery_id, at)
 
     async def delivery_failed(self, delivery_id: str, *, attempts: int, next_at: datetime, error: str,
                               dead: bool) -> None:

@@ -226,7 +226,8 @@ class MemoryStore(Store):
         return [dict(o) for o in due]
 
     async def delivered(self, delivery_id: str, at: datetime) -> None:
-        self.data.outbox[delivery_id]["delivered_at"] = at
+        o = self.data.outbox[delivery_id]
+        o["delivered_at"], o["attempts"] = at, o.get("attempts", 0) + 1  # attempts made, the last one too
 
     async def delivery_failed(self, delivery_id: str, *, attempts: int, next_at: datetime, error: str,
                               dead: bool) -> None:

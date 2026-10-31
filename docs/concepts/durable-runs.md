@@ -1,174 +1,190 @@
-# Durable Runs
+# Durable runs
 
-A durable run survives what usually ends a run: a worker that crashes, a
-server that restarts, a wait of hours for a human. It can **wait without
-holding a worker**, **resume where it was** and **retry from the step that
-failed**, and it never does twice what it already did.
+A run can take seconds or weeks. It can ask a person something and wait for days, sleep until next
+Monday, wait on five other agents, and survive a worker dying halfway through. This page explains how,
+and the few rules your code follows for it to work.
+
+## Waiting without a worker
+
+When a run waits, it doesn't hold a worker. It is parked in the store with what it waits for, and the
+worker moves on to other runs. When the wait is over, a worker (any worker, in any process) picks it up
+again.
+
+| in agent code | the run is | it continues when |
+|---|---|---|
+| `await ctx.ask(...)`, `ctx.run.request_input(...)` | `input_required` | someone answers (`POST /v2/runs/{id}/answer`, an adapter) |
+| `await ctx.client.call_tool(call)` | `input_required` | the client sends the tool's result |
+| `await ctx.run.request_auth(...)` | `auth_required` | the client sends credentials or consent |
+| `await ctx.sleep(seconds)` / `until=` | `waiting` | the time comes |
+| `await ctx.run.wait_for_signal(key)` | `waiting` | a signal with that key arrives (or the timeout) |
+| `await ctx.next(...)`, `subscription.next()` | `waiting` | a message is sent to the run, or something happens on the threads it waits on |
+| `await thread.wait()` | `waiting` | the run on that thread ends |
+| `await ctx.session.settled()` | `waiting` | the session's revision is done |
+
+A run whose code has returned but whose forks or calls are still running also waits: it ends when they
+do (unless they were started with `detach=True`).
+
+`asyncio.sleep` and other plain awaits hold the worker. Use them for short pauses only.
+
+## Replay
+
+When a waiting run continues, its `run` method is executed again, **from the top**, with a new agent
+instance. Everything the run did through `ctx` before was recorded, so this time those calls return
+their recorded results immediately instead of doing the work again:
 
 ```python
-from llamphouse.core import Agent, Context, step
-
-class RefundAgent(Agent):
-    durable = True
+class Refund(Agent):
+    """Refunds an order after a manager approves."""
 
     @step
-    async def draft_refund(self, context: Context, order_id: str) -> dict:
-        return await llm_draft(order_id)
+    async def refund(self, ctx, order: str) -> str:
+        return await payments.refund(order)       # never twice
 
-    @step(retries=3, backoff=1.0)
-    async def pay(self, context: Context, refund: dict) -> str:
-        return await payments.refund(refund)
-
-    async def run(self, context: Context):
-        refund = await self.draft_refund(context, "A-1042")
-        answer = await context.wait_for_input(
-            f"Approve a refund of {refund['amount']} EUR?",
-            schema={"type": "object", "properties": {"approved": {"type": "boolean"}}},
-            timeout=24 * 3600,
-        )
-        if answer["approved"]:
-            await context.sleep(300)          # a cool-off, holding no worker
-            await self.pay(context, refund)
-            await context.reply("Refund paid.")
+    async def run(self, ctx) -> None:
+        order = ctx.input.text
+        await ctx.send(f"Asking a manager about {order}.")              # 1st execution: sent
+        answer = await ctx.ask(f"Refund {order}?")                       # 1st execution: the run parks here
+        # 2nd execution, after the answer: the send above is replayed (not sent again),
+        # ask returns the answer, and the code carries on from here
+        if answer.text.lower().startswith("y"):
+            receipt = await self.refund(ctx, order)
+            await ctx.send(f"Refunded: {receipt}")
+        else:
+            await ctx.send("Not refunded.")
 ```
 
-## How a run resumes: replay
+What is recorded: steps, messages sent and streamed, questions and their answers, sleeps, signals,
+events taken from subscriptions and the inbox, state reads and writes (both scopes), session reads and
+entries, threads created (`fork`, `call`, `ctx.forks`), what was read from them (`messages`, `wait`),
+schedules. Events emitted with `ctx.emit` are not emitted again.
 
-A run that runs again — woken from a wait, retried, or taken over from a
-dead worker — runs `Agent.run` **from the top**. What its earlier attempts
-completed is not done again; it *replays*:
+### Call keys
 
-| Call | Recorded as | On replay |
-|---|---|---|
-| `@step` function | a `step` run step with its input and output | returns the stored output |
-| `context.reply` / `insert_message` | a `message_creation` run step | returns the message, inserts nothing |
-| `context.sleep` | a `sleep` step | returns at once |
-| `context.wait_for_signal` / `wait_for_input` | a `wait_for_signal:<name>` step | returns the payload it got |
+A recorded call is found again by its name and its count: the first `ctx.ask` in a run is `input#1`, the
+second `input#2`; the first step called `refund` is `refund#1`. That's why replay needs your code to make
+the same calls in the same order each time it executes. In practice:
 
-Each call is recorded under a **call key**: its name and how many calls of
-that name came before it in the run (`RefundAgent.pay#1`, `message#2`, …),
-kept in the run step's `metadata.call_key`. A call whose key completed
-returns what it returned then.
+- **Decide only on recorded values.** Branch on what `ctx` returned (an answer, a state value, a step's
+  result), not on `datetime.now()`, `random`, or an API call made outside a step.
+- **Put side effects and non-deterministic work in steps.** Bookings, emails, payments, API calls,
+  model calls, the time, random ids: `@step` (or `ctx.step(name, fn)`) records the result, and a replay
+  returns it.
+- **Keep nothing on `self`.** Each execution has a new instance of the agent class. Keep what must
+  last in `ctx.run.state` or `ctx.state`.
+- **Return storable results from steps:** JSON values, pydantic models, dataclasses, datetimes. Classes
+  must be importable by module path.
 
-!!! warning "Keep what may differ in a `@step`"
-    Replay works when the code between steps makes the same calls in the
-    same order on every attempt. Put LLM calls, the clock, random values,
-    reads from other systems — anything that may differ — inside a `@step`,
-    so their result is recorded once and replayed after.
+Code that can't repeat itself in order (a framework resuming from its own checkpoint) names its calls
+instead, with `key=` on `ctx.ask` and `ctx.stream`: the same key, the same answer, wherever it comes
+in the order. It reads and writes its checkpoint through `ctx.run.state.live` or `ctx.state.live`, which
+are outside the replay. `llamphouse.helpers.langgraph` works this way (see the
+[LangGraph example](../../examples/15_LangGraph)).
 
-A step's output is stored as JSON, so on replay it comes back as JSON data
-(a dict, not your Pydantic model): return JSON-serializable values.
+### Model calls
 
-`context.messages` on a resumed run excludes what the run itself said, so
-an agent reading it sees the thread as its first attempt did.
+A model call outside a step is made again on every execution. `pipe` (from `llamphouse.helpers.streams`)
+writes its message only once, but the model is still called. When a run calls a model and then waits,
+put the call in a step. See [Adding an LLM](../getting-started/adding-llm.md#model-calls-and-replay).
 
-## Waiting
+### Keeping replay short
 
-### `context.sleep(seconds, *, until=None)`
-
-Parks the run until the time comes: its status becomes `requires_action`
-(`required_action.type == "wait_until"`), the worker moves on, and a worker
-resumes the run when it is due.
-
-### `context.wait_for_signal(name, *, correlation_id=None, timeout=None, request=None)`
-
-Parks the run until the signal `name` is delivered to it, and returns the
-signal's payload. A signal delivered *before* the run waits is kept and
-returned at once. With `timeout`, a `TimeoutError` is raised in the agent
-when no signal came in time. `request` is shown to whoever answers, in
-`required_action.details.request`.
-
-### `context.wait_for_input(prompt, *, schema=None, name="human_input", timeout=None)`
-
-Human in the loop: `wait_for_signal` with `{"prompt": ..., "schema": ...}`
-as the request.
-
-### Delivering a signal
-
-| Where | How |
-|---|---|
-| A2A | A waiting task is `input-required`; its status message holds the prompt (and the schema, as a data part). Reply with a message carrying the `taskId`: the first data part is the answer, else the text. |
-| Assistants API | `POST /threads/{thread_id}/runs/{run_id}/signals` with `{"name": ..., "payload": ..., "correlation_id": ...}` |
-| Python | `await signal_run(data_store, run_queue, thread_id, run_id, name, payload)` from `llamphouse.core.workers.run_lifecycle` |
-
-A run waiting for a signal is cancelled at once (`request_cancel`); a
-finished run takes no signals.
-
-## Retries
-
-- **A step:** `@step(retries=3, backoff=1.0)` runs a step again after it
-  raised, waiting `backoff`, then twice that, and so on. Each attempt is its
-  own run step (`metadata.attempt`).
-- **A run:** with a queue `RetryPolicy(max_attempts=N)`, a failed run is
-  queued again (status `queued`) and the next attempt carries on from the
-  step that failed.
-- **By hand:** `POST /threads/{thread_id}/runs/{run_id}/retry` (or
-  `retry_run(...)`) runs a failed, expired or cancelled run again — from
-  the step that failed.
-
-## LangGraph
-
-`LangGraphAgent` maps durable runs onto LangGraph's own persistence instead
-of replaying `@step`s: the graph runs with a checkpointer keyed by the run,
-stored in the data store (`LLAMPHouseCheckpointSaver`, on the store's
-key-value records).
-
-- A node calling LangGraph's `interrupt(value)` parks the run like
-  `wait_for_input` — `{"prompt": ..., "schema": ...}` is shown as the
-  question — and the answer resumes the graph inside that node
-  (`Command(resume=...)`). Several interrupts, in one node or in parallel
-  nodes, each wait for their own answer.
-- A retried run, or one taken over after its worker died, carries on from
-  the last checkpoint (the agent is `durable` by default).
+A run that loops (a supervisor waiting on its forks, a run handling its inbox for hours) would replay
+every earlier round on each wake-up. `ctx.restart()` starts the run's code from the top with its replay
+history dropped; `ctx.run.state`, its forks, its session and its subscriptions carry over. Loop by
+restarting, and keep the loop's progress in run state:
 
 ```python
-LangGraphAgent(
-    id="refunds",
-    graph=builder.compile(),      # compiled without a checkpointer
-    checkpointer="llamphouse",    # default; or your own (PostgresSaver, ...), or None
-    checkpoint_scope="run",       # or "thread": the graph state carries over between runs
-)
+async def run(self, ctx):
+    seen = await ctx.run.state.get("seen", 0)
+    event = await ctx.next()                     # waits for the next message sent to this run
+    await ctx.send(f"Got message {seen + 1}: {event.message.text}")
+    await ctx.run.state.set("seen", seen + 1)
+    await ctx.restart()
 ```
 
-LangGraph re-runs an interrupted node from its top when it resumes: keep
-side effects after the `interrupt()` call, or in a later node.
+## Steps
 
-## Crash recovery
+`@step` on an agent method makes it a step: the context is the first argument after `self`, and the
+step's name is the method's name (or `@step(name="...")`).
 
-A worker **claims** a run before running it, and holds it under a
-**lease** its heartbeat renews (every 5 s; the lease lasts 30 s). Only one
-worker holds a run at a time. If a worker dies, its lease expires and a
-**recovery loop** — every worker runs one, every 10 s — finds the run:
+```python
+@step
+async def fetch(self, ctx, url: str) -> dict:
+    async with httpx.AsyncClient() as http:
+        return (await http.get(url)).json()
+```
 
-- the run of a **durable agent** (`durable = True`) is queued again and
-  resumes where it was, on any worker;
-- any other agent's run **fails**, since running it again could repeat
-  what it already did.
+A step is recorded when it returns. If a worker dies after the work was done but before the result was
+recorded, the step runs again on the next worker: steps run **at least once**, and a replay never runs a
+recorded step again. For side effects that must happen exactly once, give the other system an
+idempotency key (the run's id plus the step, for example).
 
-The same loop wakes waiting runs that are due, even if the message that
-was to wake them was lost (an in-memory queue after a restart).
+A step that raises is recorded too: the exception goes up through your code like any other (and fails
+the run unless you catch it), and when the run is replayed the step raises the same exception again
+rather than running again. So code that catches a failure takes the same path on every execution.
 
-| `AsyncWorker` / `DistributedWorker` argument | Default | |
-|---|---|---|
-| `heartbeat` | `5.0` | seconds between lease renewals (and cancel checks) |
-| `lease_ttl` | `30.0` | seconds a lease lasts unless renewed |
-| `recover_interval` | `10.0` | seconds between looks for runs to recover; `None` turns the loop off |
-| `worker_id` | `host:pid:random` | who holds a lease |
+`@step(retries=3, backoff=1.0)` tries a step again in place when it raises, after `backoff` seconds,
+doubling each time; `retry_on=(ConnectionError,)` limits which exceptions are retried. Only the last
+outcome is recorded. Retries hold the worker while they wait, so for long waits between attempts, loop
+over `ctx.sleep` in the run instead (each attempt its own step).
 
-!!! note "Which stores"
-    `InMemoryDataStore` and `PostgresDataStore` support durable runs. Only
-    Postgres keeps waiting runs across a restart. A custom store keeps
-    working as before; it opts in by implementing the durable-runs methods
-    of `BaseDataStore` (`claim_run`, `renew_lease`, `suspend_run`, …) and
-    setting `supports_durable_runs = True`.
+```python
+@step(retries=3, backoff=0.5, retry_on=(httpx.TransportError,))
+async def charge(self, ctx, order: str) -> str:
+    ...
+```
 
-## Run states
+`AgentError(code, message, retryable=True)` tells clients that trying the whole run again may help.
 
-| Status | `required_action.type` | Holds a worker | Due again |
-|---|---|---|---|
-| `queued` | | no | when a worker claims it |
-| `in_progress` | | yes, under a lease | when its lease expires (worker died) |
-| `requires_action` | `wait_until` | no | at `wake_at` |
-| `requires_action` | `wait_for_signal` | no | when its signal arrives, or at its time out |
+With tracing on, each executed step is a `llamphouse.step` span under the run's span; a replayed step
+makes none. On the run's stream an executed step is `step.started`, then `step.completed` or
+`step.failed` (AG-UI shows them as STEP_STARTED / STEP_FINISHED). Compass shows a run's steps, recorded and replayed, and how many times the run was executed.
 
-See the [Durable Runs example](https://github.com/llamp-ai/llamphouse/tree/main/examples/16_DurableRuns).
+## Leases and crashes
+
+A worker that takes a run takes a **lease** on it in the same transaction (30 seconds by default,
+`engine: {lease_ttl: 30}` in the runtime file), and renews it while the run executes. Only the lease
+holder may write for the run.
+
+| what happens | what llamphouse does |
+|---|---|
+| the run waits | the lease is released; the run is parked |
+| a worker stops gracefully (Ctrl-C, a deploy) | it hands its runs back at once; another worker carries on |
+| a worker dies (`kill -9`, the machine goes) | when the lease expires, the sweeper (in every worker) queues the run again; another worker executes it and replays what was recorded |
+| the API process restarts | nothing: it holds no runs; clients reconnect and resume their streams by position |
+| a worker finds its lease taken | it stops without writing |
+
+So nothing recorded happens twice, and nothing is lost except work that wasn't recorded yet (that is done
+again). See the [Durable runs example](../../examples/13_DurableRuns) and the
+[Server example](../../examples/10_Server) for killing workers on purpose.
+
+## Cancelling
+
+`POST /v2/runs/{id}/cancel` (or `thread.close()` from the run that created a thread) cancels the run and
+the runs it started, except detached ones. A waiting run ends at once. An executing run stops at its
+next call through `ctx`; a long computation between calls can check `ctx.run.cancelled`.
+
+## Limits
+
+Against runs that start runs without end, a run started from outside may lead to at most
+`max_runs_per_root` runs below it (1000 by default), at most `max_depth` deep (50). Both are engine
+options in the runtime file (`engine: {max_runs_per_root: 200}`).
+
+## Testing it
+
+`llamphouse.sdk.scenario.Scenario` runs agents on the real engine, in memory, on a fake clock. You can
+move the clock (`sc.advance(seconds)`) and inject crashes before or after a step, then check that
+nothing happened twice.
+
+```python
+from llamphouse.sdk.scenario import Scenario
+
+
+async def test_refund_happens_once():
+    async with Scenario({"refund": Refund}) as sc:
+        run = await sc.start("refund", "order-42")
+        await sc.settle()
+        await sc.answer(run, "yes")
+        await sc.settle()
+        assert sc.run(run).status == "completed"
+```

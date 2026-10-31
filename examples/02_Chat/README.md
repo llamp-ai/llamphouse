@@ -1,84 +1,62 @@
-# 💬 Chat
+# Chat
 
-A LLAMPHouse agent that holds a real conversation using OpenAI's Chat
-Completions API, served over the **A2A** (Agent-to-Agent) protocol.
+A conversation with a model. Each message you send starts a run of `chat` on the same thread; the agent reads
+its session - the conversation so far, as it sees it - turns it into input for OpenAI's Responses API, and
+sends the model's answer back on the thread. It keeps no history of its own: next turn, its earlier answers
+are in the session, marked as its own (`ctx.session.is_own`). The model call is the example's own code;
+llamphouse doesn't know which model or provider it talks to.
 
-This builds on [01_HelloWorld](../01_HelloWorld) by replacing the static
-greeting with an actual LLM — everything else stays the same.
+## Run it
 
-## What you'll learn
-
-- How to call OpenAI from inside an agent's `run()` method
-- How to forward the conversation history to the LLM
-- How to build an interactive chat loop in the A2A client
-
-## Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| Python 3.10+ | Check with `python --version` |
-| OpenAI API key | Get one at [platform.openai.com](https://platform.openai.com/api-keys) |
-
-## Quick start
-
-### 1. Install dependencies
-
-```sh
+```bash
 pip install -r requirements.txt
+export OPENAI_API_KEY=sk-...
+llamphouse up --memory --agents agents.yaml     # http://127.0.0.1:8000, Compass at /compass
+python client.py                                # in a second terminal: chat; an empty line stops
 ```
 
-### 2. Set your API key
-
-Create a `.env` file in this directory:
-
-```sh
-echo "OPENAI_API_KEY=sk-..." > .env
+```
+thread thread_2b27… - Compass: http://127.0.0.1:8000/compass - empty line or Ctrl-D to stop
+you: My name is Ada.
+chat: Nice to meet you, Ada!
+you: What's my name?
+chat: Your name is Ada.
 ```
 
-### 3. Start the server
+`python client.py <thread id>` carries on with an earlier conversation (while the server runs: `--memory`
+keeps nothing across a restart).
 
-```sh
-python server.py
+## Try
+
+- Another model: `config: {model: gpt-5}` in `agents.yaml`, or a different `instructions`. The config is the
+  agent's `Config` class (`ChatConfig`), validated when the server starts.
+- Two clients on two threads: each conversation has its own session.
+
+## In Compass
+
+Open the thread: your messages and the agent's answers, one run per message. Open a run: its **Session**
+tab is what the agent read (its own answers marked `own`), its **Live** tab the `usage` event it reported
+(the model and its tokens).
+
+## The code
+
+```python
+class ChatConfig(Config):
+    model: str = "gpt-5-mini"
+    instructions: str = "You are a friendly assistant. Answer briefly."
+
+
+class Chat(Agent[ChatConfig]):
+    async def run(self, ctx) -> None:
+        session = await ctx.session.messages()          # the conversation so far, this message included
+        response = await openai().responses.create(
+            model=ctx.config.model, instructions=ctx.config.instructions,
+            input=[{"role": "assistant" if ctx.session.is_own(m) else "user", "content": m.text}
+                   for m in session if m.text])
+        await ctx.send(response.output_text)            # on the thread: next turn it is in the session
 ```
 
-You should see output like:
+`is_own` is decided by which run wrote a message, not by a role field: the agent's earlier runs on the thread
+are its own; a person, another agent or a parent steering a fork is not.
 
-```
-LLAMPHOUSE We have light!
-LLAMPHOUSE Server: http://127.0.0.1:8000
-```
-
-### 4. In a second terminal, run the client
-
-```sh
-python client.py
-```
-
-You'll enter an interactive chat loop. Type a message and press Enter.
-
-## How it works
-
-### Server (`server.py`)
-
-1. **Define an agent** — subclass `Agent` and implement `run()`. This agent
-   converts the conversation history to OpenAI's message format and calls
-   `chat.completions.create()`.
-2. **Wire it up** — create a `LLAMPHouse` instance with your agent, a data
-   store, and the `A2AAdapter`.
-3. **Start** — call `llamphouse.ignite()` to launch the server.
-
-### Client (`client.py`)
-
-1. **Discover** — use `A2ACardResolver` to fetch the agent card from
-   `/.well-known/agent-card.json`.
-2. **Connect** — create a `Client` via `ClientFactory`.
-3. **Chat loop** — read user input, send it as an A2A message, and print the
-   agent's reply. Repeat until the user types `quit`.
-
-## Next steps
-
-| Example | What it adds |
-|---|---|
-| [04_ToolCall](../04_ToolCall) | Give your agent tools to call |
-| [05_Streaming](../05_Streaming) | Stream responses token-by-token |
-| [08_Tracing](../08_Tracing) | Add OpenTelemetry tracing |
+Next: [03_Streaming](../03_Streaming) streams the answer token by token.

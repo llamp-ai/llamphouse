@@ -1,0 +1,5 @@
+# The runtime file, for a run that survives a restart: the store in Postgres.
+# Without it (or with --memory) everything is in memory and lives as long as the process.
+apiVersion: llamphouse.io/v1alpha1
+kind: Runtime
+data_store: {postgres: {dsn: "${LLAMPHOUSE_DATABASE_URL:-postgresql://llamphouse:llamphouse@localhost:5432/llamphouse}"}}

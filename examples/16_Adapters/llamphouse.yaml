@@ -1,0 +1,7 @@
+# The runtime file: the protocols mounted next to the native API (/v2). No stores named: all in memory.
+apiVersion: llamphouse.io/v1alpha1
+kind: Runtime
+adapters:
+  - responses: {prefix: /v1, agent: concierge}    # OpenAI Responses + Conversations (+ /v1/models)
+  - assistants: {prefix: /v1, agent: concierge}   # OpenAI Assistants API (/v1/assistants, /v1/threads)
+  - a2a: {prefix: /a2a}                           # A2A v1.0: /a2a/concierge/.well-known/agent-card.json

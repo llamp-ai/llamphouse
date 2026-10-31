@@ -59,7 +59,7 @@ async def test_status_changes_are_delivered_signed_and_filtered():
         assert first.headers["X-Llamphouse-Signature"] == expected and first.headers["X-Llamphouse-Delivery"]
         assert await sc.deliver() == 0  # delivered: not again
         history = await sc.store.deliveries(everything.id)
-        assert len(history) == 3 and all(d["delivered_at"] is not None for d in history)
+        assert len(history) == 3 and all(d["delivered_at"] is not None and d["attempts"] == 1 for d in history)
 
 
 async def test_a_failing_receiver_is_tried_again_and_then_given_up_on():

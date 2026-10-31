@@ -1,0 +1,7 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: refunds}
+spec:
+  entrypoint: agents.py:RefundAgent
+  display_name: Refunds
+  config: {cool_off_seconds: 10, attempts: 3, backoff_seconds: 2}   # RefundConfig

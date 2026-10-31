@@ -1,0 +1,14 @@
+# The runtime file: who may call, and what they may touch.
+apiVersion: llamphouse.io/v1alpha1
+kind: Runtime
+env:
+  GATEWAY_SECRET: "${GATEWAY_SECRET:-change-me}"       # shared with the app's gateway (see gateway_auth.py)
+auth:                                                 # tried in order: the first that knows the request decides
+  - api_key:
+      keys:                                           # key -> who it is
+        "${ACME_KEY:-acme-key}":     {subject: ann, tenant: acme}
+        "${GLOBEX_KEY:-globex-key}": {subject: bob, tenant: globex}
+        "${OPS_KEY:-ops-key}":       {subject: ops}
+  - gateway_auth:GatewayTokenAuth: {secret_env: GATEWAY_SECRET}   # your own Auth class
+access:
+  tenant: {admin_subjects: [ops]}                     # tenants apart; ops sees every tenant

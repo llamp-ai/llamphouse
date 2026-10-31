@@ -1,0 +1,13 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: support}
+spec:
+  entrypoint: agents.py:SupportDesk   # a LangGraph graph as the whole agent
+  display_name: Support desk
+---
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: refunds}
+spec:
+  entrypoint: agents.py:Refunds       # the same graph, run inside an agent of its own
+  display_name: Refunds

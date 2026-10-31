@@ -627,3 +627,17 @@ async def test_fakerun_keeps_session_entries_off_the_thread_and_records_revision
     assert await run.start(Works()) == 3  # the input, the entry, the reply
     assert [m.text for m in run.replies] == ["found it"]  # the entry isn't a reply on the thread
     assert len(run.session_entries) == 1 and run.revisions == [{"reason": "tidy"}]
+
+
+class _Rounds(Config):
+    rounds: int = 3
+
+
+class _Counted(Agent[_Rounds]):
+    async def run(self, ctx) -> int:
+        return ctx.config.rounds
+
+
+async def test_a_fake_run_gives_the_agent_its_own_configs_defaults():
+    assert await FakeRun("go").start(_Counted()) == 3
+    assert await FakeRun("go", config=_Rounds(rounds=5)).start(_Counted()) == 5

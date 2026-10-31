@@ -1,99 +1,91 @@
-# LangGraph Branching Wrapper Example
+# LangGraph
 
-This example shows a non-trivial LangGraph workflow running behind the LLAMPHouse runtime contract.
+A LangGraph graph served by llamphouse, with `llamphouse.helpers.langgraph`. The graph is a small support desk:
+it routes a message (order status, refund, anything else), refunds up to 100 EUR at once, and asks a person to
+approve larger refunds with LangGraph's `interrupt()`. It runs twice: as the whole agent (`LangGraphAgent`,
+`support`), and inside an agent of its own (`run_graph`, `refunds`) that does work around it. Plain nodes, no
+model, no keys.
 
-## What it demonstrates
+## Run it
 
-- `LangGraphAgent` wrapper usage
-- Intent routing with conditional edges
-- Branch fan-out/fan-in (parallel branches that join)
-- LLAMPHouse step mapping for LangGraph nodes (visible in Compass)
-- Tracing enabled for this example (run-level traces visible in Compass)
-- A2A serving via `A2AAdapter`
-- Human in the loop with LangGraph's `interrupt()`: the run parks without holding a worker, the A2A task is `input-required`, and the answer resumes the node
-- Durable runs: checkpoints in the LLAMPHouse data store, so a resumed or retried run carries on from the last checkpoint
-
-## Graph shape
-
-1. `ingest_user_input` extracts latest user text from message parts.
-2. `route_intent` classifies request into `math`, `research`, `refund`, or `general`.
-3. Conditional branch:
-	- `math` -> `solve_math` -> `format_math_output`
-	- `research` -> `make_research_plan` -> (`collect_facts` + `collect_risks`) -> `synthesize_research`
-	- `general` -> `general_reply`
-	- `refund` -> `draft_refund` -> `human_approval` (`interrupt()`) -> `finalize_refund`
-4. Terminal nodes produce final `output`.
-
-Because the wrapper runs with `map_nodes_to_steps=True`, node execution is mapped into LLAMPHouse run steps.
-
-## Run
-
-1. Install dependencies:
+Needs Python 3.11+ (LangGraph's `interrupt()` in async runs).
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt                 # llamphouse[langgraph]
+llamphouse up --memory --agents agents.yaml     # http://127.0.0.1:8000/compass
+python client.py                                # approves the large refund; `python client.py no` declines it
 ```
 
-2. Start the server:
+```
+== support: the graph is the agent; its state carries over the thread's runs
+ada: Where is my order?
+support: Your order shipped yesterday; it arrives on Friday.
+ada: I'd like a refund of 40 EUR
+support: Refunded 40.00 EUR. 1 refund(s) so far, 40.00 EUR in all.
+ada: And a refund of 250 EUR for the chair
+support asks: Approve a refund of 250.00 EUR? (yes/no)
+ada: yes
+support: Refunded 250.00 EUR. 2 refund(s) so far, 290.00 EUR in all.
 
-```bash
-llamphouse up
+== refunds: the graph runs inside an agent of its own
+ada: Please refund 300 EUR for order A-17
+refunds asks: Approve a refund of 300.00 EUR? (yes/no)
+ada: yes
+refunds: A-17 (Oak chair): Refunded 300.00 EUR. 1 refund(s) so far, 300.00 EUR in all.
+[run completed, output {'order': 'A-17', 'item': 'Oak chair', 'amount': 300.0, 'refunded': True}]
 ```
 
-3. Run the client:
+## What happens
 
-```bash
-python client.py
-```
+- **`interrupt()` is `ctx.ask`.** The run waits (`input_required`) without holding a worker; the answer
+  (`POST /v2/runs/{id}/answer`, or Compass's composer) resumes the graph in that node. Any protocol's way of
+  answering works: an A2A `input-required` task, a Responses follow-up, an AG-UI `resume`.
+- **Checkpoints in the run's state.** When the run executes again - it waited, or a worker died and another
+  took it over - the graph carries on from its last checkpoint: nodes that finished don't run again, and its
+  input isn't given twice. The latest checkpoint is kept, not the history.
+- **Thread scope is memory.** `support` has `scope = "thread"`: the graph's state (its messages, the
+  `refunds` list) carries over to the thread's next run, so the third message knows about the first refund.
+  It is written to the thread's state (`langgraph`) when the graph ends or asks, not on every step.
+- **Streaming.** Messages the graph's nodes produce - a model's tokens, or an `AIMessage` a node returns - are
+  streamed into the run's messages. `refunds` passes `stream=False` and says what it wants itself.
 
-The client sends four prompts to exercise each branch. The refund prompt
-stops at `human_approval`: the task comes back `input-required` with the
-question, and the client answers it with a message carrying the task id
-(`{"approved": true}` as a data part), which resumes the graph.
+In Compass: a `support` thread's **State** shows the `langgraph` key, written when the graph ends or asks; a run that asked
+shows the question and the answer in its story; `refunds` runs show the recorded `lookup` step (replayed, not
+done again, when the run resumes after the answer) and their typed output.
 
-## Durable runs and `interrupt()`
+## The code
 
-`LangGraphAgent` runs the graph with a checkpointer (LangGraph's own
-persistence), keyed by the run and stored in the LLAMPHouse data store:
+The graph as the whole agent:
 
 ```python
-def human_approval(state):
-    answer = interrupt({"prompt": "Approve this refund?", "schema": {...}})
-    return {"refund_approved": answer["approved"]}
+class SupportDesk(LangGraphAgent):
+    """Order status and refunds; a person approves refunds above 100 EUR."""
+    graph = GRAPH            # build().compile(), without a checkpointer: llamphouse gives each run its own
+    scope = "thread"
 ```
 
-- `interrupt(value)` parks the run (`requires_action`), holding no worker.
-  `{"prompt", "schema"}` is shown as the question; over A2A the task is
-  `input-required`, over the Assistants API you answer with
-  `POST /threads/{thread_id}/runs/{run_id}/signals` (`name: "human_input"`).
-- The answer resumes the graph *inside* that node (`Command(resume=...)`);
-  the nodes before it do not run again. LangGraph runs the interrupted node
-  again from its top, so keep side effects after `interrupt()` or in a
-  later node.
-- A run that fails, or whose worker dies, carries on from the last
-  checkpoint (the agent is `durable` by default).
-- `LangGraphAgent(checkpointer=None)` turns this off; pass your own
-  LangGraph checkpointer (e.g. `PostgresSaver`) to use it instead, and
-  `checkpoint_scope="thread"` to keep the graph state across runs of a thread.
+or `SupportDesk = LangGraphAgent.of(GRAPH, scope="thread")`. Override `graph_input(ctx)` to map the run to
+the graph's input, and `reply(values)` for what it says at the end.
 
-## Inspect in Compass
+The graph inside an agent:
 
-The server mounts `CompassAdapter`, so after running requests you can inspect node-level steps in Compass.
+```python
+class Refunds(Agent):
+    async def run(self, ctx) -> RefundResult:
+        item = await self.lookup(ctx, order)                     # a @step: recorded once
+        values = await run_graph(ctx, GRAPH, {"messages": [("user", ctx.input.text)]}, stream=False)
+        await ctx.send(f"{order} ({item}): {values['messages'][-1].content}")
+        return RefundResult(...)
+```
 
-Tracing is force-enabled by the server code for this example and uses an in-memory tracing store.
-Open Compass and inspect:
+The node that asks:
 
-- Traces list for run-level span trees
-- Run detail -> Trace tab for run-specific traces
+```python
+def approve(state: Support) -> Support:
+    answer = interrupt({"prompt": f"Approve a refund of {state['amount']:.2f} EUR? (yes/no)"})
+    return {"approved": str(answer).strip().lower() in ("yes", "y", "approve")}
+```
 
-## YAML-based startup
-
-This example now includes `llamphouse.yaml` and runs config-first.
-
-- agent definition entrypoint: `server.py:create_agent`
-- deployment: `langgraph-agent`
-- adapters: `a2a`, `compass`
-- stores: `in_memory` data + `in_memory` tracing
-- tracing/env metadata: configured in `globals.env`
-
-If you still want the original direct Python startup path, `python server.py` remains supported.
+`interrupt(value)` takes a string, or `{"prompt": ..., "schema": ...}` (the schema goes to the client with the
+question); the answer's data, else its text, is what `interrupt()` returns. For your own checkpointer setup,
+`LlamphouseCheckpointer(ctx, scope="run" | "thread")` is a LangGraph checkpointer on its own.

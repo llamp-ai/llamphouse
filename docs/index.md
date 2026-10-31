@@ -1,85 +1,78 @@
 <div style="text-align: center; margin-bottom: 1.5rem;">
-  <img src="img/llamphouse.png" alt="LLAMPHouse Logo" width="160">
+  <img src="img/llamphouse.png" alt="llamphouse logo" width="160">
 </div>
 
-# LLAMPHouse
+# llamphouse
 
-**Serving Your LLM Apps, Scalable and Reliable.**
+llamphouse is a runtime for agents. You write an agent as a Python class; llamphouse keeps its
+conversations, runs it on workers, carries it through waits, crashes and deploys, serves it over HTTP
+and other protocols, and shows you what it did.
 
-LLAMPHouse is a **self-hosted, production-ready server** for LLM-powered applications. It exposes an **OpenAI-compatible Assistants API** and supports the **A2A (Agent-to-Agent) protocol** — so you can use the standard OpenAI Python SDK or any A2A client to talk to your agents.
+It doesn't call models and has no opinion about which one you use. A model call is your code, inside
+your agent. llamphouse provides the mechanisms around it.
 
-Write your agent logic in plain Python, plug it into LLAMPHouse, and get a production-grade server out of the box.
+!!! note "2.0 is an alpha"
+    These pages describe llamphouse 2.0 (`2.0.0a0`). The API may still change before 2.0 is final.
+    Pin the version you build on.
 
----
+## What it gives you
 
-## Features
+- **Threads and runs.** Everything is a thread with one agent. A run is one piece of work on a
+  thread, and a thread has at most one active run. Messages, state changes and run events are all
+  recorded on the thread, in order.
+- **Durability.** A run can wait for an answer, a timer, a signal or other agents without holding a
+  worker. When it continues, or when another worker takes it over after a crash, it replays what it
+  recorded and carries on. Nothing recorded happens twice.
+- **Working with others.** A run can fork its own thread to work in parallel, call other agents on
+  threads of their own, and hand a conversation over to another agent.
+- **Protocols.** A native HTTP API (`/v2`) with live streams, and adapters for the OpenAI Responses and
+  Assistants APIs, A2A and AG-UI, all on the same threads and runs.
+- **Compass.** A web app at `/compass` to see what agents do: threads, runs, why a run is waiting,
+  its steps, state, session and trace.
+- **Deployment.** One process in memory for development; API and worker processes on Postgres and
+  Redis for production. Every component is swappable.
 
-- 🔌 **OpenAI-compatible API** — drop-in replacement, use the `openai` Python SDK as the client
-- 🤝 **A2A protocol** — interoperable agent-to-agent communication out of the box
-- 🌊 **Streaming** — real-time token streaming with SSE (works with OpenAI, Gemini, Anthropic)
-- 🛠️ **Tool calls** — native support for function calling with automatic tool output handling
-- 🔀 **Multi-agent** — `call_agent()` and `handover_to_agent()` for orchestration and delegation
-- 📊 **Compass dashboard** — built-in dev UI for threads, messages, runs, traces, and agent flow visualization
-- 🔍 **OpenTelemetry tracing** — automatic distributed tracing with ClickHouse storage
-- ⚙️ **Config store** — runtime-tunable agent parameters via a dashboard UI
-- 🐘 **Pluggable storage** — in-memory (default) or Postgres, with Alembic migrations
-- 🐳 **Docker-ready** — single-command deployment with Postgres, Redis, and tracing
-
----
-
-## Why LLAMPHouse?
-
-Most agent frameworks focus on *building* agents — LLAMPHouse focuses on **serving** them. Here's why that matters:
-
-### 🚀 Scales from dev to production without rewrites
-
-Start with a single Python file and an in-memory store. When you're ready for production, add Postgres, Redis, and distributed workers — same agent code, zero rewrites. LLAMPHouse grows with your project.
-
-### 📦 Workload scaling, not agent scaling
-
-Traditional setups tie one process to one agent. LLAMPHouse uses a **shared agent pool** with a run queue — multiple agents share the same infrastructure, and workers pull from a common queue. Scale by adding workers, not by duplicating services per agent.
-
-### 🔧 Easily extensible and configurable
-
-Swap out any component to fit your use case: data stores, queues, event queues, authentication, adapters, and workers are all pluggable interfaces. Need a custom auth layer? Implement `BaseAuth`. Want Redis queues? Drop in `RedisQueue`. The framework adapts to you, not the other way around.
-
-### 🧩 LLM and framework agnostic
-
-LLAMPHouse doesn't care what happens inside your `run()` method. Use **OpenAI**, **Anthropic**, **Google Gemini**, **Azure AI**, or any other provider. Build with **LangChain**, **LangGraph**, **LlamaIndex**, **CrewAI**, or plain API calls — LLAMPHouse serves the result, regardless of what generated it.
-
-### 🌐 Standards-based interoperability
-
-Expose your agents via the **OpenAI Assistants API** (works with the `openai` Python SDK out of the box) and the **A2A protocol** (Google's Agent-to-Agent standard). Your agents are instantly accessible to any compatible client or agent ecosystem.
-
----
-
-## Quick Example
+## A taste
 
 ```python
-from llamphouse.core import LLAMPHouse, Agent
-from llamphouse.core.context import Context
-from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
-from llamphouse.core.adapters.a2a import A2AAdapter
+# agents.py
+from llamphouse.sdk import Agent
 
 
-class HelloAgent(Agent):
-    async def run(self, context: Context):
-        await context.insert_message("Hello from LLAMPHouse!")
+class Greeter(Agent):
+    """Greets you, and remembers your name."""
 
-
-app = LLAMPHouse(
-    agents=[HelloAgent(id="hello", name="Hello Agent",
-                       description="A friendly agent", version="0.1.0")],
-    data_store=InMemoryDataStore(),
-    adapters=[A2AAdapter()],
-)
-app.ignite(host="127.0.0.1", port=8000)
+    async def run(self, ctx) -> None:
+        name = await ctx.state.get("name")
+        if name is None:
+            name = (await ctx.ask("What's your name?")).text  # waits, holding no worker
+            await ctx.state.set("name", name)
+        await ctx.send(f"Hello, {name}! You said: {ctx.input.text}")
 ```
 
-Your agent is now live at `http://127.0.0.1:8000` with an A2A endpoint, OpenAI-compatible API, and a [Compass dashboard](guides/compass.md) at `/compass`.
+```yaml
+# agents.yaml
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: greeter}
+spec:
+  entrypoint: agents.py:Greeter
+```
 
-For production deployments, swap `InMemoryDataStore` for `PostgresDataStore`
-and use Redis-backed queues. Both data stores expose the same async contract,
-including run streaming flags and provider configuration.
+```bash
+llamphouse up --memory --agents agents.yaml   # http://127.0.0.1:8000/compass
+```
 
-**Ready to get started?** Head to the [Installation](getting-started/installation.md) guide.
+The run asks a question and waits. You answer through the API (or in Compass) and it carries on from
+where it stopped. The name stays in the thread's state for the next turn.
+
+## Where to go next
+
+- [Installation](getting-started/installation.md) and the [Quickstart](getting-started/quickstart.md):
+  run an agent and talk to it over HTTP.
+- [Adding an LLM](getting-started/adding-llm.md): call a model from an agent and stream its answer.
+- [Threads and runs](concepts/threads-and-runs.md): the model everything else builds on.
+- [The run context](concepts/context.md): everything an agent can do, in one reference.
+- [Durable runs](concepts/durable-runs.md): what happens when a run waits or a worker dies.
+- [Examples](examples.md): from a hello world to a coding agent that forks itself. The
+  [research desk](../examples/05_ResearchDesk) uses most of the agent contract in one file.

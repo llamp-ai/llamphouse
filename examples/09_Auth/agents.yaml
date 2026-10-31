@@ -1,0 +1,6 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: notes}
+spec:
+  entrypoint: agents.py:NotesAgent
+  display_name: Team notes

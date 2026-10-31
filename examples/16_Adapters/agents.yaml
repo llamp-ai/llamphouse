@@ -1,0 +1,6 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: concierge}
+spec:
+  entrypoint: agents.py:Concierge
+  display_name: Concierge

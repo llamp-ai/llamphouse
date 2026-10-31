@@ -1,110 +1,235 @@
 # Agents
 
-An **Agent** is the core building block in LLAMPHouse. It's a Python class that subclasses `Agent` and implements a `run()` method — this is where your logic lives.
+An agent is a Python class. An agent file gives it a name and settings, and the runtime serves it under
+that name. The same class can be served several times under different names, with different config.
 
-## Defining an agent
-
-```python
-from llamphouse.core import Agent
-from llamphouse.core.context import Context
-
-
-class MyAgent(Agent):
-    async def run(self, context: Context):
-        # Your agent logic here
-        await context.insert_message("Hello!")
-```
-
-The `run()` method is called whenever a run is created for this agent. It receives a [Context](context.md) object with the full conversation history and a toolkit for sending replies, streaming, calling other agents, and more.
-
-## Agent parameters
-
-When instantiating an agent, you provide identity parameters:
+## Agent
 
 ```python
-agent = MyAgent(
-    id="my-agent",           # Unique identifier (required)
-    name="My Agent",         # Human-readable name
-    description="An agent.", # Description shown in agent cards
-    version="0.1.0",         # Version string
-    skills=["chat", "math"], # Skill tags for A2A discovery
-)
+from llamphouse.sdk import Agent
+
+
+class Echo(Agent):
+    """Says back what it was told."""
+
+    async def run(self, ctx) -> None:
+        await ctx.send(f"You said: {ctx.input.text}")
 ```
 
-### Core parameters
+- `run(self, ctx)` does the run's work, with the [run context](context.md). Return to complete the
+  run; raise to fail it. When a run waits and then continues, `run` is executed again from the top, on
+  a new instance, and replays what it already did (see [Durable runs](durable-runs.md)): keep nothing
+  on `self`.
+- The class docstring is the agent's description. It's published (the API's agent list, Compass, an A2A
+  agent card), so write it for callers; keep notes for developers in comments. Set `description = "..."`
+  to publish something else.
+- `version = "1.4.2"` is your code's version, shown on every run. Without it, the runtime uses
+  `LLAMPHOUSE_AGENT_VERSION` from the environment.
+- The class must be importable by module path: define it at module level, not inside a function. A
+  run's record refers to it, and another worker loads it from there.
 
-| Parameter | Type | Description |
-|---|---|---|
-| `id` | `str` | **Required.** Unique identifier used to route runs to this agent |
-| `name` | `str` | Human-readable name (defaults to `id` if not set) |
-| `description` | `str` | Agent description, shown in A2A agent cards and Compass |
-| `version` | `str` | Version string for the agent |
-| `skills` | `list` | Skill tags used in A2A agent card discovery |
+### Ending a run
 
-### Assistant API parameters
+| in `run` | the run ends |
+|---|---|
+| `return` (or `return value`) | `completed`, with that value as its output |
+| `raise AgentError("quota_exceeded", "...", retryable=True)` | `failed`, with a code clients can act on |
+| any other exception | `failed` |
+| `await ctx.reject("I only answer questions about billing")` (or `raise Rejected(...)`) | `rejected`: the agent declined. Not a failure |
+| `await ctx.handover("billing")` | `completed`; another agent takes over the thread (see [handover](multi-agent.md#handover)) |
 
-These are only relevant when using the `AssistantAPIAdapter`:
+## Config
 
-| Parameter | Type | Description |
-|---|---|---|
-| `model` | `str` | Model name (informational, not used by LLAMPHouse) |
-| `temperature` | `float` | Temperature setting |
-| `top_p` | `float` | Top-p sampling |
-| `instructions` | `str` | System instructions (defaults to `description`) |
-| `tools` | `list` | Tool/function schemas for tool calling |
-
-## Agent config
-
-Agents can declare runtime-configurable parameters using the `config` class attribute:
+An agent's settings are a typed `Config`, a pydantic model:
 
 ```python
-from llamphouse.core.types.config import StringParam, FloatParam
+from llamphouse.sdk import Agent, Config
 
 
-class TunableAgent(Agent):
-    config = [
-        StringParam(name="system_prompt", default="You are helpful."),
-        FloatParam(name="temperature", default=0.7, min=0.0, max=2.0),
-    ]
+class SupportConfig(Config):
+    model: str = "gpt-5-mini"
+    tone: str = "friendly"
+    max_refunds: int = 0
 
-    async def run(self, context: Context):
-        prompt = context.get_config("system_prompt")
-        temp = context.get_config("temperature")
-        # Use these values when calling your LLM
+
+class Support(Agent[SupportConfig]):
+    """Answers support questions."""
+
+    async def run(self, ctx) -> None:
+        await ctx.send(f"({ctx.config.tone}) How can I help?")
 ```
 
-Config values can be changed at runtime through the [Config Store](../guides/config-store.md) and the Compass dashboard.
+`Agent[SupportConfig]` ties the config to the agent; `ctx.config` is a validated, frozen
+`SupportConfig`. Unknown keys are refused. Its JSON Schema is published, so the API and Compass check
+a config without importing your code.
 
-## What happens inside `run()`
+A run's config is built in layers, each over the one before:
 
-LLAMPHouse doesn't prescribe what your agent does. Inside `run()`, you can:
+1. the class's defaults;
+2. the agent file's `config:`;
+3. the config store, if the deployment has one: changed at runtime, for every process, from their next
+   run on (`PUT /v2/agents/{name}/config`, or the agent's page in Compass);
+4. the thread's `config` (given when the thread was created), for runs on that thread only.
 
-- **Call any LLM** — OpenAI, Anthropic, Gemini, Azure AI, local models
-- **Use any framework** — LangChain, LangGraph, LlamaIndex, CrewAI
-- **Call APIs** — REST, GraphQL, databases, file systems
-- **Call other agents** — via `context.call_agent()` or `context.handover_to_agent()`
-- **Stream responses** — via `context.send_chunk()` or `context.process_stream()`
-- **Use tools** — handle function calling with `context.pending_tool_calls`
+So one class serves many instances: `support-nl` and `support-de` in two agent files, or one agent and
+a config per customer thread.
 
-## Registering agents
+## Typed output
 
-Pass your agents to the `LLAMPHouse` constructor:
+The return annotation of `run` declares its output:
 
 ```python
-from llamphouse.core import LLAMPHouse
-from llamphouse.core.data_stores.in_memory_store import InMemoryDataStore
+from pydantic import BaseModel
 
-app = LLAMPHouse(
-    agents=[agent_a, agent_b, agent_c],
-    data_store=InMemoryDataStore(),
-)
-app.ignite(host="127.0.0.1", port=8000)
+
+class Verdict(BaseModel):
+    approved: bool
+    reason: str
+
+
+class Reviewer(Agent):
+    """Reviews an expense claim."""
+
+    async def run(self, ctx) -> Verdict:
+        approved = "receipt" in ctx.input.text.lower()
+        return Verdict(approved=approved, reason="has a receipt" if approved else "no receipt")
 ```
 
-All registered agents are available via the API and can call each other internally.
+- Any type pydantic can store as JSON works: a model, `list[str]`, `dict[str, int]`, a union. It's
+  checked when the agent loads: a type that can't be stored refuses to start.
+- When the run ends, the value is validated against it. The wrong type fails the run (`output_invalid`).
+- The schema is published, and a caller waiting on the run (`await thread.wait()` in another agent)
+  gets the value back typed.
+- `-> None` declares no output: returning a value fails the run. No annotation: any storable value.
 
-## Next steps
+## Workflow
 
-- [Context](context.md) — the full toolkit available to your agent
-- [Multi-Agent](multi-agent.md) — orchestrate multiple agents together
-- [Adapters](adapters.md) — expose agents via different protocols
+A workflow is an agent that is a process rather than a conversation: typed input, typed output, steps.
+Same contract, same durability; Compass shows it as steps instead of a chat, and the API starts it with
+its input as data.
+
+```python
+from pydantic import BaseModel
+
+from llamphouse.sdk import Config, Workflow, step
+
+
+class PriceIn(BaseModel):
+    city: str
+    month: str
+
+
+class PriceOut(BaseModel):
+    city: str
+    per_day: int
+
+
+class Prices(Workflow[Config, PriceIn, PriceOut]):
+    """Estimates the cost per person per day for a city and month."""
+
+    @step
+    async def lookup(self, ctx, city: str, month: str) -> int:
+        return 140 if month in ("june", "july", "august") else 110
+
+    async def run(self, ctx) -> PriceOut:
+        q: PriceIn = ctx.input.data  # validated before the run started
+        return PriceOut(city=q.city, per_day=await self.lookup(ctx, q.city, q.month))
+```
+
+- `Workflow[ConfigT, Input, Output]`. `ctx.input.data` is the validated `Input`; an input that doesn't
+  validate never becomes a run (`422 invalid_input`).
+- Start it with data: `POST /v2/threads/{id}/runs` with `{"data": {"city": "Lisbon", "month": "march"}}`,
+  or from another agent with `await ctx.call("prices", {"city": "Lisbon", "month": "march"})`.
+- What `run` returns is its `Output`. It's the run's output, and it's also put on the thread as an
+  artifact named `output`.
+
+See the [Workflow example](../../examples/12_Workflow).
+
+## Capabilities an agent needs
+
+Some features depend on what the deployment has: a file store (`Files`), a scheduler (`Scheduler`).
+`ctx.capability(Files)` returns `None` where there is none. An agent that can't work without one says so,
+and the runtime refuses to start it there instead of failing mid-run:
+
+```python
+from llamphouse.sdk import Agent, Files, requires
+
+
+@requires(Files)
+class Reporter(Agent):
+    """Writes reports as files."""
+
+    async def run(self, ctx) -> None:
+        files = ctx.require(Files)  # guaranteed by @requires
+        part = await files.put(b"city,cost\nLisbon,140\n", mime_type="text/csv", name="report.csv")
+        await ctx.send("Here is the report.", part)
+```
+
+## The agent file
+
+An agent file describes agents for a deployment. It travels with the agents and is the same in every
+environment; where and how they run is the runtime file's job (see [Configuration](../configuration.md)).
+
+```yaml
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: support}               # the name callers use: in the API, in ctx.call, in handovers
+spec:
+  entrypoint: agents.py:Support         # a file next to this one (path.py:Class), or a module (pkg.mod:Class)
+  display_name: Customer support        # for people; may change
+  config: {model: gpt-5, tone: formal}  # the Config, checked when the deployment loads
+  session: {rolling_window: {size: 30}} # the session provider (see Sessions)
+  env: {LOG_LEVEL: info}                # set in the process environment
+  secrets: {OPENAI_API_KEY: openai-key} # an env var from the runtime file's secrets_store
+  permissions:
+    agents: [billing]                   # whom it may call or hand over to; '*' (the default): anyone
+    files: read                         # none | read | read-write (the default)
+  triggers:
+    - schedule: {cron: "0 8 * * 1-5", timezone: Europe/Amsterdam, input: "Morning digest"}
+```
+
+Several agents go in one file as YAML documents separated by `---`, or in several files (`--agents`
+takes files, directories and `module:NAME` for a Python dict of agents). Values may use `${VAR}` and
+`${VAR:-default}`.
+
+To serve one class as several instances, define it once as an `AgentDefinition` and refer to it:
+
+```yaml
+apiVersion: llamphouse.io/v1alpha1
+kind: AgentDefinition
+metadata: {name: hr-assistant}
+spec:
+  entrypoint: agents.hr:HrAssistant
+---
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: hr-thailand}
+spec:
+  definition: hr-assistant
+  display_name: HR Assistant Thailand
+  config: {index: hr-th}
+```
+
+`llamphouse check --agents agents.yaml` loads the files, imports the classes and validates every config,
+without starting anything.
+
+Triggers (webhooks and schedules that start runs) are covered in the
+[Triggers example](../../examples/11_Triggers); permissions in [Working with other agents](multi-agent.md#permissions).
+
+## Testing
+
+`llamphouse.sdk.testing.FakeRun` runs one agent against a scripted context: the answers to its questions,
+the replies of the agents it calls, the state it finds.
+
+```python
+from llamphouse.sdk.testing import FakeRun
+
+
+async def test_greeter_asks_once():
+    run = FakeRun("hello", answers=["Ada"])
+    await run.start(Greeter())
+    assert run.text == "Hello, Ada! You said: hello"
+```
+
+`llamphouse.sdk.scenario.Scenario` runs real agents on the real engine, in memory, on a fake clock, with
+crashes you inject: for testing how agents behave together and across failures.

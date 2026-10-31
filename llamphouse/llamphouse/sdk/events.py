@@ -1,7 +1,7 @@
 """Events on a run's live stream. Adapters render them in whatever format an
 API streams. An agent emits Progress, Usage, StateSnapshot, StateDelta and
 Custom (`ctx.emit`); the runtime emits the message events (from `ctx.send` and
-`ctx.stream`) and ThreadCreated. `Usage` and the last `StateSnapshot` are also
+`ctx.stream`), the step events (a step executed) and ThreadCreated. `Usage` and the last `StateSnapshot` are also
 kept on the run's record. None of them is on the thread."""
 
 from __future__ import annotations
@@ -107,6 +107,30 @@ class ThreadCreated(Event):
     agent: str
     forked_from: str | None = None  # the thread a fork starts from
     run_id: str | None = None  # the run its first message started
+
+
+@dataclass(frozen=True, kw_only=True)
+class StepStarted(Event):
+    """Emitted by the runtime when a step executes (not when it is replayed)."""
+
+    kind: EventKind | str = EventKind.STEP_STARTED
+    name: str
+    key: str  # its call key in the run's record
+
+
+@dataclass(frozen=True, kw_only=True)
+class StepCompleted(Event):
+    kind: EventKind | str = EventKind.STEP_COMPLETED
+    name: str
+    key: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class StepFailed(Event):
+    kind: EventKind | str = EventKind.STEP_FAILED
+    name: str
+    key: str
+    error: str
 
 
 AGENT_EVENTS = (Progress, Usage, StateSnapshot, StateDelta, Custom)  # what `ctx.emit` takes; the rest is the runtime's

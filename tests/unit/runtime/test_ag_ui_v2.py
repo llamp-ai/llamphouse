@@ -16,6 +16,7 @@ from llamphouse.sdk import Agent, Custom, StateSnapshot, ToolCallPart  # noqa: E
 
 class Chat(Agent):
     async def run(self, ctx) -> None:
+        await ctx.step("look", lambda: 1)
         await ctx.emit(StateSnapshot(state={"seen": ag_ui_input(ctx)["state"].get("n", 0) + 1}))
         await ctx.emit(Custom(kind="x-mood", data="happy"))
         async with ctx.stream() as out:
@@ -32,6 +33,8 @@ class Frontend(Agent):
 
 class Asker(Agent):
     async def run(self, ctx) -> None:
+        await ctx.emit(Custom(kind="x-progress", data="checking"))
+        await ctx.send("checked.")  # said before the question: not said again when the answer resumes the run
         answer = await ctx.ask("Approve?", schema={"type": "object"})
         await ctx.send(f"approved: {answer.data}")
 
@@ -75,6 +78,8 @@ async def test_a_run_streams_text_state_and_custom_events(client):
     assert {"TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END"} <= set(kinds)
     assert "".join(e["delta"] for e in got if e["type"] == "TEXT_MESSAGE_CONTENT") == "you said hello"
     assert next(e for e in got if e["type"] == "STATE_SNAPSHOT")["snapshot"] == {"seen": 5}
+    assert [(e["type"], e["stepName"]) for e in got if e["type"].startswith("STEP_")] == [
+        ("STEP_STARTED", "look"), ("STEP_FINISHED", "look")]
     assert next(e for e in got if e["type"] == "CUSTOM") == {"type": "CUSTOM", "name": "x-mood", "value": "happy"}
     # the same AG-UI thread, the whole conversation again plus a new message: one new run, on the same thread
     got = await events(client, "/ag-ui/agents/chat", body("t-1", [first, user("again")]))
@@ -99,9 +104,11 @@ async def test_a_question_is_an_interrupt_answered_by_resume(client):
     got = await events(client, "/ag-ui/agents/asker", body("t-3", [msg]))
     finished = got[-1]
     assert finished["type"] == "RUN_FINISHED" and finished["outcome"]["type"] == "interrupt"
+    assert "".join(e["delta"] for e in got if e["type"] == "TEXT_MESSAGE_CONTENT") == "checked."
     interrupt = finished["outcome"]["interrupts"][0]
     assert interrupt["message"] == "Approve?" and interrupt["responseSchema"] == {"type": "object"}
     got = await events(client, "/ag-ui/agents/asker", body("t-3", [msg], resume=[
         {"interruptId": interrupt["id"], "status": "resolved", "payload": {"ok": True}}]))
     assert "".join(e["delta"] for e in got if e["type"] == "TEXT_MESSAGE_CONTENT") == "approved: {'ok': True}"
+    assert not [e for e in got if e["type"] == "CUSTOM"]  # what it did before the question isn't sent again
     assert got[-1]["type"] == "RUN_FINISHED" and got[-1]["outcome"]["type"] == "success"

@@ -1,58 +1,55 @@
-import asyncio
-from uuid import uuid4
+"""Talk to the hello agent over the native HTTP API (/v2): a thread, a run on it, the run followed to its end.
+
+    python client.py                  # says "Hi there"
+    python client.py "anything else"
+
+The server: `llamphouse up --memory --agents agents.yaml` (LLAMPHOUSE_URL points elsewhere than :8000).
+"""
+
+import json
+import os
+import sys
+from typing import Iterator
+
 import httpx
-from a2a.client import A2ACardResolver, ClientFactory, ClientConfig
-from a2a.types import (
-    Message,
-    Part,
-    TextPart,
-    Role,
-    Task,
-)
 
-BASE_URL = "http://127.0.0.1:8000"
+URL = os.environ.get("LLAMPHOUSE_URL", "http://127.0.0.1:8000")
+ME = {"kind": "person", "id": "ada", "name": "Ada"}  # who writes the message
 
 
-async def main():
+def follow(http: httpx.Client, run_id: str) -> Iterator[tuple[str, dict]]:
+    """The run's live stream (server-sent events), as (event, data) pairs; it ends with the run."""
+    with http.stream("GET", f"/v2/runs/{run_id}/events/stream") as r:
+        r.raise_for_status()
+        event, data = "", []
+        for line in r.iter_lines():
+            if line.startswith("event: "):
+                event = line[7:]
+            elif line.startswith("data: "):
+                data.append(line[6:])
+            elif not line and data:  # a blank line ends an event
+                yield event, json.loads("\n".join(data))
+                event, data = "", []
 
-    async with httpx.AsyncClient() as httpx_client:
-        
-        # 1. Discover the agent
-        resolver = A2ACardResolver(httpx_client=httpx_client, base_url=BASE_URL)
-        card = await resolver.get_agent_card()
-        print("=== Agent Card ===")
-        print(f"Name       : {card.name}")
-        print(f"Description: {card.description}")
-        print(f"Version    : {card.version}")
-        if card.provider:
-            print(f"Provider   : {card.provider.organization} ({card.provider.url})")
-        if card.skills:
-            print(f"Skills     : {', '.join(s.name for s in card.skills)}")
-        print("==================\n")
 
-        factory = ClientFactory(
-            ClientConfig(httpx_client=httpx_client, streaming=False)
-        )
-        client = factory.create(card)
-
-        # 2. Send a message (non-streaming)
-        question = "Hello!"
-        print(f"> User: {question}")
-
-        msg = Message(
-            messageId=uuid4().hex,
-            role=Role.user,
-            parts=[Part(root=TextPart(text=question))],
-        )
-
-        result = await anext(client.send_message(msg))
-        task, _ = result  # Non-streaming yields a single (Task, None)
-
-        for artifact in task.artifacts or []:
-            for part in artifact.parts:
-                if hasattr(part.root, "text"):
-                    print(f"> Agent: {part.root.text}")
+def main() -> None:
+    text = " ".join(sys.argv[1:]) or "Hi there"
+    with httpx.Client(base_url=URL, timeout=httpx.Timeout(30, read=None)) as http:
+        thread = http.post("/v2/threads", json={"agent": "hello"})  # a new conversation with the agent
+        thread.raise_for_status()
+        thread_id = thread.json()["id"]
+        run = http.post(f"/v2/threads/{thread_id}/runs", json={"text": text, "sender": ME})  # the message starts a run
+        run.raise_for_status()
+        run_id = run.json()["id"]
+        print(f"thread {thread_id}, run {run_id}")
+        print(f"you:   {text}")
+        for event, data in follow(http, run_id):
+            if event == "message.completed":  # what the agent said
+                print(f"hello: {data['message']['parts'][0]['text']}")
+            elif event == "end":
+                print(f"[run {data['status']}]")
+        print(f"See it in Compass: {URL}/compass")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

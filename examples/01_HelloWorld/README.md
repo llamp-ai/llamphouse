@@ -1,72 +1,61 @@
-# 👋 Hello World
+# Hello world
 
-The simplest possible LLAMPHouse agent — no API keys, no LLM, just a
-server that replies "Hello!" over the **A2A** (Agent-to-Agent) protocol.
+The simplest llamphouse agent: no model, no keys. `Hello` reads the message that started its run and answers
+it on the thread. The agent file (`agents.yaml`) names it; `llamphouse up` serves it over the native HTTP API
+(`/v2`) with Compass next to it. `client.py` creates a thread, starts a run with a message, follows the run's
+live stream to its end and prints the reply.
 
-Use this example to verify your setup and understand the basics before
-moving on to more complex agents.
+## Run it
 
-## What you'll learn
-
-- How to define a custom `Agent` subclass
-- How to start a LLAMPHouse server with the `A2AAdapter`
-- How to discover an agent and send it a message from a client
-
-## Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| Python 3.10+ | Check with `python --version` |
-
-> **No API keys needed!** This agent returns a static greeting, so there's
-> nothing to configure.
-
-## Quick start
-
-### 1. Install dependencies
-
-```sh
-pip install -r requirements.txt
+```bash
+pip install llamphouse
+llamphouse up --memory --agents agents.yaml     # http://127.0.0.1:8000, Compass at /compass
+python client.py                                # in a second terminal
 ```
 
-### 2. Start the server
-
-```sh
-python server.py
+```
+thread thread_291f…, run run_777e…
+you:   Hi there
+hello: Hello Ada! You said: Hi there
+[run completed]
 ```
 
-You should see output like:
+`--memory` keeps everything in memory: nothing survives a restart. `LLAMPHOUSE_URL` points the client at
+another server.
 
+## Try
+
+- `python client.py "what's new?"` - every call is a new thread with one run.
+- `llamphouse check --agents agents.yaml` - loads the agent file and says what it found, without serving.
+- The same with curl:
+
+  ```bash
+  curl -s localhost:8000/v2/threads -d '{"agent": "hello"}' -H 'content-type: application/json'
+  curl -s localhost:8000/v2/threads/<thread id>/runs -d '{"text": "hi"}' -H 'content-type: application/json'
+  curl -s localhost:8000/v2/threads/<thread id>/events
+  ```
+
+## In Compass
+
+Open http://127.0.0.1:8000/compass: the `hello` agent, its threads, and on each thread your message, the run it
+started and the agent's reply.
+
+## The code
+
+```python
+class Hello(Agent):
+    async def run(self, ctx) -> None:
+        name = ctx.input.sender.name or ctx.input.sender.id
+        await ctx.send(f"Hello {name}! You said: {ctx.input.text}")
 ```
-LLAMPHOUSE We have light!
-LLAMPHOUSE Server: http://127.0.0.1:8000
+
+```yaml
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: hello}        # what callers address it by
+spec:
+  entrypoint: agents.py:Hello
 ```
 
-### 3. In a second terminal, run the client
-
-```sh
-python client.py
-```
-
-## How it works
-
-### Server (`server.py`)
-
-1. **Define an agent** — subclass `Agent` and implement `run()`. This agent
-   simply inserts a greeting message into the conversation context.
-2. **Wire it up** — create a `LLAMPHouse` instance with your agent, a data
-   store, and the `A2AAdapter`.
-3. **Start** — call `llamphouse.ignite()` to launch the server.
-
-### Client (`client.py`)
-
-1. **Discover** — use `A2ACardResolver` to fetch the agent card from
-   `/.well-known/agent-card.json`.
-2. **Connect** — create a `Client` via `ClientFactory`.
-3. **Send a message** — call `client.send_message()` and read the response.
-
-## Next steps
-
-| Example | What it adds |
-|---|---|
-| [02_Chat](../02_Chat) | Connect to an LLM for real conversations |
+`ctx.input` is the message that started the run; `ctx.send` writes a message on the run's thread. Returning
+ends the run (`completed`); raising `AgentError` fails it.

@@ -56,6 +56,9 @@ from .events import (
     StateDelta,
     StateSnapshot,
     ThreadCreated,
+    StepStarted,
+    StepCompleted,
+    StepFailed,
     UnknownEvent,
     Usage,
 )
@@ -102,7 +105,7 @@ __all__ = [
     "ArtifactPart", "UnknownPart", "part", "Message", "Sender", "viewpoint",
     # events
     "Event", "MessageStarted", "PartDelta", "MessageCompleted", "MessageRead", "Progress", "StateSnapshot", "StateDelta",
-    "Usage", "Custom", "ThreadCreated", "UnknownEvent", "AgentError", "Rejected",
+    "Usage", "Custom", "ThreadCreated", "StepStarted", "StepCompleted", "StepFailed", "UnknownEvent", "AgentError", "Rejected",
     # the thread
     "ThreadEvent", "Filter", "Subscription", "Session", "State", "ThreadState", "StateView", "StateBatch", "LiveState",
     "ThreadClosed", "ThreadBusy", "NoActiveRun", "Identity", "ToolSpec", "InputRequest",

@@ -1,86 +1,75 @@
-# Tracing Example (A2A)
+# Tracing
 
-End-to-end OpenTelemetry tracing with an A2A client and server. The client creates a root span and injects W3C `traceparent` headers into every httpx request, so all server-side spans appear nested under a single trace.
+An agent that answers questions from a small handbook, traced with OpenTelemetry. llamphouse makes a
+`llamphouse.run` span around each execution of a run and a `llamphouse.step` span for each step it executes;
+the spans the agent makes itself, with any OpenTelemetry tracer, nest under them. Where the spans go is the
+runtime file's `tracing:` - here a store in memory. You read a run's spans back over the API
+(`GET /v2/runs/{id}/trace`) and in Compass's Trace tab. No model and no key: a stand-in answers.
 
-## Prerequisites
+## Run
 
-- Python 3.10+
-- `OPENAI_API_KEY`
-- Docker (for ClickHouse + OTel Collector)
+```bash
+pip install -r requirements.txt          # llamphouse[tracing]: OpenTelemetry
+llamphouse up --memory --config llamphouse.yaml --agents agents.yaml     # http://127.0.0.1:8000/compass
+python client.py                         # in a second terminal
+python client.py "Can I work remotely?"
+```
 
-## Setup
+```
+> How many days of leave do I get?
+You get 25 days of paid leave a year; ask your manager two weeks ahead.
 
-1. Navigate to this example:
+trace of run_480f96b5fc064bc2 (5 spans):
+  llamphouse.run                      75.4 ms  {'llamphouse.run.status': 'completed'}
+    llamphouse.step                   22.4 ms  {'llamphouse.step.name': 'search'}
+      handbook.search                 22.1 ms  {'search.hits': 1}
+    rerank                             0.0 ms  {'rerank.kept': 1}
+    chat stand-in                     52.1 ms  {'gen_ai.request.model': 'stand-in'}
+```
 
-   ```bash
-   cd llamphouse/examples/08_Tracing
-   ```
-2. Install dependencies:
+`LLAMPHOUSE_URL` points the client elsewhere (default `http://127.0.0.1:8000`). Without a `tracing:` entry
+the store comes from the environment, `TRACING_STORE` (in memory by default); `LLAMPHOUSE_TRACING_ENABLED=false`
+turns tracing off.
 
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create your `.env` from the sample:
+## In Compass
 
-   ```bash
-   cp .env.sample .env
-   # Add your OPENAI_API_KEY
-   ```
-4. Start ClickHouse and the OTel Collector (from the repo root):
+- **Runs** -> a run -> **Trace**: the spans as a tree with their durations and status; click one for its
+  attributes. `gen_ai.input.messages` / `gen_ai.output.messages` (and `input.value` / `output.value`) are
+  shown as readable, foldable messages.
+- **Traces**: every run's trace, newest first, filterable by agent.
 
-   ```bash
-   cd ../../docker
-   docker compose up -d clickhouse otel-collector
-   ```
+## The code
 
-## How It Works
-
-| Component           | What happens                                                                                                                               |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Client**    | Creates a root span, injects`traceparent` into httpx headers, then uses the `a2a-sdk` to stream a question via `message/stream`.     |
-| **Server**    | Mounts`A2AAdapter`, extracts incoming trace context, and creates child spans for every operation (queue, worker, streaming, data-store). |
-| **Collector** | Receives OTLP spans on port 4318 and writes them to ClickHouse.                                                                            |
-| **Compass**   | Reads from ClickHouse and displays traces at`http://127.0.0.1:8000/compass/`.                                                            |
-
-## Exclude Spans (Optional)
-
-Suppress noisy spans by prefix in `server.py`:
+Make spans as you would anywhere; while `run()` executes, the run's span is the current one:
 
 ```python
-llamphouse = LLAMPHouse(
-    agents=[my_agent],
-    data_store=InMemoryDataStore(),
-    adapters=[A2AAdapter()],
-    exclude_spans=[
-        "llamphouse.data_store",
-        "llamphouse.queue",
-    ],
-)
+from opentelemetry import trace
+
+tracer = trace.get_tracer("handbook")
+
+class HandbookAgent(Agent):
+    @step
+    async def search(self, ctx, question):           # a llamphouse.step span...
+        with tracer.start_as_current_span("handbook.search") as span:   # ...with this one under it
+            span.set_attribute("search.hits", ...)
+
+    async def run(self, ctx) -> str:
+        passages = await self.search(ctx, ctx.input.text)
+        with tracer.start_as_current_span("chat stand-in") as span:     # under llamphouse.run
+            span.set_attribute("gen_ai.input.messages", json.dumps([...]))
 ```
 
-## Running
-
-1. Start the server:
-
-   ```bash
-   python server.py
-   ```
-2. In a second terminal, run the client:
-
-   ```bash
-   python client.py
-   ```
-3. Open Compass to view the trace:
-
-   ```
-   http://127.0.0.1:8000/compass/
-   ```
-
-## Alternative: Export to Langfuse
-
-To send traces to Langfuse instead of the local Collector, update your `.env`:
-
-```dotenv
-OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel/v1/traces
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20<BASE64(pk:sk)>
+```yaml
+# llamphouse.yaml
+tracing: {in_memory: {}}                                             # this process's spans
+# tracing: {postgres: {database_url: "${LLAMPHOUSE_DATABASE_URL}"}}   # the llamphouse_traces table
+# tracing: {clickhouse: {clickhouse_url: "${CLICKHOUSE_URL}"}}       # what an OpenTelemetry Collector writes there
 ```
+
+- `llamphouse.run` carries `run.id`, `thread.id`, `llamphouse.agent`, `llamphouse.parent_run` and the run's
+  status and error. A run that waits (an `ask`, a `sleep`) or is taken over after a crash is executed again:
+  a new span, the same `run.id` - the trace endpoint returns them all, oldest first.
+- A step replayed from the record makes no span: it wasn't done again.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` also sends the spans to an OpenTelemetry collector. If the app set up a
+  tracer provider of its own, the store's exporter joins it.
+- Tracing never fails a run: without a store or a tracer provider no span is made.

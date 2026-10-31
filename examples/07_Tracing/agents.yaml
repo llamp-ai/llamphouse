@@ -1,0 +1,6 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: handbook}
+spec:
+  entrypoint: agents.py:HandbookAgent
+  display_name: Handbook

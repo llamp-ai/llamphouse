@@ -61,7 +61,7 @@ from llamphouse.sdk.content import (Content, DataPart, FilePart, Message, Metada
                       ToolResultPart, ArtifactPart, as_input, map_file_parts, to_parts, viewpoint)
 from llamphouse.sdk.context import ThisRun, ThisThread
 from llamphouse.sdk.events import (AGENT_EVENTS, AgentError, Event, MessageCompleted, MessageRead, MessageStarted, PartDelta,
-                     Rejected, ThreadCreated)
+                     Rejected, StepCompleted, StepFailed, StepStarted, ThreadCreated)
 from llamphouse.sdk.thread import (AuthRequest, Filter, Identity, InputRequest, NoActiveRun, Request, SessionView, StateConflict,
                      ThreadBusy, ThreadClosed, ThreadEvent, ToolSpec)
 from llamphouse.runtime.events import SystemEvent
@@ -91,6 +91,13 @@ TERMINAL_KINDS = (EventKind.RUN_COMPLETED, EventKind.RUN_FAILED, EventKind.RUN_C
 INPUT_ANSWERED = "run.input_answered"  # an answer to an input or auth request, on the thread
 EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _COPY = object()  # the default `session=` of a fork: a copy of the forking run's session
+
+
+@dataclass
+class StepRaised:
+    """A step's recorded failure: what it raised, raised again when the run is replayed."""
+
+    error: Exception
 
 
 class Crash(BaseException):
@@ -586,6 +593,7 @@ class Engine:
         self._workers: list[asyncio.Task] = []
         self._ids = itertools.count(1)
         self._crashes: list[tuple[str | None, str, str]] = []  # (agent, point, step)
+        self._next_cleanup = 0.0  # when the janitor next deletes abandoned uploads
 
     @property
     def now(self) -> datetime:
@@ -801,6 +809,9 @@ class Engine:
                 if self.n_workers:
                     await self._sweep()
                     await self.deliver()
+                    if time.monotonic() >= self._next_cleanup:  # abandoned uploads, now and then
+                        self._next_cleanup = time.monotonic() + 300
+                        await self.cleanup()
                 self._evict()
             except asyncio.CancelledError:
                 raise
@@ -2118,14 +2129,33 @@ class _Context:
         key = self._key(name)
         done, value = self._replay(key)
         if done:
+            self._ordinals.update(self._rec.steps.get(f"{key}:calls", {}))  # the calls it made inside, used up again
+            if isinstance(value, StepRaised):  # it failed then: it fails the same way now
+                raise value.error
             return value  # replayed: no span, it was traced when it executed
+        before = dict(self._ordinals)
+
+        def record(outcome: Any) -> None:  # with the calls it made inside (a send, a stream): a replay
+            self._rec.steps[key] = outcome   # skips them, and must count them, or later calls get their keys
+            used = {k: n - before.get(k, 0) for k, n in self._ordinals.items() if n != before.get(k, 0)}
+            if used:
+                self._rec.steps[f"{key}:calls"] = used
+
         with self._sc.tracing.span(STEP, {"llamphouse.step.name": name, "llamphouse.step.key": key,
                                           "run.id": self._rec.id}):
-            result = fn(*args, **kwargs)
-            value = await result if inspect.isawaitable(result) else result
+            await self._emit(StepStarted(name=name, key=key))
+            try:
+                result = fn(*args, **kwargs)
+                value = await result if inspect.isawaitable(result) else result
+            except Exception as e:  # recorded too: a replay raises it again rather than trying again
+                await self._emit(StepFailed(name=name, key=key, error=f"{type(e).__name__}: {e}"))
+                async with self._tx():
+                    record(StepRaised(e))
+                raise
             self._crash_point("before", name)
             async with self._tx():
-                self._rec.steps[key] = value
+                record(value)
+            await self._emit(StepCompleted(name=name, key=key))
             self._crash_point("after", name)
         return value
 

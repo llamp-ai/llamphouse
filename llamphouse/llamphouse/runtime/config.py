@@ -239,6 +239,11 @@ class RuntimeSpec:
     rest: dict[str, Any] = field(default_factory=dict)  # auth, adapters, ... (read by their phases)
     source: str = ""
 
+    @property
+    def base(self) -> Path | None:
+        """Where `module:Class` and `file.py:Class` components are found first: the runtime file's folder."""
+        return Path(self.source).resolve().parent if self.source and Path(self.source).is_file() else None
+
 
 AGENT_SPEC_KEYS = {"definition", "entrypoint", "display_name", "config", "session", "env", "secrets", "pool",
                    "triggers", "permissions", "publish", "execution", "mode", "image", "requirements"}
@@ -333,7 +338,7 @@ class Deployment:
         """The runtime file's `auth` (in order), and an extra API key (the command line's, LLAMPHOUSE_API_KEY)."""
         from .auth import ApiKeyAuth, Authenticator
 
-        auths = [component("auth", entry, f"{self.runtime.source}: auth[{i}]")
+        auths = [component("auth", entry, f"{self.runtime.source}: auth[{i}]", base=self.runtime.base)
                  for i, entry in enumerate(self.runtime.components.get("auth") or [])]
         if api_key:
             auths.append(ApiKeyAuth([api_key]))
@@ -341,7 +346,7 @@ class Deployment:
 
     def adapters(self) -> list[Any]:
         """The runtime file's `adapters`: the protocols mounted next to the native API."""
-        return [component("adapters", entry, f"{self.runtime.source}: adapters[{i}]")
+        return [component("adapters", entry, f"{self.runtime.source}: adapters[{i}]", base=self.runtime.base)
                 for i, entry in enumerate(self.runtime.components.get("adapters") or [])]
 
     def webhooks(self) -> list[tuple[str, Any]]:
@@ -360,7 +365,7 @@ class Deployment:
         from .auth import Access
 
         entry = self.runtime.components.get("access")
-        return component("access", entry, f"{self.runtime.source}: access") if entry else Access()
+        return component("access", entry, f"{self.runtime.source}: access", base=self.runtime.base) if entry else Access()
 
     def apply_environment(self) -> None:
         """The env and secrets the files ask for, into this process's environment (agents' after the
@@ -387,9 +392,9 @@ class Deployment:
             if option in overrides:
                 options[option] = overrides.pop(option)
             elif kind in components:
-                options[option] = component(kind, components[kind], f"{self.runtime.source}: {kind}")
+                options[option] = component(kind, components[kind], f"{self.runtime.source}: {kind}", base=self.runtime.base)
         if "sessions" in components:
-            default = component("sessions", components["sessions"], f"{self.runtime.source}: sessions")
+            default = component("sessions", components["sessions"], f"{self.runtime.source}: sessions", base=self.runtime.base)
         else:
             default = None
         per_agent = {name: spec.session for name, spec in self.agents.items() if spec.session is not None}

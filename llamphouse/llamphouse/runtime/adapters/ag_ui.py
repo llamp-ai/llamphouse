@@ -99,8 +99,10 @@ class AgUiAdapter(Adapter):
             tool_results = [m for m in body.messages if getattr(m, "role", None) == "tool" and m.id not in known_ids]
             error = None
             run_id = None
+            after = 0  # the run's events this stream starts after: a resumed run's earlier ones were sent then
             if active_id is not None:  # a run is waiting: this request answers it, or can't start another
                 run_id = active_id
+                after = max((seq for seq, _ in await engine.run_events(RunRef(run_id))), default=0)
                 async with engine.reading(run_id):
                     rec = engine.records[run_id]
                     pending = rec.pending_request
@@ -155,7 +157,7 @@ class AgUiAdapter(Adapter):
                 if error is not None or run_id is None:
                     yield encoder.encode(core.RunErrorEvent(message=error or "nothing to run", code="not_runnable"))
                     return
-                async for event in events(run_id, thread_id, body):
+                async for event in events(run_id, thread_id, body, after):
                     yield event if isinstance(event, str) else encoder.encode(event)
 
             return StreamingResponse(stream(), media_type=encoder.get_content_type())
@@ -189,9 +191,9 @@ class AgUiAdapter(Adapter):
                                                  metadata={"signal": rec.waiting_signal})]))
             return None
 
-        async def events(run_id: str, thread_id: str, body: Any) -> AsyncIterator[Any]:
+        async def events(run_id: str, thread_id: str, body: Any, after: int = 0) -> AsyncIterator[Any]:
             open_messages: dict[str, bool] = {}  # message id -> streamed any content
-            cursor = 0
+            cursor = after
             calls_sent: set[str] = set()
 
             def handle(ev: dict[str, Any]) -> list[Any]:
@@ -226,6 +228,10 @@ class AgUiAdapter(Adapter):
                     out.append(core.StateSnapshotEvent(snapshot=ev.get("state")))
                 elif kind == str(EventKind.STATE_DELTA):
                     out.append(core.StateDeltaEvent(delta=list(ev.get("patch") or [])))
+                elif kind == str(EventKind.STEP_STARTED):
+                    out.append(core.StepStartedEvent(step_name=ev.get("name") or ""))
+                elif kind in (str(EventKind.STEP_COMPLETED), str(EventKind.STEP_FAILED)):
+                    out.append(core.StepFinishedEvent(step_name=ev.get("name") or ""))
                 elif (kind or "").startswith("x-"):
                     out.append(core.CustomEvent(name=kind, value=ev.get("data")))
                 elif kind in (str(EventKind.PROGRESS), str(EventKind.USAGE)):
@@ -252,15 +258,10 @@ class AgUiAdapter(Adapter):
                 return handle(got[1].get("event") or {})
 
             async with engine.bus.listen(f"run:{run_id}", f"thread:{thread_id}") as news:
-                async with engine.reading(run_id):
-                    first = engine.records[run_id].activations == 0 or engine.records[run_id].status == RunStatus.QUEUED
-                if first:  # a new run: what it did before the stream listened
-                    for seq, ev in await engine.run_events(RunRef(run_id)):
-                        cursor = max(cursor, seq)
-                        for e in handle(jsonable(ev)):
-                            yield e
-                else:
-                    cursor = max((s for s, _ in await engine.run_events(RunRef(run_id))), default=0)
+                for seq, ev in await engine.run_events(RunRef(run_id), after=after):  # before the stream listened
+                    cursor = max(cursor, seq)
+                    for e in handle(jsonable(ev)):
+                        yield e
                 while True:
                     while (got := news.get_nowait()) is not None:
                         for e in take(got):

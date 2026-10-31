@@ -110,7 +110,7 @@ export interface Debug {
   caller: any; request: any; pending: any; output: any; error: string | null; run_state: any
   session: { id: string; version: number; revisions: number; revising: boolean; messages: number; provider: string } | null
 }
-export interface SessionView { id: string; agent: string; thread: string; version: number; revisions: number; revising: boolean; forked_from: string | null; messages: (Message & { own: boolean })[]; log: any[] }
+export interface SessionView { id: string; agent: string; thread: string; version: number; revisions: number; revising: boolean; forked_from: string | null; messages: (Message & { own: boolean })[]; view?: (Message & { own: boolean })[]; log: any[] }
 export interface Overview {
   since: string; hours: number; threads: number; active: number; runs: number; by_status: Record<string, number>
   by_agent: Record<string, { statuses: Record<string, number>; runs: number; p50_ms: number | null; p95_ms: number | null }>

@@ -336,7 +336,7 @@ class FakeRun:
         max_restarts: int = 100,
     ):
         self._input = as_input(input, TEST_USER)
-        self._config = config if config is not None else Config()
+        self._config = config  # None: the agent's own Config's defaults, when it starts
         self._answers = deque(answers)
         self._auth = deque(auth)
         self._request = request or Request()
@@ -392,6 +392,8 @@ class FakeRun:
 
     async def start(self, agent: Agent) -> Any:
         """Run the agent to its end, as the runtime would (restarts included). Returns its output."""
+        if self._config is None:
+            self._config = type(agent).config_class()()
         if self._agent_version is None:
             self._agent_version = agent.version
         self._agent_type = agent.type
@@ -462,7 +464,7 @@ class FakeRun:
     thread = property(lambda self: _FakeThisThread(self))
     client = property(lambda self: _FakeClient(self))
     input = property(lambda self: self._input)
-    config = property(lambda self: self._config)
+    config = property(lambda self: self._config if self._config is not None else Config())
     state = property(lambda self: self._state)
     agents = property(lambda self: self._agents_fake)
     inbox = property(lambda self: self._inbox)

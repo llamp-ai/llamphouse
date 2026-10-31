@@ -10,6 +10,8 @@
     GET  /v2/threads/{id}/events/stream?after=N                                   the same, live (SSE)
     GET  /v2/threads/{id}/state?at=N                                              its state, now or at a position
     POST /v2/threads/{id}/runs               a message                             start a run (409 while one is active)
+    POST /v2/runs                            {"agent": ..., a message, "metadata",  a thread and its first run in one call
+                                              "state", "config"}                      (a bad input: 422, nothing made)
     GET  /v2/threads/{id}/runs                                                     its runs
     POST /v2/threads/{id}/close                                                    no more messages; its run cancelled
     GET  /v2/runs/{id}                                                             a run
@@ -161,6 +163,21 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         ref = await engine.thread(body["agent"], metadata=metadata, state=body.get("state"),
                                   config=body.get("config"), session=session)
         return await read_thread(ref.id)
+
+    @app.post("/v2/runs", dependencies=deps, status_code=201)
+    async def new_run(body: dict[str, Any]) -> dict[str, Any]:
+        """A thread and its first run in one call; the input is checked before either is made."""
+        agent = body.get("agent")
+        if agent not in engine._agents:
+            raise HTTPException(404, f"no agent {agent!r}")
+        message = _message(body)
+        engine._validated(agent, message)  # a bad input: 422, and no thread left behind
+        metadata = {**(body.get("metadata") or {}), **access.stamp(gw.who())}
+        thread = await engine.thread(agent, metadata=metadata, state=body.get("state"), config=body.get("config"))
+        who = gw.who()
+        ref = await engine.start(agent, message, thread=thread, by=message.sender,
+                                 identity=None if who is ANONYMOUS else who)
+        return await read_run(ref.id)
 
     @app.get("/v2/threads", dependencies=deps)
     async def threads(request: Request, limit: int = 50, agent: str | None = None,
@@ -352,7 +369,9 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
             return {"id": s.id, "agent": s.agent, "thread": s.thread_id, "version": s.version,
                     "revisions": s.revisions, "revising": s.revising, "forked_from": s.forked_from,
                     "messages": [{**to_dict(m), "own": m.id in s.inherited_own or m.sender.run in s.runs}
-                                 for m in s.messages],
+                                 for m in s.messages],  # as kept
+                    "view": [{**to_dict(m), "own": m.id in s.inherited_own or m.sender.run in s.runs}
+                             for m in engine._view(s)],  # what the agent sees: the provider's view of it
                     "log": jsonable(s.log)}
 
     @app.get("/v2/runs/{run_id}/trace", dependencies=deps)

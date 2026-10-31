@@ -1,0 +1,7 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: assistant}
+spec:
+  entrypoint: agents.py:Assistant
+  display_name: Tool-calling assistant
+  config: {model: gpt-5-mini, max_rounds: 6}   # the agent's Config (ToolConfig)

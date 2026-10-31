@@ -150,6 +150,28 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
     - `await pipe(ctx, deltas)` streams the text into the run's message and returns the text, the tool
       calls (as `ToolCallPart`s) and the usage, which it also emits as a `Usage` event. It also takes
       any async iterable of strings.
+- **Steps:**
+  - A step that raises is recorded too: a replay raises the same exception rather than running the
+    step again, so code that catches a failure takes the same path every time.
+  - `@step(retries=, backoff=, retry_on=)` tries a step again in place.
+  - An executed step is `step.started`, then `step.completed` or `step.failed`, on the run's stream.
+    AG-UI shows them as `STEP_STARTED` / `STEP_FINISHED`.
+- **`POST /v2/runs`** makes a thread and its first run in one call. The input is checked first, so a bad
+  one returns 422 and makes nothing.
+- **`GET /v2/runs/{id}/session`** has `view`, what the agent sees (the session provider's view), next to
+  `messages`, the session as kept. Compass's Session tab shows both.
+- **`llamphouse up --memory`** replaces only the runtime file's stores and queues. Its adapters, auth,
+  access, triggers and sessions stay.
+- **Classes named in a runtime file** (`module:Class`, `file.py:Class`) are found next to the file
+  first.
+- **Fixes:**
+  - An AG-UI request answering an interrupt no longer sends again what the run streamed before its
+    question.
+  - The Postgres tracing store connects on first use, not when it is constructed, so `llamphouse check`
+    connects to nothing.
+  - A delivery's `attempts` counts the successful attempt too.
+  - `FakeRun` gives an agent its own Config's defaults.
+  - Compass's webhook `curl` uses the server's own address.
 - **For code that keeps its own durability:**
   - `ctx.run.state.live` and `ctx.state.live` read the state as it is now and always write, outside
     the run's replay.
@@ -227,7 +249,7 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   - `--dashboards` / `--charts` bring 1.x Compass dashboards over. Their SQL still reads the 1.x
     tables.
   - In code: `Engine.import_thread(id, agent, entries, metadata=, created_at=)`.
-- See `docs/llamphouse 2.0 — design notes.md` and `examples/v2`.
+- See `docs/llamphouse 2.0 — design notes.md` and `examples/`.
 
 ## [1.4.0] - TBD
 

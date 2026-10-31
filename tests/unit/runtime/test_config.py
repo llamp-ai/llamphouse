@@ -258,3 +258,25 @@ async def test_adapters_from_the_runtime_file(tmp_path):
     bad = write(tmp_path, "bad.yaml", "kind: Runtime\nadapters: {a2a: {}}")
     with pytest.raises(ConfigError, match="a list"):
         Deployment.load(bad)
+
+
+def test_memory_replaces_stores_and_queues_and_keeps_the_rest(tmp_path):
+    """`llamphouse up --memory`: nothing shared, but the deployment's protocols, auth and triggers stay."""
+    sys.path.insert(0, str(HERE))
+    path = write(tmp_path, "r.yaml", "kind: Runtime\n"
+                 "data_store: {postgres: {dsn: 'postgresql://nowhere/db'}}\n"
+                 "tracing: {in_memory: {}}\n"
+                 "adapters: [{a2a: {prefix: /a2a}}]\n")
+    engine = build("hr_agents:AGENTS", config=str(path), memory=True)
+    assert set(engine.deployment.runtime.components) == {"tracing", "adapters"}
+    assert type(engine.store).__name__ == "MemoryStore"
+    assert [type(a).__name__ for a in engine.deployment.adapters()] == ["A2AAdapter"]
+
+
+def test_a_runtime_files_own_classes_are_found_next_to_it(tmp_path):
+    """`module:Class` in a runtime file: looked for in the file's folder first, wherever the process runs."""
+    folder = tmp_path / "deploy_here"
+    folder.mkdir()
+    (folder / "my_access_rules.py").write_text("from llamphouse.runtime.auth import Access\n\nclass Mine(Access):\n    pass\n")
+    path = write(folder, "r.yaml", "kind: Runtime\naccess: {my_access_rules:Mine: {}}\n")
+    assert type(Deployment.load(path).access()).__name__ == "Mine"

@@ -182,8 +182,13 @@ def steps(rec: Any) -> list[dict[str, Any]]:
     """Its recorded steps: what a replay gives back instead of doing again, by call key."""
     out = []
     for key, value in rec.steps.items():
+        if key.endswith(":calls"):
+            continue  # the calls a step made inside it, counted again when it replays: bookkeeping
         name, _, n = key.rpartition("#")
-        out.append({"key": key, "name": name or key, "n": int(n) if n.isdigit() else None, "value": short(value)})
+        failed = type(value).__name__ == "StepRaised"
+        out.append({"key": key, "name": name or key, "n": int(n) if n.isdigit() else None,
+                    "value": short(f"raised {type(value.error).__name__}: {value.error}" if failed else value),
+                    "failed": failed})
     return out
 
 

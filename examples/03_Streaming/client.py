@@ -1,81 +1,85 @@
-import asyncio
-from uuid import uuid4
+"""Chat with the streaming agent, its answers printed as they are written: a run per message, followed live.
+
+    python client.py                 # a new conversation
+    python client.py <thread id>     # carry on with one
+
+The run's live stream (`GET /v2/runs/{id}/events/stream`, server-sent events) carries `message.delta`
+events with the text as it comes - live only: they are not stored - then `message.completed` with the whole
+message (stored), the agent's own events (`progress`, `usage`), and `end` when the run has ended.
+
+The server: `llamphouse up --memory --agents agents.yaml` (LLAMPHOUSE_URL points elsewhere than :8000).
+"""
+
+import json
+import os
+import sys
+from typing import Iterator
+
 import httpx
-from a2a.client import A2ACardResolver, ClientFactory, ClientConfig
-from a2a.types import (
-    Message,
-    Part,
-    TextPart,
-    Role,
-    TaskArtifactUpdateEvent,
-    TaskStatusUpdateEvent,
-)
 
-BASE_URL = "http://127.0.0.1:8000"
+URL = os.environ.get("LLAMPHOUSE_URL", "http://127.0.0.1:8000")
+AGENT = "streaming"
+ME = {"kind": "person", "id": "ada", "name": "Ada"}
 
 
-async def main():
+def follow(http: httpx.Client, run_id: str) -> Iterator[tuple[str, dict]]:
+    """The run's live stream, as (event, data) pairs; it ends with the run."""
+    with http.stream("GET", f"/v2/runs/{run_id}/events/stream") as r:
+        r.raise_for_status()
+        event, data = "", []
+        for line in r.iter_lines():
+            if line.startswith("event: "):
+                event = line[7:]
+            elif line.startswith("data: "):
+                data.append(line[6:])
+            elif not line and data:
+                yield event, json.loads("\n".join(data))
+                event, data = "", []
 
-    async with httpx.AsyncClient() as httpx_client:
 
-        # 1. Discover the agent
-        resolver = A2ACardResolver(httpx_client=httpx_client, base_url=BASE_URL)
-        card = await resolver.get_agent_card()
-        print("=== Agent Card ===")
-        print(f"Name       : {card.name}")
-        print(f"Description: {card.description}")
-        print(f"Version    : {card.version}")
-        if card.provider:
-            print(f"Provider   : {card.provider.organization} ({card.provider.url})")
-        if card.skills:
-            print(f"Skills     : {', '.join(s.name for s in card.skills)}")
-        print("==================\n")
+def turn(http: httpx.Client, thread_id: str, text: str) -> None:
+    r = http.post(f"/v2/threads/{thread_id}/runs", json={"text": text, "sender": ME})
+    r.raise_for_status()
+    run_id = r.json()["id"]
+    shown: dict[str, str] = {}  # message id -> the text printed so far
+    for event, data in follow(http, run_id):
+        if event == "progress":
+            print(f"  [{data['label']}]")
+        elif event == "message.delta":  # a piece of text, as the model writes it
+            if data["message_id"] not in shown:
+                print(f"{AGENT}: ", end="")
+            shown[data["message_id"]] = shown.get(data["message_id"], "") + data["delta"]
+            print(data["delta"], end="", flush=True)
+        elif event == "message.completed":  # the whole message: print it if its deltas came before we listened
+            message = data["message"]
+            full = "".join(p.get("text", "") for p in message["parts"])
+            if shown.get(message["id"]) != full:
+                print(f"{AGENT}: {full}" if message["id"] not in shown else f"\n{AGENT}: {full}", end="")
+            print()
+        elif event == "usage":
+            print(f"  [{data['model']}: {data['input_tokens']} tokens in, {data['output_tokens']} out]")
+        elif event == "end" and data["status"] != "completed":
+            print(f"[run {data['status']}: {http.get(f'/v2/runs/{run_id}').json()['error']}]")
 
-        # 2. Create a STREAMING client
-        factory = ClientFactory(
-            ClientConfig(httpx_client=httpx_client, streaming=True)
-        )
-        client = factory.create(card)
 
-        # 3. Send a message and stream the response
-        question = "Explain what streaming is in three sentences."
-        print(f"> User: {question}")
-
-        msg = Message(
-            messageId=uuid4().hex,
-            role=Role.user,
-            parts=[Part(root=TextPart(text=question))],
-        )
-
-        streaming_started = False
-
-        async for event in client.send_message(msg):
-            # Each event is a (Task, streaming_event | None) tuple or a Message
-            if isinstance(event, tuple):
-                task, streaming_event = event
-
-                if isinstance(streaming_event, TaskArtifactUpdateEvent):
-                    # Token-by-token text deltas arrive here
-                    if not streaming_started:
-                        streaming_started = True
-                        print("> Agent: ", end="", flush=True)
-                    for part in streaming_event.artifact.parts:
-                        if hasattr(part.root, "text") and part.root.text:
-                            print(part.root.text, end="", flush=True)
-
-                elif isinstance(streaming_event, TaskStatusUpdateEvent):
-                    if streaming_event.final:
-                        # Final status (completed / failed)
-                        if streaming_event.status.state.value != "completed":
-                            print(f"\n[{streaming_event.status.state.value}]", flush=True)
-                    elif streaming_event.status.message:
-                        # Intermediate status updates from context.emit()
-                        for part in streaming_event.status.message.parts:
-                            if hasattr(part.root, "text") and part.root.text:
-                                print(f"  [{part.root.text}]", flush=True)
-
-        print()  # newline after streaming finishes
+def main() -> None:
+    with httpx.Client(base_url=URL, timeout=httpx.Timeout(30, read=None)) as http:
+        if len(sys.argv) > 1:
+            thread_id = sys.argv[1]
+        else:
+            r = http.post("/v2/threads", json={"agent": AGENT})
+            r.raise_for_status()
+            thread_id = r.json()["id"]
+        print(f"thread {thread_id} - Compass: {URL}/compass - empty line or Ctrl-D to stop")
+        while True:
+            try:
+                text = input("you: ").strip()
+            except EOFError:
+                break
+            if not text:
+                break
+            turn(http, thread_id, text)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

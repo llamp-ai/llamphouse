@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import re
 import time
 import uuid
@@ -36,6 +37,7 @@ from .explain import run_tree, short, steps, story, thread_tree, waits_on, why
 
 P = "/v2/compass"
 CHART, DASHBOARD = "compass.chart", "compass.dashboard"
+BASE: contextvars.ContextVar[str] = contextvars.ContextVar("compass_base", default="http://localhost:8000")  # for curl
 READ_ONLY_SQL = re.compile(r"^\s*(select|with|explain)\b", re.IGNORECASE)
 
 
@@ -188,7 +190,8 @@ def mount_api(app: Any, gw: Any) -> None:
         return [await agent_view(name, stats) for name in engine._agents]
 
     @app.get(f"{P}/agents/{{name}}", dependencies=auth)
-    async def agent(name: str) -> dict[str, Any]:
+    async def agent(name: str, request: Request) -> dict[str, Any]:
+        BASE.set(str(request.base_url).rstrip("/"))
         if name not in engine._agents:
             raise HTTPException(404, f"no agent {name}")
         stats = (await engine.store.stats(engine.now - timedelta(hours=24),
@@ -200,7 +203,7 @@ def mount_api(app: Any, gw: Any) -> None:
     def hook_view(agent_name: str, t: Any) -> dict[str, Any]:
         kind = "public" if t.public else ("signature" if t.signature else "bearer")
         example = {"event": "evt-1"} if t.idempotency else {}
-        curl = f"curl -X POST http://localhost:8000{t.path} -H 'Content-Type: application/json'"
+        curl = f"curl -X POST {BASE.get()}{t.path} -H 'Content-Type: application/json'"
         if kind == "bearer":
             curl += f" -H 'Authorization: Bearer ${t.secret_env or 'SECRET'}'"
         elif kind == "signature":
@@ -211,7 +214,8 @@ def mount_api(app: Any, gw: Any) -> None:
                 "busy": t.busy, "curl": curl}
 
     @app.get(f"{P}/webhooks", dependencies=auth)
-    async def webhooks() -> list[dict[str, Any]]:
+    async def webhooks(request: Request) -> list[dict[str, Any]]:
+        BASE.set(str(request.base_url).rstrip("/"))
         return [hook_view(a, t) for a, t in (deployment().webhooks() if deployment() else [])]
 
     @app.get(f"{P}/schedules", dependencies=auth)

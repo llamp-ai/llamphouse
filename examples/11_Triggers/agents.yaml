@@ -1,0 +1,36 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: orders}
+spec:
+  entrypoint: agents.py:OrdersAgent
+  display_name: Order desk
+  env:                                       # the secrets, defaults for the demo
+    SHOP_SECRET: "${SHOP_SECRET:-shop-secret}"
+    OPS_TOKEN: "${OPS_TOKEN:-ops-token}"
+  triggers:
+    - webhook:                               # the shop's order events, HMAC-signed
+        name: shop
+        path: /hooks/shop
+        signature: {header: X-Shop-Signature, secret_env: SHOP_SECRET, prefix: "sha256="}
+        thread: {label: $.order.id}          # one thread per order
+        message: {text: $.summary}           # the input's text; the whole payload comes along as data
+        thread_metadata: {customer: $.order.customer}
+        idempotency: {key: $.event_id}       # the same event twice: one run, the first answer again
+        busy: send                           # the order's run is busy: the event goes to its inbox
+    - webhook:                               # an ops tool, with a bearer token
+        name: ops
+        path: /hooks/ops
+        secret_env: OPS_TOKEN                # Authorization: Bearer <OPS_TOKEN>
+        message: {text: $.text}              # a new thread per call
+    - schedule:
+        name: daily-digest
+        cron: "0 7 * * MON-FRI"
+        timezone: Europe/Amsterdam
+        input: {text: Daily digest}
+        thread: {label: digest}              # the same thread every morning
+    - schedule:
+        name: stuck-check
+        every: 1m
+        input: {text: Look for stuck orders}
+        thread: {label: stuck-check}
+        busy: skip                           # still running from last time: skip this one

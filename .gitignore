@@ -171,3 +171,5 @@ cython_debug/
 # Node / Compass frontend
 node_modules/
 local/
+# TypeScript incremental build state
+*.tsbuildinfo

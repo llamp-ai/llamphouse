@@ -1,127 +1,67 @@
-# 🌊 Streaming
+# Streaming
 
-A LLAMPHouse agent that streams its response **token-by-token** to the
-client, with **live status updates** showing what the server is doing,
-all over the **A2A** (Agent-to-Agent) protocol.
+The chat from [02_Chat](../02_Chat), streamed token by token. The agent calls a model with streaming on -
+OpenAI's Responses API by default, Anthropic or Gemini if you choose - and hands the stream to `pipe`
+(`llamphouse.helpers.streams`), which writes the text into the run's message as it arrives and reports the
+tokens it cost. The client follows the run's live stream and prints each piece of text as it comes; the
+thread gets the whole message when it is done. The SDK calls stay in the example: the helpers only read the
+stream they are given.
 
-This builds on [02_Chat](../02_Chat) by switching from a blocking
-completion to a streaming one — the client sees progress messages and
-then text as it's generated in real time.
+## Run it
 
-## What you'll learn
-
-- How to use `AsyncOpenAI` with `stream=True`
-- How to pipe an OpenAI stream through `context.process_stream()`
-- How to send **status updates** to the client with `context.emit()`
-- How to consume A2A streaming events on the client side
-
-## Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| Python 3.10+ | Check with `python --version` |
-| OpenAI API key | Get one at [platform.openai.com](https://platform.openai.com/api-keys) |
-
-## Quick start
-
-### 1. Install dependencies
-
-```sh
+```bash
 pip install -r requirements.txt
+export OPENAI_API_KEY=sk-...
+llamphouse up --memory --agents agents.yaml     # http://127.0.0.1:8000, Compass at /compass
+python client.py                                # in a second terminal: chat; an empty line stops
 ```
 
-### 2. Set your API key
-
-Create a `.env` file in this directory:
-
-```sh
-echo "OPENAI_API_KEY=sk-..." > .env
+```
+you: Tell me a short story about a lighthouse.
+  [Asking gpt-5-mini]
+streaming: Once upon a time, on a rocky … (printed as it is written)
+  [gpt-5-mini: 25 tokens in, 180 out]
 ```
 
-### 3. Start the server
+Another provider - its SDK and key, then the agent file picks it up from the environment:
 
-```sh
-python server.py
+```bash
+pip install anthropic && export ANTHROPIC_API_KEY=...
+MODEL_PROVIDER=anthropic llamphouse up --memory --agents agents.yaml
+
+pip install google-genai && export GEMINI_API_KEY=...
+MODEL_PROVIDER=gemini MODEL=gemini-2.5-pro llamphouse up --memory --agents agents.yaml
 ```
 
-You should see output like:
+## Try
 
-```
-LLAMPHOUSE We have light!
-LLAMPHOUSE Server: http://127.0.0.1:8000
-```
+- Watch the raw stream: `curl -N localhost:8000/v2/runs/<run id>/events/stream` while a run is going
+  (`progress`, `message.started`, `message.delta`…, `message.completed`, `usage`, then `end`).
+- `MODEL_PROVIDER=mistral llamphouse check --agents agents.yaml`: the config is validated before anything
+  runs.
 
-### 4. In a second terminal, run the client
+## In Compass
 
-```sh
-python client.py
-```
+Open a run while it streams: its **Live** tab shows the message growing, then the `progress` and `usage`
+events (the model, tokens in and out). Its **Session** tab is what the agent read; the thread holds only
+the finished messages.
 
-You'll first see status updates, then the streamed response:
-
-```
-=== Agent Card ===
-Name       : Streaming Agent
-Description: A conversational assistant that streams responses token-by-token.
-Version    : 0.1.0
-Provider   : llamphouse (https://llamp.ai)
-==================
-
-> User: Explain what streaming is in three sentences.
-  [Preparing your answer...]
-  [Calling OpenAI...]
-> Agent: Streaming is the continuous transmission of data...
-```
-
-## How it works
-
-### Server (`server.py`)
-
-1. **Status update** — `context.emit("status", {"message": "Preparing..."})` sends
-   a progress message to the client *before* the LLM starts generating.
-2. **OpenAI stream** — creates an `AsyncOpenAI` completion with
-   `stream=True`, which yields tokens incrementally.
-3. **Pipe it** — `context.process_stream(stream, adapter)` converts each
-   OpenAI chunk into A2A streaming events and forwards them to the client.
-4. **Persist** — after the stream finishes, the full text is saved via
-   `context.insert_message()` so it appears in conversation history.
-
-### `context.emit()` — sending custom status updates
-
-Call `context.emit(event_name, data)` at any point during `run()` to push
-a status update to the client:
+## The code
 
 ```python
-context.emit("status", {"message": "Searching the database..."})
-context.emit("status", {"message": "Found 3 results, generating summary..."})
+async def stream_openai(ctx, model, conversation) -> Streamed:
+    stream = await client("openai").responses.create(model=model, instructions=ctx.config.instructions,
+                                                     input=[...], stream=True)
+    return await pipe(ctx, streams.openai(stream))       # text into the run's message, live
+
+async def stream_anthropic(ctx, model, conversation) -> Streamed:
+    async with client("anthropic").messages.stream(model=model, max_tokens=16000, ...) as stream:
+        return await pipe(ctx, streams.anthropic(stream))
 ```
 
-These arrive on the client as `TaskStatusUpdateEvent` with `state="working"`
-and the message text you provided.
+`streams.openai`, `streams.anthropic` and `streams.gemini` turn each provider's stream events into the same
+deltas; `pipe` returns what was said (`.text`, `.tool_calls`, `.finished`, `.usage`). Text deltas are live
+only: a client that starts listening late gets the whole message from `message.completed`.
 
-### Client (`client.py`)
-
-1. **Discover** — fetch the agent card with `A2ACardResolver`.
-2. **Streaming client** — create a `Client` via `ClientFactory` with
-   `streaming=True`.
-3. **Iterate events** — `async for event in client.send_message(msg)` yields:
-   - `TaskArtifactUpdateEvent` — text deltas (the actual LLM tokens)
-   - `TaskStatusUpdateEvent` — status changes, including custom messages
-     from `context.emit()`
-
-## Key difference from 02_Chat
-
-| | 02_Chat | 03_Streaming |
-|---|---|---|
-| OpenAI client | `OpenAI()` (sync) | `AsyncOpenAI()` (async) |
-| Completion call | `create(...)` | `create(..., stream=True)` |
-| Server delivery | Full response at once | Token-by-token via SSE |
-| Status updates | None | `context.emit()` |
-| Client config | `streaming=False` | `streaming=True` |
-
-## Next steps
-
-| Example | What it adds |
-|---|---|
-| [04_ToolCall](../04_ToolCall) | Give your agent tools to call |
-| [07_Tracing](../07_Tracing) | Add OpenTelemetry tracing |
+Which provider and model is the agent's `Config` (`StreamingConfig`), filled in `agents.yaml` from
+`MODEL_PROVIDER` and `MODEL`.

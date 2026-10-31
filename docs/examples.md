@@ -7,24 +7,25 @@ Each example includes an `agents.py` (or `server.py`), `client.py`, and `README.
 
 | Example | Description | Key features |
 |---|---|---|
-| [01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld) | The simplest possible LLAMPHouse agent — no API keys, no LLM, just a | `Agent`, `A2AAdapter` |
-| [02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat) | A LLAMPHouse agent that holds a real conversation using OpenAI's Chat | `run()`, `forward the conversation hi…` |
-| [03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming) | A LLAMPHouse agent that streams its response token-by-token to the | `AsyncOpenAI`, `context.process_stream()` |
-| [04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall) | This example demonstrates a minimal tool-calling loop inside a custom Agent running on a LLAMPHouse server, exposed v… |  |
-| [05_OrchestratorAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_OrchestratorAgent) | Demonstrates a central orchestrator that checks every sub-agent’s output |  |
-| [06_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_AgentHandover) | Demonstrates how one agent can hand over a user request to a specialised agent at runtime, with both agents running o… |  |
-| [07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing) | End-to-end OpenTelemetry tracing with an A2A client and server. The client creates a root span and injects W3C tracep… |  |
-| [08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore) | Demonstrates the config store feature with A2A streaming — define |  |
-| [09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth) | Demonstrates how to implement a custom authenticator on your LLAMPHouse server with A2A streaming. |  |
-| [10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker) | Compares the two worker modes in llamphouse using the A2A streaming protocol: |  |
-| [11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger) | Trigger an agent via an HTTP POST instead of a human chat message. | `WebhookTrigger`, `secret_env` |
-| [12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent) | A generic ReAct-style Planner-Executor agent that you can drop into any project by providing a list of tools and a re… |  |
-| [13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML) | The config-driven way to run LLAMPHouse — no server.py required. | `server.py`, `The difference between a de…` |
-| [14_WorkflowSteps](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_WorkflowSteps) | Demonstrates the experimental @step decorator — the first piece of a | `@step`, `How input/output is capture…` |
-| [15_LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_LangGraph) | This example shows a non-trivial LangGraph workflow running behind the LLAMPHouse runtime contract. |  |
-| [16_DurableRuns](https://github.com/llamp-ai/llamphouse/tree/main/examples/16_DurableRuns) | A refund agent that asks a human before it pays: the run waits for the | `context.wait_for_input()`, `How a reply to that task an…` |
-| [17_Sessions](https://github.com/llamp-ai/llamphouse/tree/main/examples/17_Sessions) | Three agents, three session managers — each agent's view of the same | `context.session`, `Summarizing` |
-| [18_AGUI](https://github.com/llamp-ai/llamphouse/tree/main/examples/18_AGUI) | A trip planner served over [AG-UI](https://docs.ag-ui.com), the protocol | `AGUIAdapter`, `@step` |
+| [01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld) | The simplest llamphouse agent: no model, no keys. Hello reads the message that started its run and answers |  |
+| [02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat) | A conversation with a model. Each message you send starts a run of chat on the same thread; the agent reads |  |
+| [03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming) | The chat from [02_Chat](../02_Chat), streamed token by token. The agent calls a model with streaming on - |  |
+| [04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall) | A model tool loop. The agent calls OpenAI's Responses API with two function tools (current_time, |  |
+| [05_ResearchDesk](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_ResearchDesk) | Several agents working together. A desk that plans team offsites compares cities on cost and weather: it |  |
+| [06_Handover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_Handover) | One conversation, passed between agents. A front desk (triage) answers general questions; when you ask |  |
+| [07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing) | An agent that answers questions from a small handbook, traced with OpenTelemetry. llamphouse makes a |  |
+| [08_Config](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_Config) | One agent class, set up three ways. A support agent declares what can be tuned as a Config (tone, |  |
+| [09_Auth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_Auth) | Who may call, and what they may touch. The runtime file names the authenticators - API keys, each with its |  |
+| [10_Server](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_Server) | The research desk from 05_ResearchDesk, served for real: API processes and worker processes on one Postgres |  |
+| [11_Triggers](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_Triggers) | An order desk that other systems and the clock start, not a person. All of it is in the agent file's |  |
+| [12_Workflow](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_Workflow) | A workflow: an agent that is a process rather than a conversation. TripPlanner takes typed input (a |  |
+| [13_DurableRuns](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_DurableRuns) | A refund agent that asks a human before it pays. The run drafts the refund, asks for approval and waits |  |
+| [14_Sessions](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_Sessions) | A session is an agent's working memory on a thread: what it hands its model. The thread keeps every message; |  |
+| [15_LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_LangGraph) | A LangGraph graph served by llamphouse, with llamphouse.helpers.langgraph. The graph is a small support desk: |  |
+| [16_Adapters](https://github.com/llamp-ai/llamphouse/tree/main/examples/16_Adapters) | One agent served over several protocols at once: the native API (/v2), the OpenAI Responses and |  |
+| [17_AGUI](https://github.com/llamp-ai/llamphouse/tree/main/examples/17_AGUI) | A trip planner served over [AG-UI](https://docs.ag-ui.com), the protocol agent front-ends (CopilotKit and |  |
+| [18_Subscriptions](https://github.com/llamp-ai/llamphouse/tree/main/examples/18_Subscriptions) | Another system hears about runs without holding a stream open. client.py subscribes a URL to the |  |
+| [19_CodingAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/19_CodingAgent) | A long-running coding agent that splits its work into subtasks running in parallel, each on a fork of the |  |
 
 ## Running an example
 
@@ -50,24 +51,25 @@ Some examples require environment variables (e.g., `OPENAI_API_KEY`). Check each
 
 If you're new to LLAMPHouse, we recommend working through the examples in this order:
 
-2. **[01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld)** — 👋 Hello World
-3. **[02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat)** — 💬 Chat
-4. **[03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming)** — 🌊 Streaming
-5. **[04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall)** — Tool Call Example
-6. **[05_OrchestratorAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_OrchestratorAgent)** — Central Orchestrator with Review & Correction
-7. **[06_AgentHandover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_AgentHandover)** — Agent Handover
-8. **[07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing)** — Tracing Example (A2A)
-9. **[08_ConfigStore](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_ConfigStore)** — Config Store Example
-10. **[09_CustomAuth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_CustomAuth)** — Custom Authenticator Example
-11. **[10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker)** — AsyncWorker vs DistributedWorker
-12. **[11_WebhookTrigger](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_WebhookTrigger)** — Webhook Trigger
-13. **[12_PlannerAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_PlannerAgent)** — Planner Agent
-14. **[13_LLAMPHouseYAML](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_LLAMPHouseYAML)** — 📄 LLAMPHouse YAML
-15. **[14_WorkflowSteps](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_WorkflowSteps)** — 🪜 Workflow Steps
-16. **[15_LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_LangGraph)** — LangGraph Branching Wrapper Example
-17. **[16_DurableRuns](https://github.com/llamp-ai/llamphouse/tree/main/examples/16_DurableRuns)** — ⏸️ Durable Runs
-18. **[17_Sessions](https://github.com/llamp-ai/llamphouse/tree/main/examples/17_Sessions)** — 🧵 Sessions
-19. **[18_AGUI](https://github.com/llamp-ai/llamphouse/tree/main/examples/18_AGUI)** — 🖥️ AG-UI
+1. **[01_HelloWorld](https://github.com/llamp-ai/llamphouse/tree/main/examples/01_HelloWorld)** — Hello world
+2. **[02_Chat](https://github.com/llamp-ai/llamphouse/tree/main/examples/02_Chat)** — Chat
+3. **[03_Streaming](https://github.com/llamp-ai/llamphouse/tree/main/examples/03_Streaming)** — Streaming
+4. **[04_ToolCall](https://github.com/llamp-ai/llamphouse/tree/main/examples/04_ToolCall)** — Tool calls
+5. **[05_ResearchDesk](https://github.com/llamp-ai/llamphouse/tree/main/examples/05_ResearchDesk)** — 05 Research desk
+6. **[06_Handover](https://github.com/llamp-ai/llamphouse/tree/main/examples/06_Handover)** — 06 Handover
+7. **[07_Tracing](https://github.com/llamp-ai/llamphouse/tree/main/examples/07_Tracing)** — Tracing
+8. **[08_Config](https://github.com/llamp-ai/llamphouse/tree/main/examples/08_Config)** — Config
+9. **[09_Auth](https://github.com/llamp-ai/llamphouse/tree/main/examples/09_Auth)** — Auth
+10. **[10_Server](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_Server)** — Server
+11. **[11_Triggers](https://github.com/llamp-ai/llamphouse/tree/main/examples/11_Triggers)** — Triggers
+12. **[12_Workflow](https://github.com/llamp-ai/llamphouse/tree/main/examples/12_Workflow)** — 12 Workflow
+13. **[13_DurableRuns](https://github.com/llamp-ai/llamphouse/tree/main/examples/13_DurableRuns)** — 13 Durable runs
+14. **[14_Sessions](https://github.com/llamp-ai/llamphouse/tree/main/examples/14_Sessions)** — Sessions
+15. **[15_LangGraph](https://github.com/llamp-ai/llamphouse/tree/main/examples/15_LangGraph)** — LangGraph
+16. **[16_Adapters](https://github.com/llamp-ai/llamphouse/tree/main/examples/16_Adapters)** — Adapters
+17. **[17_AGUI](https://github.com/llamp-ai/llamphouse/tree/main/examples/17_AGUI)** — 17 AG-UI
+18. **[18_Subscriptions](https://github.com/llamp-ai/llamphouse/tree/main/examples/18_Subscriptions)** — Subscriptions
+19. **[19_CodingAgent](https://github.com/llamp-ai/llamphouse/tree/main/examples/19_CodingAgent)** — Coding agent
 
 ## Next steps
 

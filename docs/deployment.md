@@ -1,161 +1,184 @@
 # Deployment
 
-## Docker Compose
+llamphouse runs as two kinds of process on one shared Postgres and one shared Redis:
 
-LLAMPHouse includes a Docker Compose setup for production deployments with all supporting services.
+- **API processes** serve the HTTP API (`/v2`), the adapters, webhooks and Compass. They hold no state: every
+  request reads the store or writes one transaction. Run as many as you like behind a load balancer.
+- **Worker processes** execute runs. They also sweep for due work: sleeps that end, runs whose lease expired,
+  schedules that are due, subscription deliveries. Run as many as your load needs.
 
-### Quick start
+Postgres is the truth. Redis is the doorbell (the job queue only says "run X can make progress") and the
+loudspeaker (live events for streams, between processes). A lost or repeated Redis message is harmless.
+
+For development, one process does everything in memory:
 
 ```bash
-cd docker
-docker compose up -d
+llamphouse up --memory --agents agents.yaml          # http://127.0.0.1:8000, Compass at /compass
 ```
 
-This starts:
+## Roles
 
-| Service | Port | Purpose |
+```bash
+llamphouse up --role all    --config llamphouse.yaml --agents agents.yaml   # API + worker in one process
+llamphouse up --role api    --config llamphouse.yaml --agents agents.yaml   # API and Compass, executes nothing
+llamphouse up --role worker --config llamphouse.yaml --agents agents.yaml   # executes runs, serves no HTTP
+```
+
+| Role | Serves HTTP | Executes runs | Sweeps (schedules, deliveries, leases) |
+|---|---|---|---|
+| `all` | yes | yes | yes |
+| `api` (or `compass`) | yes | no | no |
+| `worker` | no | yes | yes |
+
+Every process gets the same agent files: an API process needs them to validate input and describe agents, a
+worker to run them. Any role other than `all` shares work with other processes, so it refuses to start on
+in-memory components: it needs a shared `data_store`, `run_queue` and `event_queue`.
+
+### `llamphouse up` options
+
+| Option | Default | |
 |---|---|---|
-| **Runtime** | `8080` | Your agent server |
-| **Postgres** | `5432` | Persistent data store |
-| **Redis** | `6379` | Run queue and event queue |
-| **OTel Collector** | `4318` | Trace collection |
-| **ClickHouse** | `8123` | Trace storage for Compass |
+| `--role` | `all` | `all`, `api`, `compass` (same as `api`), `worker` |
+| `--config` | `LLAMPHOUSE_CONFIG`, else `./llamphouse.yaml` | the runtime file |
+| `--agents` | the runtime file's agent documents | agent files, directories, or `module:NAME`; repeatable |
+| `--host` | `HOST`, else `127.0.0.1` | use `0.0.0.0` in a container |
+| `--port` | `PORT`, else `8000` | |
+| `--workers` | `engine.workers`, else `LLAMPHOUSE_WORKERS`, else 4 | runs this process executes at once |
+| `--database-url` | | a Postgres URL: the data store and file store |
+| `--redis-url` | | a Redis URL: the run queue and event queue |
+| `--api-key` | `LLAMPHOUSE_API_KEY` | one more API key the API accepts |
+| `--memory` | off | everything in memory, one process: ignores the runtime file's components and the `LLAMPHOUSE_*` URLs |
+| `--no-compass` | off | don't mount Compass |
+| `--log-level` | `info` | |
 
-### Configuration
+`python -m llamphouse.runtime app:AGENTS --role api` still works and means
+`llamphouse up --agents app:AGENTS --role api`.
 
-The Docker setup uses environment variables. Key variables in the compose file:
+### Where components come from
 
-```yaml
-services:
-  runtime:
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/llamphouse
-      REDIS_URL: redis://redis:6379
-      LLAMPHOUSE_TRACING_ENABLED: "true"
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      OTEL_SERVICE_NAME: llamphouse
-      CLICKHOUSE_URL: http://clickhouse:8123
-```
+For each component, the first of:
+
+1. a command-line option or an argument in code (`--database-url`, `--redis-url`, `store=...`);
+2. the runtime file (see [Configuration](configuration.md));
+3. the environment: `LLAMPHOUSE_DATABASE_URL` gives a Postgres data store and file store,
+   `LLAMPHOUSE_REDIS_URL` a Redis run queue and event queue;
+4. in memory.
+
+With `LLAMPHOUSE_DATABASE_URL`, the **config store** (agent config changed at runtime) is the Postgres one too,
+unless the runtime file names one. **Tracing** comes from the runtime file's `tracing`, else from
+`TRACING_STORE` (see [Tracing](guides/tracing.md)).
 
 ## Postgres
 
-For production, use Postgres instead of the in-memory store:
+`pip install 'llamphouse[postgres]'`. The schema is managed with Alembic; its revisions ship in the package
+(`llamphouse.runtime.migrations`). The 2.0 tables are named `llamphouse_*` and sit on their own Alembic branch
+(`v2`), next to the 1.x tables if the database has them.
 
-```python
-import os
-from llamphouse.core.data_stores.postgres_store import PostgresDataStore
+By default every process brings the schema up to date when it starts, under an advisory lock so processes that
+start together take turns. To make migrations a deploy step instead, turn that off and run the upgrade
+yourself:
 
-app = LLAMPHouse(
-    agents=[...],
-    data_store=PostgresDataStore(os.environ["DATABASE_URL"]),
-)
+```yaml
+data_store:   {postgres: {dsn: "${LLAMPHOUSE_DATABASE_URL}", migrate: false}}
+file_store:   {postgres: {dsn: "${LLAMPHOUSE_DATABASE_URL}", migrate: false}}
+config_store: {postgres: {dsn: "${LLAMPHOUSE_DATABASE_URL}", migrate: false}}
 ```
-
-### Database migrations
-
-LLAMPHouse uses [Alembic](https://alembic.sqlalchemy.org/) for schema migrations:
 
 ```bash
-# Start a local Postgres
-docker run --rm -d --name postgres \
-  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
-  -p 5432:5432 postgres
-docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
-
-# Set the connection string
-export DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/llamphouse
-
-# Apply the 1.x schema (branch v1 of the history)
-alembic upgrade v1@head
-
-# The 2.0 schema (branch v2) - also applied on start by the 2.0 runtime
-llamphouse db upgrade
+llamphouse db upgrade --config llamphouse.yaml          # bring the schema up to date
+llamphouse db upgrade --config llamphouse.yaml --sql    # print the SQL instead, to review or run yourself
+llamphouse db current --config llamphouse.yaml          # where the database is
 ```
 
-The migrations live in `llamphouse/runtime/migrations` (shipped in the package). One history holds both
-schemas as two branches, so `alembic upgrade head` is ambiguous: name the branch (`v1@head`, `v2@head`), or
-`heads` for both. Revisions are written by hand (plain SQL), on their branch:
-`alembic revision --head v2@head -m "description of change"`.
+`llamphouse db` finds the database from `--database-url`, else the runtime file's `data_store.postgres.dsn`,
+else `LLAMPHOUSE_DATABASE_URL` (or `DATABASE_URL`). `--target` picks what to upgrade to: `v2@head` (the
+default: the 2.0 tables), `v1@head` (the 1.x tables) or `heads` (both).
 
 ## Redis
 
-For multi-process deployments, use Redis for the run queue and event queues:
+`pip install 'llamphouse[redis]'`. One Redis serves both the run queue (`run_queue: {redis: {url: ...}}`, a list
+under the key `llamphouse:jobs`) and the event queue (`event_queue: {redis: {url: ...}}`, pub/sub channels
+prefixed `llamphouse:`). Give each deployment sharing one Redis its own `key` and `prefix`. Redis holds nothing
+that can't be lost: queued runs are rung again from Postgres after `redeliver` seconds.
+
+## Scaling
+
+- **API processes** scale horizontally without coordination. A live stream (SSE) is served by whichever process
+  the client is connected to; events from workers reach it over Redis.
+- **Workers** scale horizontally too. Each takes a run only if the store says it is queued, and holds a lease
+  on it while it executes (`engine.lease_ttl`, 30 s by default, renewed while it runs). `--workers` sets how
+  many runs one process executes at once; a run that waits (an answer, the clock, a signal, another thread)
+  holds no worker.
+- **The unit of work** is a conversation: a thread people talk to and every thread its runs create. Everything
+  that happens in it is one transaction under a lock on it, so different conversations run in parallel across
+  all processes. Each process keeps copies of the conversations it works on and reads only what changed since.
+
+## Stopping
+
+- **A graceful stop** (Ctrl-C, `SIGTERM`): a worker stops taking runs and hands back the runs it is executing.
+  They are queued again at once and another worker carries on. An API process finishes its requests and closes;
+  clients reconnect and resume streams with `?after=`.
+- **A hard stop** (`kill -9`, a lost node): the dead worker's runs keep their lease until it expires, then the
+  sweeper queues them again. The worker that takes one over executes it from the top and replays its recorded
+  steps: what was recorded does not happen twice. See [Durable runs](concepts/durable-runs.md).
+
+## Health
+
+`GET /health` answers `{"ok": true, "engine": "<id>", "workers": <n>}` without authentication. Use it for
+readiness and liveness checks on API processes. Worker processes serve no HTTP; check that the process is
+running.
+
+## A Postgres and a Redis for development
+
+[Example 10_Server](../examples/10_Server) includes a `docker-compose.yml` that describes a Postgres 16 on port
+5433 and a Redis 7 on port 6380, and a runtime file that points at them (with `${LLAMPHOUSE_DATABASE_URL:-...}`
+defaults). Any Postgres and Redis work: a local install, or managed services. Point the runtime file (or
+`LLAMPHOUSE_DATABASE_URL` / `LLAMPHOUSE_REDIS_URL`) at them.
+
+## On Kubernetes or another orchestrator
+
+The same image runs every role; only the command changes.
+
+- **Migrations:** a Job (or an init step of the release) runs `llamphouse db upgrade`, with `migrate: false`
+  in the runtime file so processes don't race to do it.
+- **API:** a Deployment running `llamphouse up --role api --host 0.0.0.0 --config /etc/llamphouse/llamphouse.yaml
+  --agents /app/agents.yaml`, behind a Service, with `/health` as its readiness probe. Turn off response
+  buffering for `text/event-stream` in proxies in front of it, and allow long-lived connections.
+- **Workers:** a Deployment running `llamphouse up --role worker ...`. Set `terminationGracePeriodSeconds`
+  long enough for the current step of a run to finish; the worker then hands its runs back. Scale it on CPU or
+  on the run queue's length.
+- **Configuration:** the runtime file and agent files from a ConfigMap; secrets as environment variables (from
+  a Secret), referenced with `${VAR}` or through `secrets` / `secrets_store`.
+- **Tracing:** a tracing store in the runtime file, and `OTEL_EXPORTER_OTLP_ENDPOINT` to send spans to a
+  collector too.
+
+## In code
 
 ```python
-import os
-from llamphouse.core.queue.redis_queue import RedisQueue
-from llamphouse.core.streaming.event_queue.redis_event_queue import RedisEventQueueFactory
+from llamphouse.runtime import server
 
-app = LLAMPHouse(
-    agents=[...],
-    run_queue=RedisQueue(os.environ["REDIS_URL"]),
-    event_queue_class=RedisEventQueueFactory(os.environ["REDIS_URL"]),
-)
+server.serve(["agents.yaml"], role="all", config="llamphouse.yaml", port=8000)   # what `llamphouse up` does
+app = server.app(["agents.yaml"], role="api", config="llamphouse.yaml")          # an ASGI app for any server
 ```
 
-## Distributed workers
+`server.app(...)` opens the engine when the ASGI app starts and closes it when it stops. `await
+server.work(...)` runs a worker until `SIGINT` / `SIGTERM`.
 
-For high-throughput deployments, separate the API server from worker processes. The API server handles HTTP requests, while workers pull runs from the shared queue and execute agent logic. Use Postgres for shared run state and Redis for run/event queues.
+## Environment variables
 
-```python
-# api.py - API server only
-import os
-from llamphouse.core import LLAMPHouse
-from llamphouse.core.queue.redis_queue import RedisQueue
-from llamphouse.core.data_stores.postgres_store import PostgresDataStore
-from llamphouse.core.streaming.event_queue.redis_event_queue import RedisEventQueueFactory
+| Variable | Used for |
+|---|---|
+| `LLAMPHOUSE_CONFIG` | the runtime file, when `--config` isn't given |
+| `LLAMPHOUSE_DATABASE_URL` | Postgres for the data store and file store, when the runtime file has none |
+| `LLAMPHOUSE_REDIS_URL` | Redis for the run queue and event queue, when the runtime file has none |
+| `LLAMPHOUSE_API_KEY` | an API key the API accepts (with any authenticators in the runtime file) |
+| `LLAMPHOUSE_WORKERS` | runs a process executes at once, when neither `--workers` nor `engine.workers` says |
+| `LLAMPHOUSE_AGENT_VERSION` | the version reported for agents whose class sets none |
+| `HOST`, `PORT` | defaults for `--host` and `--port` |
+| `LLAMPHOUSE_TRACING_ENABLED`, `TRACING_STORE`, `OTEL_*` | see [Tracing](guides/tracing.md) |
 
-app = LLAMPHouse(
-    agents=[...],
-    data_store=PostgresDataStore(os.environ["DATABASE_URL"]),
-    run_queue=RedisQueue(os.environ["REDIS_URL"]),
-    event_queue_class=RedisEventQueueFactory(os.environ["REDIS_URL"]),
-)
-# Start with: llamphouse serve api:app --no-workers
+## See also
 
-# worker.py - Worker process
-import asyncio
-import os
-from llamphouse.core.queue.redis_queue import RedisQueue
-from llamphouse.core.data_stores.postgres_store import PostgresDataStore
-from llamphouse.core.workers.distributed_worker import DistributedWorker
-
-worker = DistributedWorker(
-    redis_url=os.environ["REDIS_URL"],
-    agents=[...],
-    data_store=PostgresDataStore(os.environ["DATABASE_URL"]),
-    run_queue=RedisQueue(os.environ["REDIS_URL"]),
-)
-asyncio.run(worker.run_forever())
-```
-
-Scale by running multiple worker processes:
-
-```bash
-# Terminal 1: API server
-python api.py
-
-# Terminal 2-N: Workers
-python worker.py
-python worker.py
-python worker.py
-```
-
-See the `docker/docker-compose.prod.yml` for a production split-mode setup and [example 10_DistributedWorker](https://github.com/llamp-ai/llamphouse/tree/main/examples/10_DistributedWorker) for a complete implementation.
-
-## Production checklist
-
-- [ ] Use `PostgresDataStore` for persistent storage
-- [ ] Use `RedisQueue` and `RedisEventQueue` for scalability
-- [ ] Run Alembic migrations before deploying
-- [ ] Enable tracing with an OTel collector
-- [ ] Set up ClickHouse for Compass trace viewing
-- [ ] Configure authentication (`KeyAuth` or custom `BaseAuth`)
-- [ ] Set appropriate `retention_policy` for data cleanup
-- [ ] Consider split-mode (API + workers) for high-throughput
-
-## Next steps
-
-- [Configuration](configuration.md) — full parameter reference
-- [Tracing](guides/tracing.md) — OpenTelemetry setup
-- [Compass Dashboard](guides/compass.md) — built-in monitoring UI
+- [Configuration](configuration.md): every key of the agent and runtime files
+- [Example 10_Server](../examples/10_Server): API and workers on Postgres and Redis
+- [Auth](guides/auth.md): who may call the API

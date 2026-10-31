@@ -1,0 +1,6 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: hello}
+spec:
+  entrypoint: agents.py:Hello
+  display_name: Hello

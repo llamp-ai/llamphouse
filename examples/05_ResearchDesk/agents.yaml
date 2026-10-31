@@ -1,0 +1,20 @@
+# The agent files: what the agents are. Serve them with `llamphouse up --memory --agents agents.yaml`.
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: desk}
+spec:
+  entrypoint: agents.py:Desk
+  display_name: Research desk
+  permissions: {agents: [weather, prices]}   # whom it may call
+---
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: weather}
+spec:
+  entrypoint: agents.py:Weather
+---
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: prices}
+spec:
+  entrypoint: agents.py:Prices

@@ -1,0 +1,9 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: streaming}
+spec:
+  entrypoint: agents.py:Streaming
+  display_name: Streaming chat
+  config:                                       # the agent's Config (StreamingConfig)
+    provider: "${MODEL_PROVIDER:-openai}"       # openai | anthropic | gemini
+    model: "${MODEL:-}"                         # empty: the provider's default

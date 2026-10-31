@@ -216,3 +216,29 @@ async def test_a_graph_with_delta_channels_keeps_their_chain():
     fresh = LlamphouseCheckpointer(run)  # a new process
     state = await graph.copy(update={"checkpointer": fresh}).aget_state(fresh.config())
     assert state.values["notes"] == ["note 1", "note 2", "note 3"]
+
+
+class Answer(TypedDict, total=False):
+    question: str
+    output: str
+
+
+def answer(state: Answer) -> Answer:
+    return {"output": f"answered: {state['question']}"}
+
+
+async def test_a_graph_without_messages_says_its_output():
+    g = StateGraph(Answer)
+    g.add_node("answer", answer)
+    g.add_edge(START, "answer")
+    g.add_edge("answer", END)
+
+    class Oracle(LangGraphAgent):
+        graph = g.compile()
+
+        async def graph_input(self, ctx):
+            return {"question": ctx.input.text}
+
+    run = FakeRun("why?")
+    await run.start(Oracle())
+    assert [m.text for m in run.replies] == ["answered: why?"]

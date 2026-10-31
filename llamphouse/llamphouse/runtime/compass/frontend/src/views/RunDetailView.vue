@@ -19,6 +19,7 @@ const run = ref<Run | null>(null)
 const debug = ref<Debug | null>(null)
 const thread = ref<Thread | null>(null)
 const session = ref<SessionView | null>(null)
+const kept = ref(false)  // the session as kept, rather than the provider's view
 const spans = ref<Span[] | null>(null)
 const tracing = ref(true)
 const tab = ref(String(route.query.tab || 'story'))
@@ -121,7 +122,12 @@ const ended = computed(() => !!run.value && ['completed', 'failed', 'cancelled',
             <p class="small muted mb-2">Its working memory: what <b>{{ session.agent }}</b> sees (ctx.session.messages()) - session {{ session.id }}, version {{ session.version }},
               {{ session.revisions }} revision(s){{ session.revising ? ', revising now' : '' }}, provider {{ debug.session?.provider }}.
               <Hint text="The session is built from the thread (minus messages addressed to other runs), plus entries the agent added (session.add); a provider revises it in the background." topic="sessions" /></p>
-            <div v-for="m in session.messages" :key="m.id" class="bubble" :class="{ 'bubble--agent': m.own }" style="max-width:92%">
+            <div class="toolbar mb-2">
+              <button class="btn btn--sm" :class="{ 'btn--primary': !kept }" @click="kept = false">What it sees ({{ (session.view ?? session.messages).length }})</button>
+              <button class="btn btn--sm" :class="{ 'btn--primary': kept }" @click="kept = true">As kept ({{ session.messages.length }})</button>
+              <Hint text="What it sees is the session provider's view (a rolling window shows the latest messages, a summary replaces older ones). As kept is everything the session holds." topic="sessions" />
+            </div>
+            <div v-for="m in (kept ? session.messages : (session.view ?? session.messages))" :key="m.id" class="bubble" :class="{ 'bubble--agent': m.own }" style="max-width:92%">
               <div class="bubble__who"><b>{{ m.sender.name || m.sender.id }}</b><span>{{ m.own ? 'own' : 'other' }}</span></div>
               <MessageView :parts="m.parts" />
             </div>

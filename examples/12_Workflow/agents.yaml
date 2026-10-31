@@ -1,0 +1,7 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: trip-planner}
+spec:
+  entrypoint: agents.py:TripPlanner
+  display_name: Trip planner
+  config: {fare_hold_seconds: 5}   # the agent's Config (PlannerConfig)

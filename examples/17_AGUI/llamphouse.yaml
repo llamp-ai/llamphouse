@@ -1,0 +1,5 @@
+# The runtime file: where and how the agent runs. Here: AG-UI next to the native API (/v2).
+apiVersion: llamphouse.io/v1alpha1
+kind: Runtime
+adapters:
+  - ag_ui: {prefix: /ag-ui}   # POST /ag-ui (the first agent), POST /ag-ui/agents/trip-planner

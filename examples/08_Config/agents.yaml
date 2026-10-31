@@ -1,0 +1,9 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: support}
+spec:
+  entrypoint: agents.py:SupportAgent
+  display_name: Support
+  config:                       # the agent's Config, as this file sets it
+    tone: friendly
+    signature: The support team

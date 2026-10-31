@@ -1,90 +1,124 @@
 # Tracing
 
-LLAMPHouse includes **automatic OpenTelemetry (OTel) tracing** for all operations — runs, agent dispatches, data store calls, and streaming. Traces give you visibility into what your agents are doing, how long operations take, and where issues occur.
-
-## Enabling tracing
-
-Tracing is enabled by default. To send traces to a collector, set the environment variables:
+llamphouse traces runs with [OpenTelemetry](https://opentelemetry.io/). Each execution of a run is a span, each
+step it executes is a span under it, and spans your own code makes nest under the run's span. Spans go to a
+**tracing store**, from which the API and Compass read a run's trace back, and optionally to any OpenTelemetry
+collector.
 
 ```bash
-LLAMPHOUSE_TRACING_ENABLED=true
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-OTEL_SERVICE_NAME=llamphouse
+pip install 'llamphouse[tracing]'
 ```
 
-## What gets traced
+Without the extra, or without a tracing store and a tracer provider, nothing is imported and no span is made.
+Tracing never fails a run: an error in tracing is logged and the run carries on; spans are exported in the
+background.
 
-LLAMPHouse automatically creates spans for:
+## What is traced
 
-| Span | Description |
-|---|---|
-| `llamphouse.run` | The full lifecycle of an agent run |
-| `llamphouse.call_agent` | A `call_agent()` dispatch to another agent |
-| `llamphouse.handover` | A `handover_to_agent()` dispatch |
-| `llamphouse.stream` | Streaming operations |
-| `llamphouse.data_store.*` | Data store read/write operations |
+| Span | When | Attributes |
+|---|---|---|
+| `llamphouse.run` | each execution of a run, as a root span, current while `run(ctx)` executes | `run.id`, `llamphouse.run_id`, `thread.id`, `llamphouse.thread_id`, `llamphouse.agent`, `llamphouse.parent_run`, `llamphouse.run.activation`, `llamphouse.engine`; at the end `llamphouse.run.status`, `llamphouse.run.error`, `llamphouse.run.replayed_steps` |
+| `llamphouse.step` | each `ctx.step` (or `@step`) executed, under the span current at the time | `llamphouse.step.name`, `llamphouse.step.key`, `run.id` |
+| `llamphouse.session.revise` | each session revision (a session provider's summary, say), as a root span | `llamphouse.session.id`, `thread.id`, `llamphouse.agent`, `llamphouse.session.version`, `llamphouse.session.reason`, `llamphouse.session.messages`, `llamphouse.session.revision` |
 
-### Span attributes
+A run executes more than once when it waits (an answer, the clock, a signal, another thread) or is taken over
+after its worker died. Each execution is a new `llamphouse.run` span, in a new trace, with the same `run.id`.
+A step that is replayed from the record makes no span: it was traced when it executed.
 
-Spans include rich attributes for debugging:
+## Your own spans
 
-- `assistant.id` / `assistant.name` — the agent handling the run
-- `dispatch.type` — `call_agent` or `handover`
-- `dispatch.target_agent` / `dispatch.source_agent` — for inter-agent calls
-- `dispatch.child_run` / `dispatch.child_thread` — child run tracking
-- `gen_ai.system` — always `llamphouse`
-
-## Viewing traces in Compass
-
-The [Compass dashboard](compass.md) includes a built-in **trace viewer** backed by the configured tracing store. To enable it:
-
-1. Configure a tracing store (for example ClickHouse)
-2. Ensure tracing is enabled and exporters are configured for your environment
-3. Open Compass at `/compass` → navigate to the Traces tab
-
-The trace viewer shows:
-
-- **Span tree** — hierarchical view of all spans in a trace
-- **Agent badges** — which agent produced each span
-- **Timing** — duration and timeline for each operation
-- **Attributes** — all span attributes for debugging
-- **Resource metadata chips** — service name/version and deployment environment when present
-- **Status fallback** — UI can derive status from `gen_ai.task.status` when OTel status is unset
-
-## Excluding spans
-
-To reduce noise, you can exclude spans by pattern:
+Use any OpenTelemetry tracer in agent code. While the agent runs, the run's span is the current span, so yours
+nest under it:
 
 ```python
-app = LLAMPHouse(
-    agents=[...],
-    exclude_spans=["llamphouse.data_store.list_messages", "pattern.*"],
-)
+from opentelemetry import trace
+
+from llamphouse.sdk import Agent
+
+tracer = trace.get_tracer("my_agents")
+
+
+class Researcher(Agent):
+    """Looks something up, traced."""
+
+    async def run(self, ctx) -> None:
+        with tracer.start_as_current_span("search") as span:
+            span.set_attribute("input.value", ctx.input.text)
+            found = await ctx.step("fetch", fetch, ctx.input.text)   # a llamphouse.step span, under "search"
+            span.set_attribute("output.value", found)
+        await ctx.send(found)
+
+
+async def fetch(query: str) -> str:
+    return f"3 results for {query}"
 ```
 
-## Trace propagation
+Instrumentation libraries work the same way: spans from an instrumented OpenAI or HTTP client called inside the
+run end up in its trace. Compass shows `gen_ai.input.messages`, `gen_ai.output.messages`, `input.value` and
+`output.value` readable and foldable.
 
-LLAMPHouse propagates trace context (`traceparent`) across agent boundaries. When one agent calls another via `call_agent()` or `handover_to_agent()`, the child run's spans are linked to the parent trace — giving you a single end-to-end view.
+## Tracing stores
 
-## Docker setup
+A tracing store receives spans (through an exporter added to the tracer provider) and reads them back by run.
 
-The included Docker Compose configuration sets up the full tracing pipeline:
+| Name | Class | Options | |
+|---|---|---|---|
+| `in_memory` | `InMemoryTracingStore` | none | this process's spans; gone on restart |
+| `postgres` | `PostgresTracingStore` | `database_url` | the `llamphouse_traces` table (psycopg2, in the `postgres` extra) |
+| `clickhouse` | `ClickHouseTracingStore` | `clickhouse_url` | reads what an OpenTelemetry Collector writes to ClickHouse (`otel.otel_traces`); llamphouse exports nothing to it itself |
+| `module:Class` | your own `BaseTracingStore` | yours | |
+
+In the runtime file:
 
 ```yaml
-# docker/docker-compose.yml includes:
-# - OTel Collector (port 4318)
-# - ClickHouse (port 8123)
+tracing: {postgres: {database_url: "${LLAMPHOUSE_DATABASE_URL}"}}
 ```
 
-```bash
-cd docker
-docker compose up -d
-```
+Without `tracing` in the runtime file, `llamphouse up` takes the store from the environment, as 1.x did:
 
-See [Deployment](../deployment.md) for the full Docker setup.
+| Variable | |
+|---|---|
+| `TRACING_STORE` | `memory`, `postgres` (uses `DATABASE_URL`) or `clickhouse` (uses `CLICKHOUSE_URL`). Not set: ClickHouse when `CLICKHOUSE_URL` is set, else in memory. |
+| `LLAMPHOUSE_TRACING_ENABLED` | `false` turns tracing off |
 
-## Next steps
+In code: `Engine(agents, tracing_store=PostgresTracingStore(url))` sets tracing up when the engine opens and
+flushes it when it closes. `llamphouse.runtime.tracing.stores` has the classes.
 
-- [Compass Dashboard](compass.md) — view traces in the built-in UI
-- [Deployment](../deployment.md) — Docker setup with OTel and ClickHouse
-- [Configuration](../configuration.md) — tracing-related environment variables
+With several processes, give them all the same Postgres or ClickHouse store: a run executed by a worker is read
+back by whichever API process serves the request.
+
+## Sending spans elsewhere too
+
+The standard OpenTelemetry environment variables add exporters next to the store's:
+
+| Variable | |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | send spans to an OTLP/HTTP collector too (`/v1/traces` is added when missing) |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | headers for it (an API key, say) |
+| `OTEL_TRACES_EXPORTER=console` | print spans instead |
+| `OTEL_SERVICE_NAME` | the service name (`llamphouse` by default) |
+| `OTEL_SERVICE_VERSION` / `SERVICE_VERSION` | `service.version` |
+| `OTEL_DEPLOYMENT_ENVIRONMENT` / `DEPLOYMENT_ENVIRONMENT` / `ENVIRONMENT` | `deployment.environment` |
+
+If your application has set up its own OpenTelemetry tracer provider before llamphouse starts, llamphouse adds
+the store's exporter to it instead of making its own, and never shuts it down.
+
+## Reading traces
+
+- **Compass**: the Trace panel in a run's view (the spans as a tree, with durations, status and attributes), and
+  the Traces page (recent traces, by agent). See [Compass](compass.md).
+- **HTTP**: `GET /v2/runs/{id}/trace` returns `{"run", "tracing", "spans"}`: the spans of every trace that has
+  the run in it (one per execution), oldest first. Each span is a dict with `TraceId`, `SpanId`,
+  `ParentSpanId`, `SpanName`, `Timestamp`, `Duration` (ns), `StatusCode`, `StatusMessage`, `SpanAttributes` and
+  its events. Without a store, `"tracing": false`.
+- **In code**: `await store.get_trace(run_id)` and `await store.list_traces(limit=50, agent=None)`.
+
+## Usage telemetry
+
+llamphouse 2.0 sends no usage data anywhere. (1.x had an anonymous usage client controlled by
+`LLAMPHOUSE_TELEMETRY`; 2.0 does not have it.)
+
+## See also
+
+- [Example 07_Tracing](../../examples/07_Tracing)
+- [Compass](compass.md)

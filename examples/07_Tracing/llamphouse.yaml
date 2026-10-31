@@ -1,0 +1,6 @@
+# The runtime file: where the spans go.
+apiVersion: llamphouse.io/v1alpha1
+kind: Runtime
+tracing: {in_memory: {}}     # this process's spans; for real:
+# tracing: {postgres: {database_url: "${LLAMPHOUSE_DATABASE_URL}"}}   # the llamphouse_traces table
+# tracing: {clickhouse: {clickhouse_url: "${CLICKHOUSE_URL}"}}       # what an OpenTelemetry Collector writes there

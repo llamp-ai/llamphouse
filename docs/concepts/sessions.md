@@ -1,272 +1,180 @@
 # Sessions
 
-A thread keeps every message. An agent rarely wants them all: past a few
-dozen, older messages cost tokens and attention for little. A **session**
-is an agent's view of a thread for one run — the messages it gets, and a
-summary of older ones if it keeps one — and a **session manager** decides
-that view.
+A session is an agent's working memory on a thread: what it hands its model. It holds the thread's
+messages plus the agent's own entries that aren't on the thread (tool calls, tool results, retrieved
+documents, notes), shaped by a session provider.
+
+| | the thread | the session |
+|---|---|---|
+| what | the shared record: what was said between the parties, runs, state changes | one agent's working memory on that thread |
+| who sees it | everyone with access: people, adapters, Compass, audit | that agent's runs (and Compass) |
+| grows | forever, append-only | as the provider decides: a window, a summary, compaction |
+
+Keeping them apart means the transcript people see stays the conversation, while the model gets what
+it needs, kept short by a policy you can change without touching agent code.
+
+## In agent code
 
 ```python
-from llamphouse.core import Agent, Compacting, Context, openai_summarizer
-
-class SupportAgent(Agent):
-    session_manager = Compacting(openai_summarizer("gpt-4o-mini"), max_tokens=100_000)
-
-    async def run(self, context: Context):
-        reply = await my_llm(messages=context.session.to_messages())
-        await context.reply(reply)
+view = await ctx.session.messages()     # the session as it is now: a sequence of Messages, newest last
+ctx.session.is_own(m)                   # did this agent say it? (the model's assistant role)
+await ctx.session.add(ToolCallPart(call_id="c1", name="search", arguments={"q": "Lisbon"}))
+await ctx.session.add(ToolResultPart(call_id="c1", output=[TextPart(text="3 hotels")]))
+await ctx.session.revise(reason="before the big step")   # ask for a revision now; returns at once
+view = await ctx.session.settled()      # wait until no revision is in flight, then read
 ```
 
-## `context.session`
+- **`messages()`** is cheap: it never computes anything. It returns the current version plus what was
+  added since, `ctx.input` and messages the run read from its inbox included. It's recorded, so a run
+  that executes again sees the same view. A `SessionView` is a sequence of messages, with `id`,
+  `version` and `revising` (a revision was in flight when it was read).
+- **`add(*content)`** adds one entry: the agent's own (`is_own` is true), durable, placed after the
+  thread position it was added at. Entries aren't on the thread, so other parties don't see them.
+- **`is_own(m)`** is decided by which run wrote the message, not by the agent's name: this run, earlier
+  runs of the agent on the thread, and (in a fork) the parent before the fork. Another agent, a person,
+  or a parent steering its fork are not own.
+- **`revise(**options)`** passes its options to the provider (a reason, a target, a hint). The provider
+  may decline. One revision at a time: a second request joins the first.
+- **`settled()`** waits (holding no worker) until no revision is in flight. Most agents never need it;
+  call it before forking or a large model call if you want the revised version.
 
-| | |
+Turning the session into a model's input is your code, because every API has its own format. See
+[Adding an LLM](../getting-started/adding-llm.md) for the OpenAI Responses API, tool calls included.
+
+## One session per agent per thread
+
+The runs of an agent on a thread share its session there: the agent remembers across turns, and
+`ctx.restart()` keeps it. A fork, another agent's thread and a handover each start a session of their
+own, from what `session=` says:
+
+| `session=` | the new session starts with | the default for |
+|---|---|---|
+| `ctx.session` | a copy of this session, as it is now. In a fork, what this agent said stays its own | `ctx.fork` |
+| a `SessionView` or any list of `Message`s | exactly those: a slice, a summary the agent wrote | |
+| `None` | nothing: built from the new thread's own messages | `ctx.call`, `ctx.handover` |
+
+```python
+recent = (await ctx.session.messages())[-6:]
+await ctx.call("reviewer", "Review the plan above.", session=recent)
+```
+
+A thread created over the API can start its first session from given messages
+(`POST /v2/threads` with `"session": [...]`): for example the summary of an earlier thread this one
+continues.
+
+There is no shared session: a parent and its fork never write the same one. The parent hears from its
+fork by listening, and copies over what it wants.
+
+## Session providers
+
+The provider decides what the session shows and when to revise it. Two come with llamphouse:
+
+| provider | what it does |
 |---|---|
-| `session.messages` | the messages in view, oldest first (`MessageObject`) |
-| `session.summary` | what older messages said, or `None` |
-| `session.folded` | how many of the thread's messages the summary stands for |
-| `session.to_messages(summary_role="system")` | `[{"role", "content"}]`: the summary first, then the messages |
-| `session.text()` | the session as one text |
+| `rolling_window` (`RollingWindow(size=50)`) | the default: the most recent `size` messages; never revises |
+| `summarizing` (`Summarizing(summarize, max_messages=50, keep=10)`) | when the session holds more than `max_messages`, everything but the last `keep` becomes one summary, written by `summarize`: your function, usually a model call |
 
-`context.messages` is still there too: the thread's latest 100 messages.
-
-## Which manager an agent gets
-
-Every agent has a session. Without anything configured, it is a
-**sliding window of the latest 20 messages**. In order, the first that is
-set wins:
-
-1. the agent's own entry in `llamphouse.yaml` (`agents[].session_manager`);
-2. the agent's own `session_manager` (class attribute, or
-   `LangGraphAgent(session_manager=...)`);
-3. the server's default: `LLAMPHouse(session_manager=...)`
-   (`DistributedWorker(session_manager=...)`), or `session_manager:` at the
-   top of `llamphouse.yaml`;
-4. `SlidingWindow(max_messages=20)` (`sessions.DEFAULT_SESSION_MANAGER`).
+The agent file chooses one per agent; the runtime file sets the default for all:
 
 ```yaml
-session_manager:              # the default of every agent that sets none
-  summarizing:
-    summarizer: openai        # or {openai: {model: gpt-4o-mini}}, or file.py:callable
-    max_messages: 40
-    keep_messages: 20
-
-agents:
-  - name: router
-    definition: router
-    session_manager:          # this agent's own
-      sliding_window:
-        max_messages: 4
-  - name: reviewer
-    definition: reviewer
-    session_manager:
-      full_history:
+# agents.yaml
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: coder}
+spec:
+  entrypoint: agents.py:Coder
+  session:
+    summarizing:
+      summarize: {import: agents:summarize}   # a Python function, by import path
+      max_messages: 40
+      keep: 8
 ```
 
-The YAML names are `full_history`, `sliding_window`, `summarizing` and `compacting`,
-with the constructor arguments below; callables (`summarizer`,
-`count_tokens`) are given as `file.py:name` or `module:name`.
+```yaml
+# llamphouse.yaml
+apiVersion: llamphouse.io/v1alpha1
+kind: Runtime
+sessions: {rolling_window: {size: 30}}
+```
 
-## Built-in managers
+```python
+# agents.py
+from openai import OpenAI
 
-| Manager | View | Summarizes |
+
+def summarize(older) -> str:
+    """The older messages, as one summary: a model call of your own (async functions work too)."""
+    transcript = "\n".join(f"{m.sender.id}: {m.text}" for m in older)
+    return OpenAI().responses.create(model="gpt-5-mini",
+                                     input=f"Summarize this conversation:\n{transcript}").output_text
+```
+
+The summary goes into the session as a system message (sender kind `system`); your conversion to model
+input decides its role.
+
+## Revisions run in the background
+
+A revision is never done on a read. The provider's policy hooks watch what is added and ask for a
+revision when they decide to; the revision itself runs as a job on a worker, on a snapshot of the
+session. Runs carry on meanwhile with the current version. When the revision is done, the new version
+is swapped in; what was added during the revision survives, after the revised part. A failed
+revision leaves the session as it was.
+
+Each session keeps its own log: entries added and revisions started, completed, declined or failed,
+with their options. Compass shows the session a run saw, with its revisions, lined up with the thread.
+The API has it at `GET /v2/runs/{id}/session`. With tracing, each revision is a
+`llamphouse.session.revise` span.
+
+## A provider of your own
+
+Subclass `SessionProvider` and override what you need. The defaults show everything, never revise and
+decline requests.
+
+```python
+from llamphouse.runtime.sessions import Revise, SessionInfo, SessionProvider
+from llamphouse.sdk import Message, Sender, ToolResultPart
+
+
+class DropOldToolResults(SessionProvider):
+    """Keeps the last few tool results; older ones are compacted away on request or past a size."""
+
+    def __init__(self, keep_results: int = 3, max_messages: int = 200):
+        self.keep_results, self.max_messages = keep_results, max_messages
+
+    def view(self, session: SessionInfo):
+        return session.messages  # what ctx.session.messages() shows: cheap, no model calls
+
+    def on_entry(self, session: SessionInfo, entry: Message):
+        if len(session.messages) > self.max_messages:
+            return Revise({"reason": "size"})  # policy hooks only decide
+        return None
+
+    async def revise(self, session: SessionInfo, options):
+        results = [m for m in session.messages if any(isinstance(p, ToolResultPart) for p in m.parts)]
+        old = {m.id for m in results[:-self.keep_results]}
+        if not old:
+            return None  # nothing to do: declined
+        return [m for m in session.messages if m.id not in old]
+```
+
+| hook | when | returns |
 |---|---|---|
-| `FullHistory()` | the whole thread | — |
-| `SlidingWindow(max_messages=20, max_tokens=None, keep_first=0)` | the latest messages, within a message count and/or token budget; `keep_first` keeps the thread's first n in view too | — |
-| `Summarizing(summarizer, max_messages=50, keep_messages=None, summary_tokens=400)` | the latest messages, and a running summary of the older ones | past `max_messages`, the oldest — down to `keep_messages` (default: half) |
-| `Compacting(summarizer, max_tokens, compact_at=0.9, compact_to=0.25, summary_tokens=None, reserve_tokens=0)` | a token budget that fills up | at `compact_at` of the budget, everything but the latest messages — down to `compact_to` |
+| `view(session)` | every `ctx.session.messages()` | the messages to show |
+| `on_event(session, event)` | a thread message came into the session | `Revise(options)` or `None` |
+| `on_entry(session, entry)` | the agent added an entry | `Revise(options)` or `None` |
+| `after_run(session, run)` | a run of the agent on the thread ended | `Revise(options)` or `None` |
+| `revise(session, options)` | the revision, as a job | the new messages, or `None` to decline |
 
-Every manager also takes:
+A request from agent code (`ctx.session.revise(**options)`) goes straight to `revise`, with
+`reason="requested"` added. `SessionInfo` is read-only: `id`, `thread_id`, `agent`, `messages`,
+`version`, `revisions`, `revising`.
 
-| Argument | |
-|---|---|
-| `count_tokens` | `(text) -> int`; about 4 characters a token by default — pass your model's tokenizer for exact counts |
-| `max_message_tokens` | shorten any single message in view past this many tokens (a pasted document, a long tool output) — in the view only; the thread keeps it whole |
+Name it in the agent file by import path, with its constructor's options (checked before anything
+starts):
 
-### `Summarizing` — a count of recent messages, and a summary
-
-Once the session holds more than `max_messages` messages, the oldest are
-folded into the summary until `keep_messages` remain — so the summarizer
-runs once in a while, not on every run. Each compaction folds only what is
-new, on top of the summary so far.
-
-### `Compacting` — a token budget that fills up and is compacted
-
-```python
-Compacting(summarizer, max_tokens=100_000, reserve_tokens=8_000)
+```yaml
+spec:
+  session: {my_sessions:DropOldToolResults: {keep_results: 5}}
 ```
 
-```
-tokens
- 90% ┤      ╱│          ╱│          ╱│
-     │    ╱  │        ╱  │        ╱  │
-     │  ╱    │      ╱    │      ╱    │
- 25% ┤╱      │    ╱      │    ╱      │
-     │       │  ╱        │  ╱        │
-     │       ╰╱          ╰╱          ╰ …
-     └──────────────────────────────────▶ runs
-```
-
-- **The budget** is `max_tokens` less `reserve_tokens` (what the agent adds
-  that is not in the session: instructions, tools, room for the answer).
-  The session's size is its summary *and* its messages.
-- **While under `compact_at`** (default 90%) of the budget, nothing
-  happens: every message since the last compaction is there, as it is.
-- **At `compact_at`**, it is compacted to `compact_to` (default 25%):
-  the latest messages that fit stay, next to a new summary of at most
-  `summary_tokens` (default: a tenth of the budget) of everything else —
-  the previous summary included. Then it fills up again.
-
-Size `max_tokens` from the model's context window and what else goes in
-the prompt; pass the model's tokenizer as `count_tokens` for exact counts.
-
-### Summaries
-
-A summary is kept per thread and agent (in the data store's key-value
-records, deleted with the thread), and so is up to which message it goes.
-The summarizer is any `async (previous_summary, messages) -> str`; one that
-also takes a `max_tokens` keyword is told the summary's target length
-(`summary_tokens`). Two helpers make one from an LLM call, and aim for
-that length:
-
-```python
-from llamphouse.core import llm_summarizer, openai_summarizer
-
-# Any LLM: a function from a prompt to text (sync or async).
-summarizer = llm_summarizer(lambda prompt: my_llm.complete(prompt))
-
-# An OpenAI-compatible chat-completions API (client: an AsyncOpenAI; default from the environment).
-summarizer = openai_summarizer("gpt-4o-mini", client=AsyncOpenAI(base_url=...), temperature=0)
-```
-
-Both build the prompt from instructions (`instructions=` to change them —
-the default keeps goals, facts, preferences, decisions and open questions),
-the summary so far, and the messages to fold in.
-
-If the summarizer fails (a time out, a rate limit), the run goes on with
-the session as it is — not compacted — a warning is logged, and a later
-run compacts.
-
-## When compaction happens
-
-Compaction happens **inside a run** — never as a run of its own, and not
-between runs:
-
-- **At the start of a run**, when the worker loads the run's session: if
-  the session is past its manager's limit (`Summarizing`: `max_messages`;
-  `Compacting`: `compact_at`), it is compacted before `Agent.run` starts. It
-  runs under the run's heartbeat and time out, and is recorded as a
-  `session.compact` step of that run. The thread keeps every message; the
-  summary is kept per thread and agent.
-- **During a run**, when the agent asks for it: `context.compact(messages)`
-  compacts the agent's *own* working transcript — see below.
-
-A run that runs again replays its compaction (no second summarizer call).
-A thread nobody runs is never compacted.
-
-### Events
-
-A compaction tells the run's client, on its event stream:
-
-| Event | Data |
-|---|---|
-| `session.compaction.started` | `message`, `scope` (`"thread"`: the session; `"run"`: `context.compact`), `messages` (to fold), `tokens` |
-| `session.compaction.completed` | `message`, `scope`, `folded`, `tokens_before`, `tokens_after` |
-| `session.compaction.failed` | `message`, `scope`, `error` — the run goes on, uncompacted |
-
-Over A2A a streaming client sees each `message` as a status update; over
-AG-UI they are `CUSTOM` events (`name`: the event, `value`: the data).
-
-## Coding and long-running agents: `context.compact`
-
-An agent that works in a loop — call the model, run a tool, read the
-result, call the model again — grows its context *within* one run, in its
-own list of messages, not in the thread. `context.compact` keeps that list
-within budget, by the same `Compacting` policy:
-
-```python
-class CodingAgent(Agent):
-    session_manager = Compacting(openai_summarizer("gpt-4o-mini"), max_tokens=150_000, reserve_tokens=20_000)
-
-    async def run(self, context: Context):
-        messages = [{"role": "system", "content": SYSTEM}, *context.session.to_messages()]
-        while True:
-            messages = await context.compact(messages)          # as is, until it reaches 90%
-            response = await llm(messages=messages, tools=TOOLS)
-            messages.append(response.message)
-            if not response.tool_calls:
-                break
-            for call in response.tool_calls:
-                messages.append(tool_result(call, await run_tool(call)))
-        await context.reply(response.message.content)
-```
-
-- Under `compact_at` of the budget the list comes back as it is; at it, it
-  is compacted to `compact_to`: the leading system messages stay, the latest
-  messages that fit stay as they are, and the rest becomes one summary
-  message (an earlier summary message folded in).
-- **Tool calls stay whole:** the kept messages never start with a tool
-  result whose call was folded (OpenAI `tool` messages, Anthropic
-  `tool_result` blocks); the call is kept with it.
-- Messages are dicts or objects with `role` / `content` — the OpenAI,
-  Anthropic and LangChain shapes, tool calls included. The summary message
-  has `summary_role` (`"user"` by default, which every chat API accepts).
-- `policy=Compacting(...)` uses another policy than the agent's session
-  manager (one is needed: `context.compact` raises `TypeError` without).
-- Recorded as a `session.compact_messages` step, replayed by a run that
-  runs again; told to the client as above, with `scope: "run"`.
-
-## A manager of your own
-
-Subclass `SessionManager` and implement `build`:
-
-```python
-import re
-
-from llamphouse.core import Session, SessionManager
-from llamphouse.core.sessions import thread_messages
-
-class KeyFacts(SessionManager):
-    """The latest 2 messages, and every number the user mentioned."""
-
-    async def messages(self, context, memory):
-        # Optional: what build() gets. Default: the messages after memory["folded_until"].
-        return await thread_messages(context, after=memory.get("folded_until"))
-
-    async def build(self, messages, memory):
-        facts = memory.get("facts", []) + [n for m in messages for n in re.findall(r"\d+", m.text)]
-        return Session(
-            summary=f"Numbers mentioned: {', '.join(facts)}" if facts else None,
-            messages=messages[-2:],
-            memory={"facts": facts, "folded_until": messages[-1].id} if messages else None,
-        )
-```
-
-- **`build(messages, memory) -> Session`** — the view, from the thread's
-  messages (oldest first) and the manager's memory (`{}` at first).
-- **The memory** is a JSON dict kept per thread and agent. Return it in
-  `Session.memory` to change it (it replaces the old one); leave it `None`
-  to keep it as it is. A `"folded_until"` message id in it means "the
-  session no longer needs this message and those before it": the default
-  `messages()` reads from after it.
-- **`messages(context, memory)`** — what of the thread `build` gets;
-  override it to read less. `thread_messages(context, after=..., latest=...,
-  first=...)` reads the thread, less what a resumed run already said.
-- **`uses_memory = False`** — for a manager without a memory (skips reading
-  and writing it).
-- `self.tokens(messages)` counts tokens with the manager's `count_tokens`.
-
-## Durable runs
-
-A session whose memory changed (a compaction) is recorded as a
-`session.compact` step of the run, with the view it gave. A run that runs
-again — resumed after a wait, retried, taken over — gets that same session,
-and the summarizer is not called twice. Any other `build` must give the
-same view for the same messages and memory. See [Durable Runs](durable-runs.md).
-
-## LangGraph
-
-The default state mapper passes the session's `messages` and its `summary`
-to the graph: by default the latest 20 messages. Give the agent
-`session_manager=FullHistory()` to pass the whole thread.
-
-See the [Sessions example](https://github.com/llamp-ai/llamphouse/tree/main/examples/17_Sessions).
+See the [Sessions example](../../examples/14_Sessions).

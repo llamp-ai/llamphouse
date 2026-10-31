@@ -1,0 +1,7 @@
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: chat}
+spec:
+  entrypoint: agents.py:Chat
+  display_name: Chat
+  config: {model: gpt-5-mini}   # the agent's Config (ChatConfig)

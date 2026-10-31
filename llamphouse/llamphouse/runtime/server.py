@@ -50,6 +50,13 @@ def deployment(agents: Mapping[str, Any] | Deployment | str | Iterable[str] | No
     return Deployment.load(config, agents)
 
 
+SHARED = {"data_store", "run_queue", "event_queue", "file_store", "config_store", "tracing"}  # what --memory replaces
+
+
+def _in_memory(entry: Any) -> bool:
+    return entry == "in_memory" or (isinstance(entry, Mapping) and set(entry) == {"in_memory"})
+
+
 def build(agents: Mapping[str, Any] | Deployment | str | Iterable[str] | None = None, *, role: str = "all",
           config: str | Path | None = None, database_url: str | None = None, redis_url: str | None = None,
           workers: int | None = None, memory: bool = False, **engine_options: Any) -> Engine:
@@ -59,8 +66,9 @@ def build(agents: Mapping[str, Any] | Deployment | str | Iterable[str] | None = 
     found = deployment(agents, config=config)
     if not found.agents:
         raise ConfigError("no agents: give agent files, a directory of them, or module:NAME")
-    if memory:  # one process, nothing shared: whatever the runtime file and the environment say
-        found.runtime.components = {}
+    if memory:  # one process, nothing shared: the runtime file's stores and queues, and the environment's, ignored
+        found.runtime.components = {k: v for k, v in found.runtime.components.items()
+                                    if k not in SHARED or (k == "tracing" and _in_memory(v))}
         database_url = redis_url = None
     declared = found.runtime.components
     env = {} if memory else os.environ
@@ -75,6 +83,10 @@ def build(agents: Mapping[str, Any] | Deployment | str | Iterable[str] | None = 
         if "file_store" not in declared:
             overrides.setdefault("file_store", PostgresFileStore(
                 dsn=database_url, upload_ttl=overrides.get("upload_ttl", found.runtime.engine.get("upload_ttl", 3600))))
+        if "config_store" not in declared:  # runtime config changes: shared by every process, kept over restarts
+            from .config_store import PostgresConfigStore
+
+            overrides.setdefault("config_store", PostgresConfigStore(database_url))
     if redis_url:
         from .event_queue import RedisBus
         from .run_queue import RedisQueue

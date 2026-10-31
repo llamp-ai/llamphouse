@@ -1,53 +1,71 @@
-# Tool Call Example
+# Tool calls
 
-This example demonstrates a minimal tool-calling loop inside a custom `Agent` running on a LLAMPHouse server, exposed via the **A2A protocol**.
+A model tool loop. The agent calls OpenAI's Responses API with two function tools (`current_time`,
+`calculate`); when the model asks for tools the agent runs them and calls the model again with the results,
+until the model answers. Every model call and every tool call is a **step** (`@step`): done once and
+recorded. If the worker dies mid-loop, the run is executed again and replays the recorded results - the model
+isn't asked again and no tool runs twice - then carries on. The tool calls and results go into the agent's
+session (`ctx.session.add`), not on the thread: the model sees them next turn, the conversation stays clean.
 
-## Prerequisites
+## Run it
 
-- Python 3.10+
-- `OPENAI_API_KEY`
+```bash
+pip install -r requirements.txt
+export OPENAI_API_KEY=sk-...
+llamphouse up --memory --agents agents.yaml     # http://127.0.0.1:8000, Compass at /compass
+python client.py                                # in a second terminal: chat; an empty line stops
+```
 
-## Setup
+```
+you: What time is it in Tokyo, and how many minutes until midnight there?
+  [current_time({"timezone": "Asia/Tokyo"}) -> Saturday 31 October 2026, 19:58:50 JST]
+  [calculate({"expression": "(24*60) - (19*60 + 58)"}) -> 242]
+assistant: It's 19:58 in Tokyo - 242 minutes until midnight.
+```
 
-1. Clone the repository and go to this example:
+The client prints the tools a run used from the agent's session (`GET /v2/runs/{id}/session`).
 
-   ```bash
-   git clone https://github.com/llamp-ai/llamphouse.git
-   cd llamphouse/examples/04_ToolCall
-   ```
-2. Install dependencies:
+## Try
 
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create your `.env` from `.env.sample`:
+- *"What's 2**64 divided by 3?"* - one tool call. *"And in Lisbon?"* after a time question: the model reads
+  its earlier tool calls from the session.
+- A bad expression (*"calculate 2 + banana"*): the tool's error goes back to the model as its result.
+- `config: {max_rounds: 1}` in `agents.yaml`: the run fails with `too_many_rounds` when the model needs a tool.
 
-   - `OPENAI_API_KEY=...` (required)
-   - `DATABASE_URL=...` (optional; only for Postgres)
+## In Compass
 
-   ```bash
-   cp .env.sample .env
-   ```
+Open a run: its **Steps** tab lists `think#1`, `calculate#1`, `current_time#1`, `think#2`, … with their
+recorded results - what a replay gives back instead of doing again - between the session reads and adds
+(`session.messages#1`, `session.add#1`, …). Its **Session** tab shows the tool calls and results as the
+agent's own entries; the thread shows only the conversation.
 
-## Tool Call (How it works)
+## The code
 
-- Tool function: [get_current_time](server.py#L15)
-- Tool schema exposed to the model: [TOOL_SCHEMAS](server.py#L19)
-- Tool registry used to execute tool locally: [TOOL_REGISTRY](server.py#L30)
-- The assistant calls OpenAI with `tools=...` and `tool_choice="auto"`
-- If the model returns `tool_calls`, the server executes the tool and appends a `"tool"` message with the result
-- Loop is limited to 3 iterations
+```python
+class Assistant(Agent[ToolConfig]):
+    async def run(self, ctx) -> None:
+        for _ in range(ctx.config.max_rounds):
+            said = await self.think(ctx, to_input(ctx, await ctx.session.messages()))
+            if not said["calls"]:
+                await ctx.send(said["text"])
+                return
+            for call in said["calls"]:
+                part = ToolCallPart(call_id=call["call_id"], name=call["name"], arguments=call["arguments"])
+                await ctx.session.add(part)
+                output = await self.use(ctx, part)            # runs the tool: a step
+                await ctx.session.add(ToolResultPart(call_id=part.call_id, output=[TextPart(text=output)]))
+        raise AgentError("too_many_rounds", ...)
 
-Client sends the [question](client.py#L14) defined in `client.py`.
+    @step
+    async def think(self, ctx, items: list[dict]) -> dict:  # one model call, recorded
+        response = await openai().responses.create(model=ctx.config.model, input=items, tools=TOOLS, ...)
+        ...
 
-## Running
+    @step
+    async def calculate(self, ctx, expression: str) -> str:
+        ...
+```
 
-1. Start the server:
-   ```sh
-   python server.py
-   ```
-
-2. In a second terminal, run the client:
-   ```sh
-   python client.py
-   ```
+A step's result must be JSON: `think` returns the text and the calls as plain data, not the SDK's response
+object. Replay goes by the order of the calls, so the model call is a step too: a model asked again could
+answer differently, and the recorded tool steps would no longer match.
