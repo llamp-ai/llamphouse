@@ -108,7 +108,8 @@ def app(agents: Any = None, *, role: str = "all", api_key: str | None = None, co
     found = getattr(engine, "deployment", None)
     key = api_key or os.environ.get("LLAMPHOUSE_API_KEY")
     if found is not None:
-        api = create_app(engine, auth=found.authenticator(api_key=key), access=found.access(), compass=compass)
+        api = create_app(engine, auth=found.authenticator(api_key=key), access=found.access(), compass=compass,
+                         adapters=found.adapters())
     else:
         api = create_app(engine, api_key=key, compass=compass)
 

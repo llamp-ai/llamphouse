@@ -227,3 +227,29 @@ async def test_auth_access_config_store_and_permissions_from_the_files(tmp_path,
     """)
     with pytest.raises(ConfigError, match="unknown agent"):
         build([str(bad)])
+
+
+async def test_adapters_from_the_runtime_file(tmp_path):
+    from llamphouse.runtime.server import app
+
+    agents = write(tmp_path, "agents.yaml", f"""
+        kind: Agent
+        metadata: {{name: hr}}
+        spec: {{entrypoint: {HERE}/hr_agents.py:Hr}}
+    """)
+    runtime = write(tmp_path, "llamphouse.yaml", """
+        kind: Runtime
+        adapters:
+          - a2a: {prefix: /a2a}
+          - assistants: {prefix: /v1}
+          - responses: {prefix: /v1, agents: [hr]}
+    """)
+    api = app(build([str(agents)], config=runtime))
+    async with api.router.lifespan_context(api):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://t") as c:
+            assert (await c.get("/a2a/hr/.well-known/agent-card.json")).json()["name"] == "hr"
+            assert [a["id"] for a in (await c.get("/v1/assistants")).json()["data"]] == ["hr"]
+            assert [m["id"] for m in (await c.get("/v1/models")).json()["data"]] == ["hr"]
+    bad = write(tmp_path, "bad.yaml", "kind: Runtime\nadapters: {a2a: {}}")
+    with pytest.raises(ConfigError, match="a list"):
+        Deployment.load(bad)

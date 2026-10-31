@@ -87,6 +87,24 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   /v2/agents/{name}/config` with `if_version`); a run's config is the file's, then the store's, then its
   thread's. Checked against the agent's Config before it is kept.
 
+- **Adapters** (`llamphouse.runtime.adapters`, the runtime file's `adapters:`), each mapping its protocol
+  onto threads, runs and messages - several instances, each with its `prefix` and `agents`:
+  - `responses`: the OpenAI Responses and Conversations APIs (and `/models`). A conversation is a thread; a
+    response a stretch of a run: when the run calls a client tool (function `tools`) or asks something, the
+    response completes with `function_call` items or the question, and the next response answers it and
+    continues the same run.
+  - `assistants`: the OpenAI Assistants API (threads, messages, runs, streaming, `submit_tool_outputs`;
+    a run's question as `requires_action` `wait_for_input`, answered on `/signals`).
+  - `a2a`: A2A v1.0 over JSON-RPC (`SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`,
+    `CancelTask`, `SubscribeToTask`), an agent card per agent; a context is a thread, a task a run.
+  - `ag_ui`: AG-UI (`RunAgentInput` in, events out): frontend tools as client tools, questions and signal
+    waits as interrupts answered by `resume`.
+  - All behind the deployment's auth and access (`llamphouse.runtime.gateway`), tested with the official
+    `openai` client for the OpenAI APIs.
+- `ctx.client.tools`: the tools the run's client declared (adapters pass them in the run's request).
+- `engine.bind(thread, agent)` (a thread that has had no run goes to another agent) and
+  `engine.set_thread_metadata(thread, ...)`.
+
 ### Changed (before 2.0.0a0 was released)
 
 - A thread's `config` keeps only the values given (checked whole), so the file's and the store's still

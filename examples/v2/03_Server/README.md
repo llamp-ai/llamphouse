@@ -58,6 +58,23 @@ Every component in the runtime file is swappable: by name (`data_store: {postgre
 of agents works too (`--agents my_module:AGENTS`). Agent classes must be importable by module path (not
 defined inside a function): what a run recorded is read back by them, in any process.
 
+## Other protocols
+
+`llamphouse.yaml` also mounts the OpenAI Responses + Conversations and Assistants APIs and A2A, on the same
+agents and threads:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="unused")
+first = client.responses.create(model="desk", input="Compare Bangkok and Lisbon")
+print(first.output_text)                       # "For which month?"
+done = client.responses.create(model="desk", input="March", previous_response_id=first.id)
+```
+
+A2A clients find the desk at `/a2a/desk/.well-known/agent-card.json`; AG-UI frontends can be added with
+`- ag_ui: {prefix: /ag-ui}` (`pip install 'llamphouse[ag-ui]'`).
+
 ## How it works
 
 - **Postgres is the truth.** A conversation - a thread people talk to, and every thread its runs create

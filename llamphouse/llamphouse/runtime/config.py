@@ -84,8 +84,12 @@ REGISTRY: dict[str, dict[str, str]] = {
              "oidc": "llamphouse.runtime.auth:OidcAuth"},
     "access": {"open": "llamphouse.runtime.auth:Access",
                "tenant": "llamphouse.runtime.auth:TenantAccess"},
+    "adapters": {"a2a": "llamphouse.runtime.adapters.a2a:A2AAdapter",
+                 "assistants": "llamphouse.runtime.adapters.assistants:AssistantsAdapter",
+                 "responses": "llamphouse.runtime.adapters.responses:ResponsesAdapter",
+                 "ag_ui": "llamphouse.runtime.adapters.ag_ui:AgUiAdapter"},
 }
-LISTS = {"auth"}  # kinds given as a list of entries
+LISTS = {"auth", "adapters"}  # kinds given as a list of entries
 
 ENGINE_OPTIONS = {"workers", "lease_ttl", "redeliver", "window", "upload_ttl", "max_runs_per_root", "max_depth",
                   "max_runs_per_thread", "tick", "cache_ttl"}
@@ -236,7 +240,7 @@ class RuntimeSpec:
 
 AGENT_SPEC_KEYS = {"definition", "entrypoint", "display_name", "config", "session", "env", "secrets", "pool",
                    "triggers", "permissions", "publish", "execution", "mode", "image", "requirements"}
-RUNTIME_KEYS = {*REGISTRY, "engine", "env", "secrets", "secrets_store", "topology", "adapters", "scheduler",
+RUNTIME_KEYS = {*REGISTRY, "engine", "env", "secrets", "secrets_store", "topology", "scheduler",
                 "identity", "notifications", "remote_agents"}
 
 
@@ -332,6 +336,11 @@ class Deployment:
         if api_key:
             auths.append(ApiKeyAuth([api_key]))
         return Authenticator(auths)
+
+    def adapters(self) -> list[Any]:
+        """The runtime file's `adapters`: the protocols mounted next to the native API."""
+        return [component("adapters", entry, f"{self.runtime.source}: adapters[{i}]")
+                for i, entry in enumerate(self.runtime.components.get("adapters") or [])]
 
     def access(self) -> Any:
         from .auth import Access
@@ -439,10 +448,11 @@ def _runtime(doc: dict, path: Path) -> RuntimeSpec:
     spec.env = {k: str(v) for k, v in expand(doc.get("env") or {}, f"{where}: env").items()}
     spec.secrets = dict(doc.get("secrets") or {})
     spec.secrets_store = dict(doc.get("secrets_store") or {})
-    spec.rest = {k: doc[k] for k in ("adapters", "scheduler", "identity", "notifications", "remote_agents",
-                                     "topology") if k in doc}
-    if "auth" in spec.components and not isinstance(spec.components["auth"], list):
-        raise ConfigError(f"{where}: auth: a list of entries, e.g. [{{api_key: {{keys: [...]}}}}]")
+    spec.rest = {k: doc[k] for k in ("scheduler", "identity", "notifications", "remote_agents", "topology")
+                 if k in doc}
+    for kind in LISTS:
+        if kind in spec.components and not isinstance(spec.components[kind], list):
+            raise ConfigError(f"{where}: {kind}: a list of entries, e.g. [{{name: {{options}}}}]")
     return spec
 
 

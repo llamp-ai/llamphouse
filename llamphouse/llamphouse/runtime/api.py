@@ -45,8 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextvars import ContextVar
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Iterable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -56,28 +55,14 @@ from llamphouse.sdk import (DataPart, Message, NoActiveRun, RunRef, Sender, Send
                             ThreadClosed, ThreadRef)
 from llamphouse.sdk.wire import part_from_dict, to_dict
 
-from .auth import ANONYMOUS, Access, ApiKeyAuth, AuthError, Authenticator, sender_of
+from .auth import ANONYMOUS, Access, Authenticator
 from .codec import jsonable
 from .config_store import ConfigConflict
 from .engine import TERMINAL, Engine, StoreUnavailable
+from .gateway import Gateway
 from .files import FileNotFound
 
 KEEP_ALIVE = 15.0  # seconds without news before a stream says it's still there
-_WHO: ContextVar[Any] = ContextVar("llamphouse_caller", default=ANONYMOUS)  # this request's caller
-
-
-def _message(body: dict[str, Any]) -> Message:
-    sender = sender_of(_WHO.get(), body.get("sender"))  # the caller: another sender only if it may act for others
-    kind = sender.get("kind", "person")
-    who = Sender(kind=SenderKind(kind) if kind in SenderKind._value2member_map_ else kind,
-                 id=sender.get("id", "user"), name=sender.get("name"))
-    if "parts" in body:
-        parts = [part_from_dict(p) for p in body["parts"]]
-    elif "data" in body:
-        parts = [DataPart(data=body["data"])]
-    else:
-        parts = [TextPart(text=str(body.get("text", "")))]
-    return Message.create(who, *parts)
 
 
 def _event(ev: Any) -> dict[str, Any]:
@@ -93,24 +78,19 @@ def _sse(event: str, data: Any, id: Any = None) -> str:
 
 
 def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = True,
-               auth: Authenticator | None = None, access: Access | None = None) -> FastAPI:
+               auth: Authenticator | None = None, access: Access | None = None,
+               adapters: Iterable[Any] = ()) -> FastAPI:
     """The API for an engine; the caller opens and closes the engine (see `llamphouse.runtime.server`).
     `auth`: who may call (none: everyone, as `anonymous`); `api_key`: one more key it accepts. `access`:
-    which threads a caller may touch (default: every thread)."""
+    which threads a caller may touch (default: every thread). `adapters`: other protocols on the same
+    engine (`llamphouse.runtime.adapters`), mounted next to /v2."""
     app = FastAPI(title="llamphouse 2.0", version="2.0.0a")
-    authenticator = auth or Authenticator()
-    if api_key:
-        authenticator = Authenticator([*authenticator.auths, ApiKeyAuth([api_key])])
-    access = access or Access()
-    open_access = type(access) is Access
-
-    async def authenticate(request: Request) -> None:
-        try:
-            who = await authenticator.identify(request)
-        except AuthError as e:
-            raise HTTPException(e.status, str(e)) from None
-        _WHO.set(who)
-        request.state.identity = who
+    gw = Gateway(engine, auth=auth, access=access, api_key=api_key)
+    app.state.gateway = gw
+    access = gw.access
+    authenticate = gw.authenticate
+    known = gw.known
+    _message = gw.message
 
     @app.exception_handler(ThreadBusy)
     async def busy(_: Request, e: ThreadBusy) -> JSONResponse:
@@ -131,21 +111,6 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     @app.exception_handler(StoreUnavailable)
     async def unavailable(_: Request, e: StoreUnavailable) -> JSONResponse:
         return JSONResponse({"error": "store_unavailable", "detail": str(e)}, status_code=503)
-
-    async def known(entity_id: str, what: str, action: str = "read") -> None:
-        """It exists, and this caller may touch it - else 404, the same either way: nothing is learnt about
-        threads one may not see."""
-        try:
-            await engine._tree(entity_id)
-        except KeyError:
-            raise HTTPException(404, f"no {what} {entity_id}") from None
-        if open_access:
-            return
-        async with engine.reading(entity_id):
-            thread_id = entity_id if what == "thread" else engine.records[entity_id].thread_id
-            metadata = dict(engine.threads[thread_id].metadata)
-        if not access.allows(_WHO.get(), action, metadata):
-            raise HTTPException(404, f"no {what} {entity_id}")
 
     def run_view(rec: Any) -> dict[str, Any]:  # inside engine.reading
         return {"id": rec.id, "thread": rec.thread_id, "agent": rec.agent, "status": str(rec.status),
@@ -186,7 +151,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         if body.get("agent") not in engine._agents:
             raise HTTPException(404, f"no agent {body.get('agent')!r}")
         session = [_message(m) for m in body["session"]] if body.get("session") is not None else None
-        metadata = {**(body.get("metadata") or {}), **access.stamp(_WHO.get())}  # the stamp can't be forged
+        metadata = {**(body.get("metadata") or {}), **access.stamp(gw.who())}  # the stamp can't be forged
         ref = await engine.thread(body["agent"], metadata=metadata, state=body.get("state"),
                                   config=body.get("config"), session=session)
         return await read_thread(ref.id)
@@ -195,7 +160,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     async def threads(request: Request, limit: int = 50, agent: str | None = None,
                       top: bool = False) -> list[dict[str, Any]]:
         metadata = {k.removeprefix("metadata."): v for k, v in request.query_params.items() if k.startswith("metadata.")}
-        metadata.update(access.scope(_WHO.get()))  # only what this caller may see
+        metadata.update(access.scope(gw.who()))  # only what this caller may see
         found = await engine.store.list_threads(limit=limit, agent=agent, top=top, metadata=metadata or None)
         return [{**t, "created_at": t["created_at"].isoformat() if t["created_at"] else None} for t in found]
 
@@ -252,7 +217,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         async with engine.reading(thread_id):
             agent = engine.threads[thread_id].agent
         message = _message(body)
-        who = _WHO.get()
+        who = gw.who()
         ref = await engine.start(agent, message, thread=ThreadRef(thread_id), by=message.sender,
                                  identity=None if who is ANONYMOUS else who)
         return await read_run(ref.id)
@@ -266,7 +231,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     @app.get("/v2/stream/runs", dependencies=deps)
     async def runs_stream(request: Request, agent: str | None = None) -> StreamingResponse:
         metadata = {k.removeprefix("metadata."): v for k, v in request.query_params.items() if k.startswith("metadata.")}
-        who = _WHO.get()
+        who = gw.who()
 
         async def events() -> AsyncIterator[str]:
             changes = engine.follow_runs(agent=agent, metadata=metadata or None).__aiter__()
@@ -403,7 +368,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     async def upload(request: Request, name: str | None = None) -> dict[str, Any]:
         part = await engine.upload(await request.body(),
                                    mime_type=request.headers.get("content-type", "application/octet-stream"), name=name,
-                                   by=Sender.person(_WHO.get().subject))
+                                   by=Sender.person(gw.who().subject))
         return to_dict(part)
 
     @app.get("/v2/files/{fid}", dependencies=deps)
@@ -411,7 +376,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         record = await engine.file_store.stat(fid)
         if record is None:
             raise HTTPException(404, f"no file {fid}")
-        who = _WHO.get()
+        who = gw.who()
         if record.thread_id is not None:  # a conversation's file: whoever may read the conversation
             try:
                 await known(record.thread_id, "thread")
@@ -440,7 +405,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     async def set_agent_config(name: str, body: dict[str, Any]) -> Any:
         if name not in engine._agents:
             raise HTTPException(404, f"no agent {name!r}")
-        who = _WHO.get()
+        who = gw.who()
         if not access.may_configure(who, name):
             raise HTTPException(403, f"{who.subject} may not change {name}'s config")
         try:
@@ -453,6 +418,9 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, Any]:
         return {"ok": True, "engine": engine.id, "workers": engine.n_workers}
+
+    for adapter in adapters:
+        adapter.mount(app, gw)
 
     if compass:
         from .compass import PAGE

@@ -7,3 +7,7 @@ run_queue:   {redis: {url: "${LLAMPHOUSE_REDIS_URL:-redis://localhost:6380/0}"}}
 event_queue: {redis: {url: "${LLAMPHOUSE_REDIS_URL:-redis://localhost:6380/0}"}}
 tracing:     {postgres: {database_url: "${LLAMPHOUSE_DATABASE_URL:-postgresql://llamphouse:llamphouse@localhost:5433/llamphouse}"}}
 engine:      {workers: 4}
+adapters:                    # other protocols next to the native API (/v2)
+  - responses: {prefix: /v1, agent: desk}   # OpenAI Responses + Conversations: any OpenAI client
+  - assistants: {prefix: /v1, agent: desk}  # OpenAI Assistants API
+  - a2a: {prefix: /a2a}                     # A2A v1.0: /a2a/desk/.well-known/agent-card.json

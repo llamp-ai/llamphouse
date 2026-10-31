@@ -25,6 +25,13 @@ class Listener:
     def __init__(self) -> None:
         self.queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
 
+    def get_nowait(self) -> tuple[str, dict] | None:
+        """What has arrived already, or None."""
+        try:
+            return self.queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+
     async def get(self, timeout: float | None = None) -> tuple[str, dict] | None:
         """(channel, message), or None after `timeout` seconds."""
         try:

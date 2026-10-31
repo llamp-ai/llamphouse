@@ -298,6 +298,7 @@ class RunRecord:
 
 
 INBOX = "inbox"  # the key of a run's inbox subscription
+CLIENT_TOOLS = "llamphouse.client_tools"  # in a run's request metadata: the tools its client declared
 
 
 Value = Union[str, Message, Part, Mapping[str, Any], Any]
@@ -902,6 +903,26 @@ class Engine:
     async def cancel(self, run: RunRef) -> None:
         async with self._tx(await self._tree(run.id)):
             self._cancel(self.records[run.id])
+
+    async def bind(self, thread: ThreadRef, agent: str) -> None:
+        """Give a thread that has had no run yet to another agent (protocols whose threads belong to no agent
+        until a run says which). ThreadBusy-like ValueError once it has had a run: then only a handover may."""
+        self._entry(agent)
+        async with self._tx(await self._tree(thread.id)):
+            t = self.threads[thread.id]
+            if t.agent == agent:
+                return
+            if any(r.thread_id == thread.id for r in self.records.values()):
+                raise ValueError(f"{thread.id} belongs to {t.agent}: it has had runs")
+            t.agent = agent
+
+    async def set_thread_metadata(self, thread: ThreadRef, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        """Change a thread's labels (merged; None removes a key). Threads created from it keep theirs."""
+        async with self._tx(await self._tree(thread.id)):
+            t = self.threads[thread.id]
+            merged = {**t.metadata, **metadata}
+            t.metadata = {k: v for k, v in merged.items() if v is not None}
+            return dict(t.metadata)
 
     async def close_thread(self, thread: ThreadRef) -> None:
         """No more messages on it; its active run is cancelled."""
@@ -2407,7 +2428,12 @@ class _Client:
     def __init__(self, ctx: _Context):
         self.ctx = ctx
 
-    tools = property(lambda self: ())
+    @property
+    def tools(self) -> Sequence[ToolSpec]:
+        """The tools the client declared when it started the run (`CLIENT_TOOLS` in the request's metadata):
+        the agent calls them with `call_tool`, and the run waits (input_required) for the client's result."""
+        declared = self.ctx._rec.request.metadata.get(CLIENT_TOOLS) or ()
+        return tuple(t if isinstance(t, ToolSpec) else ToolSpec(**t) for t in declared)
 
     async def call_tool(self, call: ToolCallPart) -> ToolResultPart:
         return await self.ctx._call_client_tool(call)
