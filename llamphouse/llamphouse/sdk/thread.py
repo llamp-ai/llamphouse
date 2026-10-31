@@ -240,6 +240,20 @@ class State(StateView, Protocol):
         """`async with ctx.state.batch() as s: s.set(...); s.set(...)` - several keys at once."""
         ...
 
+    @property
+    def live(self) -> "LiveState":
+        """The same state, not replayed: reads see it as it is now, writes are always made. For code
+        that keeps its own durability - a framework's checkpointer - not for what a replay must repeat."""
+        ...
+
+
+class LiveState(StateView, Protocol):
+    """State read and written as it is now, outside the run's replay (`ctx.run.state.live`)."""
+
+    async def set(self, key: str, value: Any, *, if_version: int | None = None) -> int: ...
+
+    async def delete(self, key: str, *, if_version: int | None = None) -> None: ...
+
 
 class ThreadState(State, Protocol):
     """The thread's state: facts of the conversation, kept across turns, shared live by the agent's

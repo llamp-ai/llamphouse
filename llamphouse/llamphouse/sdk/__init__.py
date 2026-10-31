@@ -71,6 +71,7 @@ from .thread import (
     StateConflict,
     State,
     StateView,
+    LiveState,
     Subscription,
     ThreadBusy,
     ThreadClosed,
@@ -103,7 +104,7 @@ __all__ = [
     "Event", "MessageStarted", "PartDelta", "MessageCompleted", "MessageRead", "Progress", "StateSnapshot", "StateDelta",
     "Usage", "Custom", "ThreadCreated", "UnknownEvent", "AgentError", "Rejected",
     # the thread
-    "ThreadEvent", "Filter", "Subscription", "Session", "State", "ThreadState", "StateView", "StateBatch",
+    "ThreadEvent", "Filter", "Subscription", "Session", "State", "ThreadState", "StateView", "StateBatch", "LiveState",
     "ThreadClosed", "ThreadBusy", "NoActiveRun", "Identity", "ToolSpec", "InputRequest",
     "AuthRequest", "Request", "StateConflict", "SessionView",
     # what an agent publishes

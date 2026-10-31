@@ -181,6 +181,10 @@ class _State(_View):
     def batch(self) -> "_Batch":
         return _Batch(self)
 
+    @property
+    def live(self) -> "_State":
+        return self  # nothing is replayed in a FakeRun
+
     def at_start(self) -> _View:
         return self._start
 
@@ -219,7 +223,7 @@ class _FakeThisRun(ThisRun):
     cancelled = property(lambda self: self._run._cancelled)
     state = property(lambda self: self._run._run_state)
 
-    async def request_input(self, request: InputRequest) -> Message:
+    async def request_input(self, request: InputRequest, *, key: str | None = None) -> Message:
         return await self._run._request_input(request)
 
     async def request_auth(self, request: AuthRequest) -> Message:
@@ -494,10 +498,10 @@ class FakeRun:
     async def send(self, *content: Content, references: Sequence[RunRef] = ()) -> Message:
         return await self._deliver_message(Message.create(self.sender, *content, references=references))
 
-    def stream(self) -> _Writer:
+    def stream(self, *, key: str | None = None) -> _Writer:
         return _Writer(self)
 
-    async def ask(self, text: str, *, schema: Mapping[str, Any] | None = None) -> Message:
+    async def ask(self, text: str, *, schema: Mapping[str, Any] | None = None, key: str | None = None) -> Message:
         return await self._request_input(InputRequest(reason=text, prompt=[TextPart(text=text)], input_schema=schema))
 
     async def _request_input(self, request: InputRequest) -> Message:

@@ -1996,8 +1996,8 @@ class _Context:
     async def send(self, *content: Content, references: Sequence[RunRef] = ()) -> Message:
         return await self._send(self._key("send"), to_parts(content), references)
 
-    def stream(self) -> "_Writer":
-        return _Writer(self)
+    def stream(self, *, key: str | None = None) -> "_Writer":
+        return _Writer(self, key)
 
     @property
     def session(self) -> "_Session":
@@ -2144,11 +2144,13 @@ class _Context:
             sc._append(rec.thread_id, kind, run=rec, data=request, key=f"{rec.id}:{rec.generation}:{key}")
         raise _Suspend(status)
 
-    async def _request_input(self, request: InputRequest) -> Message:
-        return await self._request(self._key("input"), request, RunStatus.INPUT_REQUIRED, EventKind.RUN_INPUT_REQUIRED)
+    async def _request_input(self, request: InputRequest, key: str | None = None) -> Message:
+        return await self._request(self._key(f"input:{key}" if key else "input"), request, RunStatus.INPUT_REQUIRED,
+                                   EventKind.RUN_INPUT_REQUIRED)
 
-    async def ask(self, text: str, *, schema: Mapping[str, Any] | None = None) -> Message:
-        return await self._request_input(InputRequest(reason=text, prompt=[TextPart(text=text)], input_schema=schema))
+    async def ask(self, text: str, *, schema: Mapping[str, Any] | None = None, key: str | None = None) -> Message:
+        return await self._request_input(InputRequest(reason=text, prompt=[TextPart(text=text)], input_schema=schema),
+                                         key)
 
     async def _request_auth(self, request: AuthRequest) -> Message:
         return await self._request(self._key("auth"), request, RunStatus.AUTH_REQUIRED, EventKind.RUN_AUTH_REQUIRED)
@@ -2225,10 +2227,11 @@ class _Context:
 
 
 class _Writer:
-    def __init__(self, ctx: _Context):
+    def __init__(self, ctx: _Context, key: str | None = None):
         self.ctx = ctx
-        self.key = ctx._key("send")
-        self.message_id = f"msg_{ctx._rec.id}_{self.key}"
+        self.key = ctx._key(f"send:{key}" if key else "send")
+        self.message_id = f"msg_{ctx._rec.id}_{hashlib.sha256(self.key.encode()).hexdigest()[:16]}" if key \
+            else f"msg_{ctx._rec.id}_{self.key}"
         self._text: list[str] = []
         self._parts: list[Part] = []
         self._replaying = self.key in ctx._rec.steps
@@ -2487,6 +2490,35 @@ class _State:
     def batch(self) -> "_Batch":
         return _Batch(self)
 
+    @property
+    def live(self) -> "_Live":
+        return _Live(self)
+
+
+class _Live:
+    """The same state, not replayed: reads see it as it is now, writes are always made (each its own
+    change). For code that keeps its own durability - a framework's checkpointer."""
+
+    def __init__(self, state: _State):
+        self.state, self.ctx = state, state.ctx
+
+    async def get_versioned(self, key: str) -> tuple[Any, int]:
+        async with self.ctx._tx():
+            value, version = self.state._values().get(key, (None, 0))
+        return _handles(self.ctx, value), version
+
+    async def get(self, key: str, default: Any = None) -> Any:
+        value, version = await self.get_versioned(key)
+        return default if version == 0 else value
+
+    async def set(self, key: str, value: Any, *, if_version: int | None = None) -> int:
+        async with self.ctx._tx():
+            return self.state._apply([(key, value, if_version, False)], f"live:{uuid.uuid4().hex}")[0]
+
+    async def delete(self, key: str, *, if_version: int | None = None) -> None:
+        async with self.ctx._tx():
+            self.state._apply([(key, None, if_version, True)], f"live:{uuid.uuid4().hex}")
+
 
 class _ThreadState(_State):
     _scope = "state"
@@ -2558,8 +2590,8 @@ class _ThisRun(ThisRun):
     def state(self) -> _State:
         return _State(self._ctx)
 
-    async def request_input(self, request: InputRequest) -> Message:
-        return await self._ctx._request_input(request)
+    async def request_input(self, request: InputRequest, *, key: str | None = None) -> Message:
+        return await self._ctx._request_input(request, key)
 
     async def request_auth(self, request: AuthRequest) -> Message:
         return await self._ctx._request_auth(request)

@@ -129,6 +129,30 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   `auth/`, `sessions/`, `tracing/stores/`, `triggers/`, `notifications/`, `adapters/`. The earlier module
   paths (`runtime.store`, `runtime.queue`, `runtime.bus`, `runtime.files`) still import.
 - httpx is a base dependency (deliveries).
+- **LangGraph** (`llamphouse.sdk.langgraph`, `pip install llamphouse[langgraph]`):
+  - `LlamphouseCheckpointer(ctx)`: a LangGraph checkpointer that keeps its checkpoints in the run's
+    state. It keeps the latest checkpoint, not the history; graphs with delta channels keep that chain
+    until the channels snapshot. With `scope="thread"`, the graph's state carries over to the thread's
+    next run, as one `state.changed` event per run.
+  - `await run_graph(ctx, graph, input)` runs a graph inside any agent:
+    - When the run executes again (it waited, or was taken over after a crash), the graph resumes from
+      its last checkpoint. Nodes that finished don't run again, and the graph never gets its input
+      twice.
+    - `interrupt()` is asked with `ctx.ask`, and the graph resumes in that node with the answer.
+    - Model output is streamed into the run's messages.
+  - `LangGraphAgent`: a graph as the whole agent (`graph = ...` on a subclass, or `LangGraphAgent.of(graph)`).
+  - `interrupt()` needs Python 3.11+, a LangGraph limitation for async runs.
+- **Streaming a model's answer** (`llamphouse.sdk.streams`):
+  - `openai_chat`, `anthropic` and `gemini` turn each SDK's stream chunks into text and tool-call
+    deltas. They read the chunks by attribute and import no SDK.
+  - `await pipe(ctx, deltas)` streams the text into the run's message and returns the text, the tool
+    calls (as `ToolCallPart`s) and the usage, which it also emits as a `Usage` event. It also takes any
+    async iterable of strings.
+- **For code that keeps its own durability:**
+  - `ctx.run.state.live` and `ctx.state.live` read the state as it is now and always write, outside
+    the run's replay.
+  - `ctx.ask(..., key=)` and `ctx.stream(key=)` name a call instead of relying on its order, for code
+    that doesn't repeat itself in order when the run executes again.
 - **`llamphouse migrate`**: 1.x conversations as 2.0 threads (see Migrating from 1.x), on
   `Engine.import_thread`, which writes a thread kept elsewhere with its own ids, times and history.
   Re-runnable.

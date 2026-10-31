@@ -84,7 +84,7 @@ class ThisRun(RunRef, ABC):
         """This run's own state: kept across restarts, gone when the run ends, seen by no other run."""
 
     @abstractmethod
-    async def request_input(self, request: InputRequest) -> Message:
+    async def request_input(self, request: InputRequest, *, key: str | None = None) -> Message:
         """`ctx.ask` with a full request: a prompt of parts, an input schema, metadata."""
 
     @abstractmethod
@@ -159,13 +159,17 @@ class RunContext(Protocol[ConfigT_co]):
         (a parent, a calling agent) hears it by listening."""
         ...
 
-    def stream(self) -> MessageWriter:
-        """The same, streamed: `async with ctx.stream() as s: await s.write("…")`."""
+    def stream(self, *, key: str | None = None) -> MessageWriter:
+        """The same, streamed: `async with ctx.stream() as s: await s.write("…")`. `key`: as for `ask`."""
         ...
 
-    async def ask(self, text: str, *, schema: Mapping[str, Any] | None = None) -> Message:
+    async def ask(self, text: str, *, schema: Mapping[str, Any] | None = None, key: str | None = None) -> Message:
         """Ask whoever is talking to this run, and wait for the answer: the run pauses
-        (input_required, no worker held) and carries on from here with the answer."""
+        (input_required, no worker held) and carries on from here with the answer.
+
+        A run executed again replays what it did by the order of its calls. `key` names this call
+        instead: for code that doesn't repeat itself in order when executed again (a graph resumed
+        from its checkpoint) - the same key, the same answer."""
         ...
 
     async def emit(self, event: Event) -> None:
