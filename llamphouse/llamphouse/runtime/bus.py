@@ -16,6 +16,8 @@ from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
+from ._extras import need
+
 
 class Listener:
     """Messages on the channels listened to, in order."""
@@ -79,7 +81,7 @@ class RedisBus(Bus):
         self._lock = asyncio.Lock()
 
     async def open(self) -> None:
-        import redis.asyncio as redis
+        redis = need("redis.asyncio", "redis")
 
         if self._redis is None:
             self._redis = redis.from_url(self.url, decode_responses=True)

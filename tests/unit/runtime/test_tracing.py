@@ -9,7 +9,7 @@ import httpx
 import pytest
 from opentelemetry import trace
 
-from llamphouse.core.tracing import InMemoryTracingStore
+from llamphouse.runtime.tracing import InMemoryTracingStore
 from llamphouse.runtime import Engine
 from llamphouse.runtime.api import create_app
 from llamphouse.sdk import Agent, RunRef
@@ -186,3 +186,34 @@ def test_without_tracing_set_up_the_engine_does_not_load_opentelemetry():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert out.split() == ["completed", "False"]
+
+
+async def test_traces_are_listed_by_their_root_spans_and_agent(traced):
+    engine, store = traced
+    await engine.start("traced", "hi")
+    await engine.start("boom", "x")
+    await engine.settle()
+    engine.tracing.flush()
+    rows = await store.list_traces(agent="traced")
+    assert rows and all(r["SpanName"] == "llamphouse.run" and r["agent"] == "traced" for r in rows)
+    assert {r["agent"] for r in await store.list_traces()} >= {"traced", "boom"}
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("LLAMPHOUSE_TEST_POSTGRES"), reason="no Postgres")
+async def test_the_postgres_tracing_store_keeps_and_lists_a_runs_spans():
+    import os
+
+    from llamphouse.runtime.tracing import PostgresTracingStore
+
+    store = PostgresTracingStore(os.environ["LLAMPHOUSE_TEST_POSTGRES"])
+    engine = Engine(AGENTS, tracing_store=store)
+    await engine.open()
+    try:
+        ref = await engine.start("traced", "hi")
+        await engine.settle()
+        engine.tracing.flush()
+        spans = await store.get_trace(ref.id)
+        assert {"llamphouse.run", "app.work"} <= {s["SpanName"] for s in spans}
+        assert any(r["run_id"] == ref.id for r in await store.list_traces(agent="traced"))
+    finally:
+        await engine.close()

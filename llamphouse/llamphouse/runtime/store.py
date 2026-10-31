@@ -15,7 +15,7 @@ Run events (a run's stream: progress, messages started and completed, ...) are w
 one worker holding the run's lease, outside the tree's transactions; text deltas are live only.
 
 Backends: `MemoryStore` (in this process; shared by several engines in tests) and
-`PostgresStore` (asyncpg).
+`PostgresStore` (asyncpg; its schema under Alembic: `llamphouse.runtime.migrations`).
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+from ._extras import need
 
 TERMINAL = ("completed", "failed", "cancelled", "rejected")
 _MISSING = object()
@@ -263,103 +265,6 @@ class MemoryStore(Store):
 
 # ── Postgres ─────────────────────────────────────────────────────────────────
 
-MIGRATIONS = [
-    # 1: the 2.0 schema
-    """
-    create table llamphouse_trees (
-        id text primary key,
-        version bigint not null,
-        written bigint not null,
-        created_at timestamptz not null default now()
-    );
-    create table llamphouse_threads (
-        id text primary key,
-        tree_id text not null,
-        version bigint not null,
-        agent text not null,
-        created_by text,
-        forked_from text,
-        closed boolean not null default false,
-        created_at timestamptz,
-        data json not null
-    );
-    create index llamphouse_threads_tree on llamphouse_threads (tree_id, version);
-    create index llamphouse_threads_created on llamphouse_threads (created_at desc);
-    create table llamphouse_events (
-        thread_id text not null,
-        position integer not null,
-        tree_id text not null,
-        version bigint not null,
-        written bigint not null,
-        key text,
-        data json not null,
-        primary key (thread_id, position)
-    );
-    create index llamphouse_events_tree on llamphouse_events (tree_id, version);
-    create table llamphouse_runs (
-        id text primary key,
-        tree_id text not null,
-        version bigint not null,
-        thread_id text not null,
-        agent text not null,
-        status text not null,
-        wake_at timestamptz,
-        lease_until timestamptz,
-        ring_at timestamptz,
-        data json not null
-    );
-    create index llamphouse_runs_tree on llamphouse_runs (tree_id, version);
-    create index llamphouse_runs_thread on llamphouse_runs (thread_id);
-    create unique index llamphouse_one_active_run on llamphouse_runs (thread_id)
-        where status not in ('completed', 'failed', 'cancelled', 'rejected');
-    create index llamphouse_runs_wake on llamphouse_runs (wake_at) where status = 'waiting';
-    create index llamphouse_runs_lease on llamphouse_runs (lease_until) where status = 'running';
-    create index llamphouse_runs_queued on llamphouse_runs (ring_at) where status = 'queued';
-    create table llamphouse_sessions (
-        id text primary key,
-        tree_id text not null,
-        version bigint not null,
-        thread_id text not null,
-        revising boolean not null default false,
-        revision_due timestamptz,
-        data json not null
-    );
-    create index llamphouse_sessions_tree on llamphouse_sessions (tree_id, version);
-    create index llamphouse_sessions_due on llamphouse_sessions (revision_due) where revising;
-    create table llamphouse_run_events (
-        run_id text not null,
-        seq integer not null,
-        tree_id text not null,
-        at timestamptz not null default now(),
-        data json not null,
-        primary key (run_id, seq)
-    );
-    """,
-    # 2: thread metadata - the app's labels, to filter threads by
-    """
-    alter table llamphouse_threads add column metadata jsonb not null default '{}';
-    create index llamphouse_threads_metadata on llamphouse_threads using gin (metadata jsonb_path_ops);
-    """,
-]
-
-# the unreleased 2.0 prototype's tables, replaced by migration 1
-_PROTOTYPE = ("llamphouse_events", "llamphouse_threads", "llamphouse_runs", "llamphouse_sessions")
-
-
-async def migrate(con: Any) -> int:
-    """Bring the schema up to date (idempotent, safe with several processes starting at once)."""
-    async with con.transaction():
-        await con.execute("select pg_advisory_xact_lock(hashtextextended('llamphouse_schema', 0))")
-        await con.execute("create table if not exists llamphouse_schema (version integer not null)")
-        current = await con.fetchval("select max(version) from llamphouse_schema") or 0
-        if current == 0 and await con.fetchval("select to_regclass('llamphouse_runs') is not null"):
-            await con.execute("drop table if exists " + ", ".join(_PROTOTYPE) + " cascade")
-        for n, sql in enumerate(MIGRATIONS[current:], start=current + 1):
-            await con.execute(sql)
-            await con.execute("insert into llamphouse_schema (version) values ($1)", n)
-        return len(MIGRATIONS)
-
-
 class _PostgresTx(StoreTx):
     def __init__(self, store: "PostgresStore", con: Any, tr: Any, tree_id: str):
         self.store, self.con, self.tr, self.tree_id = store, con, tr, tree_id
@@ -433,20 +338,24 @@ class _PostgresTx(StoreTx):
 
 
 class PostgresStore(Store):
-    """asyncpg. `dsn`: e.g. postgresql://llamphouse:llamphouse@localhost:5432/llamphouse. The schema is
-    created and migrated on `open`."""
+    """asyncpg. `dsn`: e.g. postgresql://llamphouse:llamphouse@localhost:5432/llamphouse. On `open` the schema
+    is brought up to date (`llamphouse.runtime.migrations`, Alembic) unless `migrate=False` - where schema
+    changes are a deploy step (`llamphouse db upgrade`)."""
 
-    def __init__(self, dsn: str | None = None, *, pool: Any = None, min_size: int = 2, max_size: int = 10):
+    def __init__(self, dsn: str | None = None, *, pool: Any = None, min_size: int = 2, max_size: int = 10,
+                 migrate: bool = True):
         self.dsn, self.pool, self._own = dsn, pool, pool is None
-        self.min_size, self.max_size = min_size, max_size
+        self.min_size, self.max_size, self.migrate = min_size, max_size, migrate
 
     async def open(self) -> None:
-        import asyncpg  # an extra: pip install llamphouse[postgres]
+        asyncpg = need("asyncpg", "postgres")
 
+        if self.migrate and self.dsn:
+            from . import migrations
+
+            await asyncio.to_thread(migrations.upgrade, self.dsn)
         if self.pool is None:
             self.pool = await asyncpg.create_pool(self.dsn, min_size=self.min_size, max_size=self.max_size)
-        async with self.pool.acquire() as con:
-            await migrate(con)
 
     async def close(self) -> None:
         if self.pool is not None and self._own:

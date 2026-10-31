@@ -53,6 +53,22 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   - Compass: a Trace panel in the run view - the spans as a tree (name, duration, status), a span's attributes, and `gen_ai.input.messages` / `gen_ai.output.messages` / `input.value` / `output.value` readable and foldable.
   - Without a tracing store or a tracer provider, nothing is imported and no span is made; tracing never fails a run.
 
+- **Deployment files and the `llamphouse` command** (`llamphouse.runtime.config`, `llamphouse.runtime.cli`):
+  - Agent files (`kind: AgentDefinition`, `kind: Agent`: entrypoint, config, session provider, env,
+    secrets) and a runtime file (`kind: Runtime`: `data_store`, `run_queue`, `event_queue`, `file_store`,
+    `tracing`, `sessions`, `engine`, `env`, `secrets`, `secrets_store`), `apiVersion: llamphouse.io/v1alpha1`.
+  - Every component is swappable: `{name: {options}}` from the registry, or your own class as
+    `{module:Class: {options}}`; options are checked against the constructor before anything starts;
+    `${VAR}` / `${VAR:-default}`, and `{import: module:attr}` for Python objects.
+  - `llamphouse up --role all|api|compass|worker`, `llamphouse check`, `llamphouse db upgrade|current`.
+    `python -m llamphouse.runtime app:AGENTS` still works.
+- **Tracing stores in the 2.0 runtime** (`llamphouse.runtime.tracing.stores`: in-memory, Postgres,
+  ClickHouse), listing traces by 2.0's root spans and agent; with a tracer provider the app already set up,
+  the store's exporter joins it instead of replacing it.
+- **Packaging**: a small base install (pydantic, FastAPI, uvicorn, PyYAML) that runs `llamphouse up` in
+  memory; extras `postgres`, `redis`, `tracing`, `all` (and `v1` for `llamphouse.core` while it remains); a
+  missing backend says which extra to install.
+
 ### Changed (before 2.0.0a0 was released)
 
 - Against loops, `Engine(max_runs_per_root=1000, max_depth=50)`: the runs one run started by the app may
@@ -60,6 +76,11 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   only if set); `max_runs_per_tree` still works, as the old name of `max_runs_per_root`.
 - Stored records read back with defaults for fields added later: data written by an earlier 2.0 commit
   keeps loading.
+- The Postgres schema is under **Alembic** (`llamphouse.runtime.migrations`, shipped in the package), in
+  the same history as 1.x: the 1.x revisions are branch `v1`, the 2.0 tables branch `v2`. A new database
+  gets only the 2.0 tables; a 1.x database keeps its tables and gains them; one set up by an earlier 2.0
+  commit is adopted. Processes upgrade on start (`PostgresStore(migrate=False)` to make it a deploy step:
+  `llamphouse db upgrade`, `--sql` to review). The repository's `migrations/` moved there.
 
 ### Migrating from 1.x
 

@@ -1,0 +1,181 @@
+"""Setting OpenTelemetry up for the runtime: a tracer provider with the tracing store's exporter (and OTLP or
+console exporters from the standard OTEL_* environment). When the process already has an SDK tracer provider
+(the app set OpenTelemetry up itself), the store's exporter is added to it instead: llamphouse never replaces
+a provider it didn't make, and never shuts one down."""
+
+import os
+from fnmatch import fnmatch
+from opentelemetry.util.re import parse_env_headers
+from opentelemetry import trace
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+_EXCLUDE_PREFIXES = ContextVar("exclude_prefixes", default=())
+_TRACING_INITIALIZED = False
+_TRACING_DISABLED = False
+_OWN_PROVIDER = False  # whether the provider is ours (to shut down at the end)
+
+def _env_bool(name:str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+def setup_tracing(tracing_store=None) -> None:
+    """Initialize OpenTelemetry tracing once. No-op when disabled.
+
+    Parameters
+    ----------
+    tracing_store : BaseTracingStore | None
+        When provided, the store's ``get_span_exporter()`` is registered
+        as the internal span processor so traces are captured locally
+        without requiring an external collector.  An OTLP exporter is
+        still added on top when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set.
+    """
+    global _TRACING_INITIALIZED, _TRACING_DISABLED, _OWN_PROVIDER
+
+    existing = trace.get_tracer_provider()
+    if not _TRACING_INITIALIZED and hasattr(existing, "add_span_processor"):  # someone set one up already
+        _TRACING_INITIALIZED = True
+        if tracing_store is not None:
+            exporter = tracing_store.get_span_exporter()
+            if exporter is not None:
+                from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+                existing.add_span_processor(BatchSpanProcessor(exporter))
+        return
+
+    # If the provider is already set up but we now have a store, attach its
+    # exporter to the existing provider (the import-time call has no store).
+    if _TRACING_INITIALIZED:
+        if _TRACING_DISABLED or tracing_store is None:
+            return
+        _store_exporter = tracing_store.get_span_exporter()
+        if _store_exporter is not None:
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            provider = trace.get_tracer_provider()
+            if hasattr(provider, "add_span_processor"):
+                provider.add_span_processor(BatchSpanProcessor(_store_exporter))
+        return
+
+    if not _env_bool("LLAMPHOUSE_TRACING_ENABLED", True):
+        _TRACING_DISABLED = True
+        _TRACING_INITIALIZED = True
+        return
+    
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
+    service_name = os.getenv("OTEL_SERVICE_NAME", "llamphouse")
+    # Explicit attributes; Resource.create() also merges in the default OTel resource,
+    # which picks up OTEL_SERVICE_NAME + OTEL_RESOURCE_ATTRIBUTES automatically.
+    explicit_attrs: dict = {"service.name": service_name}
+    service_version = os.getenv("OTEL_SERVICE_VERSION") or os.getenv("SERVICE_VERSION")
+    if service_version:
+        explicit_attrs["service.version"] = service_version
+    deployment_env = (
+        os.getenv("OTEL_DEPLOYMENT_ENVIRONMENT")
+        or os.getenv("DEPLOYMENT_ENVIRONMENT")
+        or os.getenv("ENVIRONMENT")
+    )
+    if deployment_env:
+        explicit_attrs["deployment.environment"] = deployment_env
+    resource = Resource.create(explicit_attrs)
+
+    provider = TracerProvider(resource=resource)
+    trace.set_tracer_provider(provider)
+    _OWN_PROVIDER = True
+
+    # ── Internal store exporter (first, so it's always registered) ──────
+    if tracing_store is not None:
+        _store_exporter = tracing_store.get_span_exporter()
+        if _store_exporter is not None:
+            provider.add_span_processor(BatchSpanProcessor(_store_exporter))
+
+    # ── External exporters ───────────────────────────────────────────────
+    exporter_kind = os.getenv("OTEL_TRACES_EXPORTER", "otlp")
+    if exporter_kind == "console":
+        exporter = ConsoleSpanExporter()
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+    else:
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+        if endpoint:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+            headers_raw = (
+                os.getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+                or os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
+                or ""
+            )
+            headers = parse_env_headers(headers_raw) if headers_raw else None
+
+            # OTLPSpanExporter treats `endpoint` as the full URL.
+            # Append /v1/traces when the caller only supplied the base URL.
+            if not endpoint.rstrip("/").endswith("/v1/traces"):
+                endpoint = endpoint.rstrip("/") + "/v1/traces"
+
+            exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+
+    _TRACING_INITIALIZED = True
+
+class _NullSpan:
+    def set_attribute(self, *args, **kwargs): pass
+    def add_event(self, *args, **kwargs): pass
+    def set_status(self, *args, **kwargs): pass
+    def record_exception(self, *args, **kwargs): pass
+    def update_name(self, *args, **kwargs): pass
+
+@contextmanager
+def _null_span_ctx():
+    yield _NullSpan()
+
+def _tracing_disabled() -> bool:
+    if _TRACING_INITIALIZED:
+        return _TRACING_DISABLED
+    return not _env_bool("LLAMPHOUSE_TRACING_ENABLED", False)
+
+def shutdown_tracing() -> None:
+    """Flush pending spans and shut down the TracerProvider.
+
+    This closes the OTLP exporter's underlying HTTP session so the
+    process can exit without 'Unclosed client session' warnings.
+    """
+    global _TRACING_INITIALIZED
+    if not _TRACING_INITIALIZED or _TRACING_DISABLED:
+        return
+    provider = trace.get_tracer_provider()
+    if _OWN_PROVIDER and hasattr(provider, "shutdown"):
+        provider.shutdown()
+    elif hasattr(provider, "force_flush"):  # the app's: flushed, left running
+        provider.force_flush()
+    _TRACING_INITIALIZED = False
+
+def get_tracer(name: str):
+    return trace.get_tracer(name)
+
+def set_span_excludes(prefixes: list[str]) -> None:
+    _EXCLUDE_PREFIXES.set(tuple(prefixes or []))
+
+def _is_excluded(name: str, patterns: tuple) -> bool:
+    for p in patterns:
+        if "*" in p or "?" in p:
+            if fnmatch(name, p):
+                return True
+        else:
+            if name.startswith(p):
+                return True
+    return False
+
+def span_context(tracer, name: str, *, require_parent: bool = False, **kwargs):
+    if _tracing_disabled():
+        return _null_span_ctx()
+    patterns = _EXCLUDE_PREFIXES.get()
+    if _is_excluded(name, patterns):
+        return _null_span_ctx()
+    if require_parent:
+        current = trace.get_current_span()
+        if current is None or not current.get_span_context().is_valid:
+            return _null_span_ctx()
+    return tracer.start_as_current_span(name, **kwargs)

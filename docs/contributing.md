@@ -97,11 +97,11 @@ docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
 # Set connection string
 export DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/llamphouse
 
-# Create a new migration
-alembic revision --autogenerate -m "description of change"
+# Create a new migration - by hand, plain SQL, on its branch (v1: the 1.x schema, v2: the 2.0 one)
+alembic revision --head v2@head -m "description of change"
 
 # Apply migrations
-alembic upgrade head
+alembic upgrade heads
 ```
 
 ## Building

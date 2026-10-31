@@ -16,25 +16,6 @@ from .base import BaseFileStore, FileAccessError, FileNotFound, FileRecord, coll
 
 CHUNK = 64 * 1024
 
-SCHEMA = """
-create table if not exists llamphouse_blobs (
-    sha256 text primary key,
-    data bytea not null
-);
-create table if not exists llamphouse_files (
-    id text primary key,
-    thread_id text,
-    sha256 text not null references llamphouse_blobs(sha256),
-    size bigint not null,
-    mime_type text not null,
-    name text,
-    created_by text not null,
-    created_at timestamptz not null,
-    expires_at timestamptz
-);
-create index if not exists llamphouse_files_thread on llamphouse_files (thread_id);
-"""
-
 _COLUMNS = "id, thread_id, sha256, size, mime_type, name, created_by, created_at, expires_at"
 
 
@@ -45,20 +26,27 @@ def _record(row: Any) -> FileRecord:
 
 
 class PostgresFileStore(BaseFileStore):
-    """`pool`: an asyncpg pool (shared with `PostgresStore`), or `dsn` to make one on `open`."""
+    """`pool`: an asyncpg pool (shared with `PostgresStore`), or `dsn` to make one on `open`. Its tables are
+    part of the 2.0 schema (`llamphouse.runtime.migrations`), brought up to date on `open` unless
+    `migrate=False`."""
 
-    def __init__(self, *, dsn: str | None = None, pool: Any = None, **kwargs: Any):
+    def __init__(self, *, dsn: str | None = None, pool: Any = None, migrate: bool = True, **kwargs: Any):
         super().__init__(**kwargs)
-        self.dsn, self.pool = dsn, pool
+        self.dsn, self.pool, self.migrate = dsn, pool, migrate
 
     async def open(self) -> None:
+        if self.migrate and self.dsn:
+            import asyncio
+
+            from ..migrations import upgrade
+
+            await asyncio.to_thread(upgrade, self.dsn)
         if self.pool is None:
-            import asyncpg
+            from .._extras import need
+
+            asyncpg = need("asyncpg", "postgres")
 
             self.pool = await asyncpg.create_pool(self.dsn, min_size=1, max_size=4)
-        async with self.pool.acquire() as con, con.transaction():  # several processes may start at once
-            await con.execute("select pg_advisory_xact_lock(hashtextextended('llamphouse_schema', 0))")
-            await con.execute(SCHEMA)
 
     async def close(self) -> None:
         if self.pool is not None and self.dsn is not None:

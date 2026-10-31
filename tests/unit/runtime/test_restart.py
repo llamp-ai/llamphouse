@@ -19,8 +19,7 @@ async def clean(dsn):
     import asyncpg
 
     con = await asyncpg.connect(dsn)
-    await con.execute("drop table if exists llamphouse_schema, llamphouse_trees, llamphouse_events, llamphouse_threads, "
-                      "llamphouse_runs, llamphouse_sessions, llamphouse_run_events cascade")
+    await con.execute("drop schema public cascade; create schema public")
     await con.close()
 
 

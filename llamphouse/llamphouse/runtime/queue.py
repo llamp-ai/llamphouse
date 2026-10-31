@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 
+from ._extras import need
+
 
 class JobQueue(ABC):
     async def open(self) -> None:
@@ -74,7 +76,7 @@ class RedisQueue(JobQueue):
         self._redis = None
 
     async def open(self) -> None:
-        import redis.asyncio as redis  # an extra: pip install llamphouse[redis]
+        redis = need("redis.asyncio", "redis")
 
         if self._redis is None:
             self._redis = redis.from_url(self.url, decode_responses=True)

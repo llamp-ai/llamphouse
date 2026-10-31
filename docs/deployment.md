@@ -65,15 +65,17 @@ docker exec -it postgres psql -U postgres -c 'CREATE DATABASE llamphouse;'
 # Set the connection string
 export DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/llamphouse
 
-# Apply all migrations
-alembic upgrade head
+# Apply the 1.x schema (branch v1 of the history)
+alembic upgrade v1@head
 
-# Create a new migration (after model changes)
-alembic revision --autogenerate -m "description of change"
-
-# Roll back all migrations
-alembic downgrade base
+# The 2.0 schema (branch v2) - also applied on start by the 2.0 runtime
+llamphouse db upgrade
 ```
+
+The migrations live in `llamphouse/runtime/migrations` (shipped in the package). One history holds both
+schemas as two branches, so `alembic upgrade head` is ambiguous: name the branch (`v1@head`, `v2@head`), or
+`heads` for both. Revisions are written by hand (plain SQL), on their branch:
+`alembic revision --head v2@head -m "description of change"`.
 
 ## Redis
 

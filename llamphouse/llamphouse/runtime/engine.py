@@ -74,7 +74,7 @@ from llamphouse.runtime.store import EventRow, MemoryStore, Row, Rows, Store, St
 from llamphouse.runtime.tracing import REVISE, RUN, STEP, Tracing
 
 if TYPE_CHECKING:
-    from llamphouse.core.tracing import BaseTracingStore
+    from llamphouse.runtime.tracing.stores import BaseTracingStore
 
 from llamphouse.sdk.vocab import EventKind, Origin, RunRef, RunStatus, SenderKind, ThreadRef, Viewpoint
 
@@ -463,7 +463,7 @@ class Engine:
     app's: a thread may have any number of them over its life (`max_runs_per_thread`: a cap, if you
     want one).
 
-    `tracing_store`: where spans go (`llamphouse.core.tracing`; `llamphouse.runtime.tracing` says which
+    `tracing_store`: where spans go (`llamphouse.runtime.tracing.stores`; `llamphouse.runtime.tracing` says which
     spans): set up on `open()`. Without one, runs are traced only when the process has a tracer provider
     set up otherwise."""
 

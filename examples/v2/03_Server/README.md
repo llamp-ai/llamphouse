@@ -4,31 +4,34 @@ The research desk from `01_ResearchDesk`, served for real: API processes and wor
 Postgres (the truth) and one Redis (the job queue and live events), with live streams (SSE) and a basic
 Compass.
 
+Two files describe the deployment: `agents.yaml` (what the agents are - it travels with them) and
+`llamphouse.yaml` (where and how they run - one per environment). `llamphouse check` loads both and says what
+it found, without connecting to anything.
+
 ## One process, nothing to install
 
 ```bash
-../../../.venv/bin/python -m llamphouse.runtime app:AGENTS --role all --memory   # http://127.0.0.1:8000/compass
-../../../.venv/bin/python chat.py                                                # talk to the desk over HTTP
+llamphouse up --role all --memory --config llamphouse.yaml --agents agents.yaml   # http://127.0.0.1:8000/compass
+python chat.py                                                                    # talk to the desk over HTTP
 ```
 
-Everything is in memory: nothing survives a restart.
+`--memory` ignores the runtime file's components: everything in memory, nothing survives a restart.
 
 ## For real: Postgres + Redis, API and workers
 
-You need a Postgres and a Redis (`docker-compose.yml` describes them; any install works). `app.py`
-points at `localhost:5433` and `localhost:6380`; `LLAMPHOUSE_DATABASE_URL` and `LLAMPHOUSE_REDIS_URL`
-point elsewhere.
+You need a Postgres and a Redis (`docker-compose.yml` describes them; any install works). `llamphouse.yaml`
+points at `localhost:5433` and `localhost:6380`; LLAMPHOUSE_DATABASE_URL and LLAMPHOUSE_REDIS_URL point
+elsewhere.
 
 ```bash
-python -m llamphouse.runtime app:AGENTS --role api --port 8000   # the API and Compass: executes nothing
-python -m llamphouse.runtime app:AGENTS --role worker            # executes runs; start as many as you like
-python -m llamphouse.runtime app:AGENTS --role worker
+llamphouse db upgrade --config llamphouse.yaml                                   # the schema (also done on start)
+llamphouse up --role api    --config llamphouse.yaml --agents agents.yaml --port 8000
+llamphouse up --role worker --config llamphouse.yaml --agents agents.yaml        # as many as you like
 python chat.py
 ```
 
-The schema is created on first start (and migrated on later ones). Try: *"Compare Bangkok and Lisbon"* →
-it asks for the month → *"March"* → while the forks work (30 s each, on the clock), *"focus on cost
-please"*. Then stop processes and start them again:
+Try: *"Compare Bangkok and Lisbon"* → it asks for the month → *"March"* → while the forks work (30 s each, on
+the clock), *"focus on cost please"*. Then stop processes and start them again:
 
 - **Ctrl-C a worker**: it hands back what it was running; another worker carries on at once.
 - **Kill a worker hard** (`kill -9`): its runs are taken over when their lease expires (30 s), and
@@ -39,22 +42,21 @@ please"*. Then stop processes and start them again:
 
 ## Your own agents
 
-```python
-# app.py
-from my_agents import Assistant, Researcher
-
-AGENTS = {"assistant": Assistant, "researcher": Researcher}
+```yaml
+# agents.yaml
+apiVersion: llamphouse.io/v1alpha1
+kind: Agent
+metadata: {name: assistant}
+spec:
+  entrypoint: my_agents/assistant.py:Assistant     # or a module path: my_agents.assistant:Assistant
+  config: {model: gpt-5}                            # the agent's Config
 ```
 
-```bash
-python -m llamphouse.runtime app:AGENTS --role api
-python -m llamphouse.runtime app:AGENTS --role worker --workers 8
-```
-
-or in code: `llamphouse.runtime.serve(AGENTS, role=..., database_url=..., redis_url=...)`, and
-`llamphouse.runtime.server.app(AGENTS, role="api", ...)` is the ASGI app for any ASGI server. Agent
-classes must be importable by module path (not defined inside a function): what a run recorded is read
-back by them, in any process.
+Every component in the runtime file is swappable: by name (`data_store: {postgres: {...}}`,
+`tracing: {clickhouse: {...}}`), or your own class (`file_store: {my_pkg.stores:S3Store: {...}}`). In code:
+`llamphouse.runtime.serve(...)`, or `llamphouse.runtime.server.app(...)` for any ASGI server; a Python mapping
+of agents works too (`--agents my_module:AGENTS`). Agent classes must be importable by module path (not
+defined inside a function): what a run recorded is read back by them, in any process.
 
 ## How it works
 
