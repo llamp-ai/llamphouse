@@ -89,6 +89,7 @@ def build(agents: Mapping[str, Any] | Deployment | str | Iterable[str] | None = 
     elif "workers" not in found.runtime.engine and "workers" not in overrides:
         overrides["workers"] = int(os.environ.get("LLAMPHOUSE_WORKERS", "4"))  # a server process: 4 at once
     engine = found.build(role="api" if role in ("api", "compass") else role, **overrides)
+    engine.deployment = found  # its auth and access, for the API
     if role != "all" and (isinstance(engine.store, MemoryStore) or isinstance(engine.queue, MemoryQueue)
                           or isinstance(engine.bus, MemoryBus)):
         raise ConfigError(f"role {role!r} shares work with other processes: it needs a shared data_store, run_queue "
@@ -104,7 +105,12 @@ def app(agents: Any = None, *, role: str = "all", api_key: str | None = None, co
     from .api import create_app
 
     engine = agents if isinstance(agents, Engine) else build(agents, role=role, **options)
-    api = create_app(engine, api_key=api_key or os.environ.get("LLAMPHOUSE_API_KEY"), compass=compass)
+    found = getattr(engine, "deployment", None)
+    key = api_key or os.environ.get("LLAMPHOUSE_API_KEY")
+    if found is not None:
+        api = create_app(engine, auth=found.authenticator(api_key=key), access=found.access(), compass=compass)
+    else:
+        api = create_app(engine, api_key=key, compass=compass)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

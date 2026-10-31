@@ -26,6 +26,7 @@ from datetime import timedelta
 from typing import Any
 
 from llamphouse.runtime.bus import MemoryBus
+from llamphouse.runtime.config_store import MemoryConfigStore
 from llamphouse.runtime.engine import EPOCH, Crash, Engine, RunRecord, SessionRecord
 from llamphouse.runtime.files import FileRecord
 from llamphouse.runtime.queue import MemoryQueue
@@ -50,6 +51,7 @@ class Scenario(Engine):
         options.setdefault("store", MemoryStore())
         options.setdefault("queue", MemoryQueue())
         options.setdefault("bus", MemoryBus())
+        options.setdefault("config_store", MemoryConfigStore())
         self._split = os.environ.get("LLAMPHOUSE_SCENARIO_SPLIT") == "1"
         workers = options.pop("workers", 2)
         super().__init__(agents, clock=lambda: self._fake_now, workers=0 if self._split else workers, **options)

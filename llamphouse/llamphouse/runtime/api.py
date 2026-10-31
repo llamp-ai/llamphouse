@@ -24,13 +24,18 @@
     POST /v2/files?name=report.pdf           the bytes, with their Content-Type    upload first, reference later
     GET  /v2/files/{id}                                                            the bytes
     GET  /v2/agents                                                                what can be talked to
+    GET  /v2/agents/{name}/config                                                  its config: as runs get it, what was changed
+    PUT  /v2/agents/{name}/config            {"values": {...}, "if_version": n}    change it for every process
     GET  /v2/stream/runs?agent=&metadata.<key>=<value>                            every run's status changes, live (SSE)
 
 A message in a request: {"text": "..."} or {"parts": [<part>, ...]} or {"data": {...}}, with an optional
 "sender": {"kind": "person", "id": "an", "name": "An"} (a person "user" by default). Parts, messages and
 events go out in the SDK's wire format (`llamphouse.sdk.wire`).
 
-With an `api_key`, every request needs `Authorization: Bearer <key>` (or `?key=<key>`, for an EventSource).
+Who calls: the configured authenticators (`llamphouse.runtime.auth`: API keys, OIDC, your own) turn a request
+into an Identity - the caller of the runs it starts and the sender of its messages. Access (`auth.Access`)
+decides which threads it may read and write: a thread it may not touch is answered as one that doesn't exist.
+None configured: everyone is `anonymous` and may do everything (one process on a laptop).
 
 The API holds no state: every request reads the store (through the engine's copy of the tree) or makes
 one transaction. Any number of API processes can serve the same database.
@@ -40,9 +45,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextvars import ContextVar
 from typing import Any, AsyncIterator
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
@@ -50,15 +56,18 @@ from llamphouse.sdk import (DataPart, Message, NoActiveRun, RunRef, Sender, Send
                             ThreadClosed, ThreadRef)
 from llamphouse.sdk.wire import part_from_dict, to_dict
 
+from .auth import ANONYMOUS, Access, ApiKeyAuth, AuthError, Authenticator, sender_of
 from .codec import jsonable
+from .config_store import ConfigConflict
 from .engine import TERMINAL, Engine, StoreUnavailable
 from .files import FileNotFound
 
 KEEP_ALIVE = 15.0  # seconds without news before a stream says it's still there
+_WHO: ContextVar[Any] = ContextVar("llamphouse_caller", default=ANONYMOUS)  # this request's caller
 
 
 def _message(body: dict[str, Any]) -> Message:
-    sender = body.get("sender") or {}
+    sender = sender_of(_WHO.get(), body.get("sender"))  # the caller: another sender only if it may act for others
     kind = sender.get("kind", "person")
     who = Sender(kind=SenderKind(kind) if kind in SenderKind._value2member_map_ else kind,
                  id=sender.get("id", "user"), name=sender.get("name"))
@@ -83,13 +92,25 @@ def _sse(event: str, data: Any, id: Any = None) -> str:
     return (f"id: {id}\n" if id is not None else "") + f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = True) -> FastAPI:
-    """The API for an engine; the caller opens and closes the engine (see `llamphouse.runtime.server`)."""
+def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = True,
+               auth: Authenticator | None = None, access: Access | None = None) -> FastAPI:
+    """The API for an engine; the caller opens and closes the engine (see `llamphouse.runtime.server`).
+    `auth`: who may call (none: everyone, as `anonymous`); `api_key`: one more key it accepts. `access`:
+    which threads a caller may touch (default: every thread)."""
     app = FastAPI(title="llamphouse 2.0", version="2.0.0a")
+    authenticator = auth or Authenticator()
+    if api_key:
+        authenticator = Authenticator([*authenticator.auths, ApiKeyAuth([api_key])])
+    access = access or Access()
+    open_access = type(access) is Access
 
-    def authorized(authorization: str | None = Header(default=None), key: str | None = None) -> None:
-        if api_key is not None and authorization != f"Bearer {api_key}" and key != api_key:
-            raise HTTPException(401, "a Bearer API key is required")
+    async def authenticate(request: Request) -> None:
+        try:
+            who = await authenticator.identify(request)
+        except AuthError as e:
+            raise HTTPException(e.status, str(e)) from None
+        _WHO.set(who)
+        request.state.identity = who
 
     @app.exception_handler(ThreadBusy)
     async def busy(_: Request, e: ThreadBusy) -> JSONResponse:
@@ -111,11 +132,20 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     async def unavailable(_: Request, e: StoreUnavailable) -> JSONResponse:
         return JSONResponse({"error": "store_unavailable", "detail": str(e)}, status_code=503)
 
-    async def known(entity_id: str, what: str) -> None:
+    async def known(entity_id: str, what: str, action: str = "read") -> None:
+        """It exists, and this caller may touch it - else 404, the same either way: nothing is learnt about
+        threads one may not see."""
         try:
             await engine._tree(entity_id)
         except KeyError:
             raise HTTPException(404, f"no {what} {entity_id}") from None
+        if open_access:
+            return
+        async with engine.reading(entity_id):
+            thread_id = entity_id if what == "thread" else engine.records[entity_id].thread_id
+            metadata = dict(engine.threads[thread_id].metadata)
+        if not access.allows(_WHO.get(), action, metadata):
+            raise HTTPException(404, f"no {what} {entity_id}")
 
     def run_view(rec: Any) -> dict[str, Any]:  # inside engine.reading
         return {"id": rec.id, "thread": rec.thread_id, "agent": rec.agent, "status": str(rec.status),
@@ -145,7 +175,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         async with engine.reading(run_id):
             return run_view(engine.records[run_id])
 
-    deps = [Depends(authorized)]
+    deps = [Depends(authenticate)]
 
     @app.get("/v2/agents", dependencies=deps)
     async def agents() -> list[dict[str, Any]]:
@@ -156,7 +186,8 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         if body.get("agent") not in engine._agents:
             raise HTTPException(404, f"no agent {body.get('agent')!r}")
         session = [_message(m) for m in body["session"]] if body.get("session") is not None else None
-        ref = await engine.thread(body["agent"], metadata=body.get("metadata"), state=body.get("state"),
+        metadata = {**(body.get("metadata") or {}), **access.stamp(_WHO.get())}  # the stamp can't be forged
+        ref = await engine.thread(body["agent"], metadata=metadata, state=body.get("state"),
                                   config=body.get("config"), session=session)
         return await read_thread(ref.id)
 
@@ -164,6 +195,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     async def threads(request: Request, limit: int = 50, agent: str | None = None,
                       top: bool = False) -> list[dict[str, Any]]:
         metadata = {k.removeprefix("metadata."): v for k, v in request.query_params.items() if k.startswith("metadata.")}
+        metadata.update(access.scope(_WHO.get()))  # only what this caller may see
         found = await engine.store.list_threads(limit=limit, agent=agent, top=top, metadata=metadata or None)
         return [{**t, "created_at": t["created_at"].isoformat() if t["created_at"] else None} for t in found]
 
@@ -173,13 +205,13 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
 
     @app.post("/v2/threads/{thread_id}/messages", dependencies=deps, status_code=201)
     async def append(thread_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        await known(thread_id, "thread")
+        await known(thread_id, "thread", "write")
         message = _message(body)
         return to_dict(await engine.append(ThreadRef(thread_id), *message.parts, by=message.sender))
 
     @app.post("/v2/threads/{thread_id}/close", dependencies=deps)
     async def close_thread(thread_id: str) -> dict[str, Any]:
-        await known(thread_id, "thread")
+        await known(thread_id, "thread", "write")
         await engine.close_thread(ThreadRef(thread_id))
         return await read_thread(thread_id)
 
@@ -216,11 +248,13 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
 
     @app.post("/v2/threads/{thread_id}/runs", dependencies=deps, status_code=201)
     async def start(thread_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        await known(thread_id, "thread")
+        await known(thread_id, "thread", "write")
         async with engine.reading(thread_id):
             agent = engine.threads[thread_id].agent
         message = _message(body)
-        ref = await engine.start(agent, message, thread=ThreadRef(thread_id), by=message.sender)
+        who = _WHO.get()
+        ref = await engine.start(agent, message, thread=ThreadRef(thread_id), by=message.sender,
+                                 identity=None if who is ANONYMOUS else who)
         return await read_run(ref.id)
 
     @app.get("/v2/threads/{thread_id}/runs", dependencies=deps)
@@ -232,6 +266,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     @app.get("/v2/stream/runs", dependencies=deps)
     async def runs_stream(request: Request, agent: str | None = None) -> StreamingResponse:
         metadata = {k.removeprefix("metadata."): v for k, v in request.query_params.items() if k.startswith("metadata.")}
+        who = _WHO.get()
 
         async def events() -> AsyncIterator[str]:
             changes = engine.follow_runs(agent=agent, metadata=metadata or None).__aiter__()
@@ -244,6 +279,8 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
                         continue
                     change = pending.result()
                     pending = asyncio.ensure_future(changes.__anext__())
+                    if not access.allows(who, "read", change.metadata):
+                        continue
                     yield _sse("run.status", {"run": change.run.id, "thread": change.thread.id, "agent": change.agent,
                                               "status": str(change.status), "error": change.error,
                                               "output": change.output, "parent": change.parent.id if change.parent
@@ -261,7 +298,7 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
 
     @app.post("/v2/runs/{run_id}/messages", dependencies=deps, status_code=201)
     async def send(run_id: str, body: dict[str, Any]) -> Any:
-        await known(run_id, "run")
+        await known(run_id, "run", "write")
         message = _message(body)
         try:
             await engine.send_to_run(RunRef(run_id), *message.parts, by=message.sender)
@@ -272,20 +309,20 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
 
     @app.post("/v2/runs/{run_id}/answer", dependencies=deps)
     async def answer(run_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        await known(run_id, "run")
+        await known(run_id, "run", "write")
         message = _message(body)
         accepted = await engine.answer(RunRef(run_id), message, by=message.sender)
         return {"accepted": accepted, "run": await read_run(run_id)}
 
     @app.post("/v2/runs/{run_id}/signal", dependencies=deps)
     async def signal(run_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        await known(run_id, "run")
+        await known(run_id, "run", "write")
         await engine.signal(RunRef(run_id), body["key"], body.get("value"))
         return await read_run(run_id)
 
     @app.post("/v2/runs/{run_id}/cancel", dependencies=deps)
     async def cancel(run_id: str) -> dict[str, Any]:
-        await known(run_id, "run")
+        await known(run_id, "run", "write")
         await engine.cancel(RunRef(run_id))
         return await read_run(run_id)
 
@@ -365,7 +402,8 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
     @app.post("/v2/files", dependencies=deps, status_code=201)
     async def upload(request: Request, name: str | None = None) -> dict[str, Any]:
         part = await engine.upload(await request.body(),
-                                   mime_type=request.headers.get("content-type", "application/octet-stream"), name=name)
+                                   mime_type=request.headers.get("content-type", "application/octet-stream"), name=name,
+                                   by=Sender.person(_WHO.get().subject))
         return to_dict(part)
 
     @app.get("/v2/files/{fid}", dependencies=deps)
@@ -373,12 +411,44 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         record = await engine.file_store.stat(fid)
         if record is None:
             raise HTTPException(404, f"no file {fid}")
+        who = _WHO.get()
+        if record.thread_id is not None:  # a conversation's file: whoever may read the conversation
+            try:
+                await known(record.thread_id, "thread")
+            except HTTPException:
+                raise HTTPException(404, f"no file {fid}") from None
+        elif who is not ANONYMOUS and record.created_by != who.subject:  # an upload nobody used yet: its uploader's
+            raise HTTPException(404, f"no file {fid}")
         try:
             data = await engine.file_store.read_all(fid)
         except FileNotFound:
             raise HTTPException(404, f"no file {fid}") from None
         headers = {"Content-Disposition": f'inline; filename="{record.name}"'} if record.name else {}
         return Response(data, media_type=record.mime_type, headers=headers)
+
+    @app.get("/v2/agents/{name}/config", dependencies=deps)
+    async def agent_config(name: str) -> dict[str, Any]:
+        if name not in engine._agents:
+            raise HTTPException(404, f"no agent {name!r}")
+        effective, stored = await engine.agent_config(name)
+        return {"agent": name, "config": jsonable(effective), "changed": stored.values, "version": stored.version,
+                "updated_by": stored.updated_by,
+                "updated_at": stored.updated_at.isoformat() if stored.updated_at else None,
+                "schema": engine._agents[name].cls.config_schema()}
+
+    @app.put("/v2/agents/{name}/config", dependencies=deps)
+    async def set_agent_config(name: str, body: dict[str, Any]) -> Any:
+        if name not in engine._agents:
+            raise HTTPException(404, f"no agent {name!r}")
+        who = _WHO.get()
+        if not access.may_configure(who, name):
+            raise HTTPException(403, f"{who.subject} may not change {name}'s config")
+        try:
+            await engine.set_agent_config(name, dict(body.get("values") or {}), by=who.subject,
+                                          if_version=body.get("if_version"))
+        except ConfigConflict as e:
+            return JSONResponse({"error": "config_conflict", "detail": str(e)}, status_code=409)
+        return await agent_config(name)
 
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, Any]:

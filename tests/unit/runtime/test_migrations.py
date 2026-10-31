@@ -10,7 +10,7 @@ from llamphouse.runtime import migrations
 POSTGRES = os.environ.get("LLAMPHOUSE_TEST_POSTGRES")
 pytestmark = pytest.mark.skipif(not POSTGRES, reason="no Postgres")
 V2_TABLES = {"llamphouse_trees", "llamphouse_threads", "llamphouse_events", "llamphouse_runs", "llamphouse_sessions",
-             "llamphouse_run_events", "llamphouse_blobs", "llamphouse_files", "llamphouse_traces"}
+             "llamphouse_run_events", "llamphouse_blobs", "llamphouse_files", "llamphouse_traces", "llamphouse_agent_config"}
 
 
 async def empty():
@@ -35,9 +35,9 @@ async def test_a_new_database_gets_the_2_0_tables_only():
     await empty()
     await asyncio.to_thread(migrations.upgrade, POSTGRES)
     assert await tables() == V2_TABLES | {"alembic_version"}
-    assert await migrations.current(POSTGRES) == ["e7a1c2d3f4b5"]
+    assert await migrations.current(POSTGRES) == ["f8b2d3e4a5c6"]
     await asyncio.to_thread(migrations.upgrade, POSTGRES)  # again: nothing to do
-    assert await migrations.current(POSTGRES) == ["e7a1c2d3f4b5"]
+    assert await migrations.current(POSTGRES) == ["f8b2d3e4a5c6"]
 
 
 async def test_a_1x_database_keeps_its_schema_and_gains_the_2_0_one():
@@ -47,7 +47,7 @@ async def test_a_1x_database_keeps_its_schema_and_gains_the_2_0_one():
     assert "threads" in v1 and not V2_TABLES & v1
     await asyncio.to_thread(migrations.upgrade, POSTGRES)
     assert await tables() == v1 | V2_TABLES
-    assert sorted(await migrations.current(POSTGRES)) == sorted(["d4e9f2a3b5c6", "e7a1c2d3f4b5"])  # both heads
+    assert sorted(await migrations.current(POSTGRES)) == sorted(["d4e9f2a3b5c6", "f8b2d3e4a5c6"])  # both heads
 
 
 async def test_a_database_the_prototype_set_up_is_adopted():

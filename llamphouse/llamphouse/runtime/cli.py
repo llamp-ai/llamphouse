@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import ConfigError, Deployment, component
+from .config import LISTS, ConfigError, Deployment, component
 
 COMMANDS = ("up", "check", "db")
 
@@ -119,8 +119,9 @@ def check(config: str | None, agents: list[str]) -> int:
         print(f"agent    {name:<24} {spec.cls.__module__}:{spec.cls.__qualname__}"
               + (f"  session={type(spec.session).__name__}" if spec.session is not None else ""))
     for kind, entry in deployment.runtime.components.items():
-        built = component(kind, entry, f"{deployment.runtime.source}: {kind}")  # constructs; opens nothing
-        print(f"{kind:<8} {type(built).__name__}")
+        for i, one in enumerate(entry if kind in LISTS else [entry]):  # constructs; opens nothing
+            built = component(kind, one, f"{deployment.runtime.source}: {kind}" + (f"[{i}]" if kind in LISTS else ""))
+            print(f"{kind:<8} {type(built).__name__}")
     if not deployment.runtime.components:
         print("runtime  in memory (no runtime file, or no components in it)")
     print("ok")

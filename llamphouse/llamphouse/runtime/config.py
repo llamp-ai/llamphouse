@@ -25,6 +25,9 @@ A runtime file - one per environment:
     apiVersion: llamphouse.io/v1alpha1
     kind: Runtime
     data_store: {postgres: {dsn: ${LLAMPHOUSE_DATABASE_URL}}}
+    config_store: {postgres: {dsn: ${LLAMPHOUSE_DATABASE_URL}}}
+    auth: [{api_key: {keys: ["${LLAMPHOUSE_API_KEY}"]}}]
+    access: {tenant: {}}
     run_queue:  {redis: {url: ${LLAMPHOUSE_REDIS_URL}}}
     event_queue: {redis: {url: ${LLAMPHOUSE_REDIS_URL}}}
     file_store: {postgres: {dsn: ${LLAMPHOUSE_DATABASE_URL}}}
@@ -75,7 +78,14 @@ REGISTRY: dict[str, dict[str, str]] = {
                 "clickhouse": "llamphouse.runtime.tracing.stores:ClickHouseTracingStore"},
     "sessions": {"rolling_window": "llamphouse.runtime.sessions:RollingWindow",
                  "summarizing": "llamphouse.runtime.sessions:Summarizing"},
+    "config_store": {"in_memory": "llamphouse.runtime.config_store:MemoryConfigStore",
+                     "postgres": "llamphouse.runtime.config_store:PostgresConfigStore"},
+    "auth": {"api_key": "llamphouse.runtime.auth:ApiKeyAuth",
+             "oidc": "llamphouse.runtime.auth:OidcAuth"},
+    "access": {"open": "llamphouse.runtime.auth:Access",
+               "tenant": "llamphouse.runtime.auth:TenantAccess"},
 }
+LISTS = {"auth"}  # kinds given as a list of entries
 
 ENGINE_OPTIONS = {"workers", "lease_ttl", "redeliver", "window", "upload_ttl", "max_runs_per_root", "max_depth",
                   "max_runs_per_thread", "tick", "cache_ttl"}
@@ -106,7 +116,8 @@ def expand(value: Any, where: str = "") -> Any:
     if isinstance(value, Mapping):
         if set(value) == {"import"}:
             return import_object(str(value["import"]), where)
-        return {k: expand(v, f"{where}.{k}" if where else str(k)) for k, v in value.items()}
+        return {expand(k, where) if isinstance(k, str) else k: expand(v, f"{where}.{k}" if where else str(k))
+                for k, v in value.items()}  # keys too: an API key is often one
     if isinstance(value, list):
         return [expand(v, f"{where}[{i}]") for i, v in enumerate(value)]
     return value
@@ -225,8 +236,8 @@ class RuntimeSpec:
 
 AGENT_SPEC_KEYS = {"definition", "entrypoint", "display_name", "config", "session", "env", "secrets", "pool",
                    "triggers", "permissions", "publish", "execution", "mode", "image", "requirements"}
-RUNTIME_KEYS = {*REGISTRY, "engine", "env", "secrets", "secrets_store", "topology", "auth", "adapters",
-                "config_store", "scheduler", "identity", "notifications", "remote_agents"}
+RUNTIME_KEYS = {*REGISTRY, "engine", "env", "secrets", "secrets_store", "topology", "adapters", "scheduler",
+                "identity", "notifications", "remote_agents"}
 
 
 def read_documents(paths: Iterable[str | Path]) -> list[tuple[dict, Path]]:
@@ -312,6 +323,22 @@ class Deployment:
                                            else {}, source="python")
         return found
 
+    def authenticator(self, *, api_key: str | None = None) -> Any:
+        """The runtime file's `auth` (in order), and an extra API key (the command line's, LLAMPHOUSE_API_KEY)."""
+        from .auth import ApiKeyAuth, Authenticator
+
+        auths = [component("auth", entry, f"{self.runtime.source}: auth[{i}]")
+                 for i, entry in enumerate(self.runtime.components.get("auth") or [])]
+        if api_key:
+            auths.append(ApiKeyAuth([api_key]))
+        return Authenticator(auths)
+
+    def access(self) -> Any:
+        from .auth import Access
+
+        entry = self.runtime.components.get("access")
+        return component("access", entry, f"{self.runtime.source}: access") if entry else Access()
+
     def apply_environment(self) -> None:
         """The env and secrets the files ask for, into this process's environment (agents' after the
         runtime's: an agent's own value wins)."""
@@ -331,6 +358,7 @@ class Deployment:
         built = {
             "store": ("data_store", None), "queue": ("run_queue", None), "bus": ("event_queue", None),
             "file_store": ("file_store", None), "tracing_store": ("tracing", None),
+            "config_store": ("config_store", None),
         }
         for option, (kind, _) in built.items():
             if option in overrides:
@@ -352,6 +380,21 @@ class Deployment:
         options.update(overrides)
         if role == "api":
             options["workers"] = 0
+        permissions = {}
+        for name, spec in self.agents.items():
+            if spec.permissions:
+                from .engine import Permissions
+
+                try:
+                    permissions[name] = Permissions.parse(spec.permissions)
+                except ValueError as e:
+                    raise ConfigError(f"{spec.source}: agent {name!r}: {e}") from e
+                unknown = [a for a in (permissions[name].agents or ()) if a not in self.agents]
+                if unknown:
+                    raise ConfigError(f"{spec.source}: agent {name!r}: permissions.agents names unknown agent(s) "
+                                      f"{unknown}")
+        if permissions:
+            options.setdefault("permissions", permissions)
         agents = {}
         for name, spec in self.agents.items():
             config_cls = spec.cls.config_class() if hasattr(spec.cls, "config_class") else None
@@ -396,8 +439,10 @@ def _runtime(doc: dict, path: Path) -> RuntimeSpec:
     spec.env = {k: str(v) for k, v in expand(doc.get("env") or {}, f"{where}: env").items()}
     spec.secrets = dict(doc.get("secrets") or {})
     spec.secrets_store = dict(doc.get("secrets_store") or {})
-    spec.rest = {k: doc[k] for k in ("auth", "adapters", "config_store", "scheduler", "identity", "notifications",
-                                     "remote_agents", "topology") if k in doc}
+    spec.rest = {k: doc[k] for k in ("adapters", "scheduler", "identity", "notifications", "remote_agents",
+                                     "topology") if k in doc}
+    if "auth" in spec.components and not isinstance(spec.components["auth"], list):
+        raise ConfigError(f"{where}: auth: a list of entries, e.g. [{{api_key: {{keys: [...]}}}}]")
     return spec
 
 

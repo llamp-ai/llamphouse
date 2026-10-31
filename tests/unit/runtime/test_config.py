@@ -161,7 +161,7 @@ def test_check_says_what_there_is(tmp_path, capsys, monkeypatch):
 def test_db_upgrade_and_current(capsys):
     cli(["db", "upgrade", "--database-url", POSTGRES])
     cli(["db", "current", "--database-url", POSTGRES])
-    assert "e7a1c2d3f4b5" in capsys.readouterr().out
+    assert "f8b2d3e4a5c6" in capsys.readouterr().out
     cli(["db", "upgrade", "--database-url", POSTGRES, "--sql"])
     assert "llamphouse_runs" in capsys.readouterr().out
 
@@ -188,3 +188,42 @@ def test_up_runs_a_process_and_the_1x_form_still_works(tmp_path):
     finally:
         proc.terminate()
         proc.wait(10)
+
+
+async def test_auth_access_config_store_and_permissions_from_the_files(tmp_path, monkeypatch):
+    from llamphouse.runtime.auth import TenantAccess
+    from llamphouse.runtime.config_store import MemoryConfigStore
+    from llamphouse.runtime.server import app
+
+    monkeypatch.setenv("ACME_KEY", "k-acme")
+    agents = write(tmp_path, "agents.yaml", f"""
+        kind: Agent
+        metadata: {{name: hr}}
+        spec:
+          entrypoint: {HERE}/hr_agents.py:Hr
+          permissions: {{agents: [], files: read}}
+    """)
+    runtime = write(tmp_path, "llamphouse.yaml", """
+        kind: Runtime
+        auth:
+          - api_key: {keys: {"${ACME_KEY}": {subject: ann, tenant: acme}}}
+        access: {tenant: {admin_subjects: [ops]}}
+        config_store: in_memory
+    """)
+    engine = build([str(agents)], config=runtime)
+    assert isinstance(engine.config_store, MemoryConfigStore)
+    assert engine.permissions("hr").agents == () and engine.permissions("hr").files == "read"
+    assert isinstance(engine.deployment.access(), TenantAccess)
+    api = app(engine)
+    async with api.router.lifespan_context(api):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://t") as c:
+            assert (await c.get("/v2/agents")).status_code == 401
+            made = await c.post("/v2/threads", json={"agent": "hr"}, headers={"Authorization": "Bearer k-acme"})
+            assert made.status_code == 201 and made.json()["metadata"]["llamphouse.tenant"] == "acme"
+    bad = write(tmp_path, "bad.yaml", f"""
+        kind: Agent
+        metadata: {{name: hr}}
+        spec: {{entrypoint: {HERE}/hr_agents.py:Hr, permissions: {{agents: [nobody]}}}}
+    """)
+    with pytest.raises(ConfigError, match="unknown agent"):
+        build([str(bad)])

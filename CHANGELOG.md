@@ -69,8 +69,28 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   memory; extras `postgres`, `redis`, `tracing`, `all` (and `v1` for `llamphouse.core` while it remains); a
   missing backend says which extra to install.
 
+- **Who calls, and what they may touch** (`llamphouse.runtime.auth`):
+  - Authenticators, tried in order (runtime file `auth: [...]`): `api_key` (several keys, each with its own
+    identity: subject, tenant, metadata) and `oidc` (JWT bearer tokens against the issuer's JWKS, with
+    tenant and scope checks; `pip install 'llamphouse[oidc]'`), or your own `Auth`. None configured:
+    everyone is `anonymous`.
+  - The caller is the sender of its messages and the caller of its runs (`ctx.run.caller`); it names
+    another sender only when its identity may act for others (`metadata.act_as`).
+  - Access (`access:`): open by default; `tenant` keeps tenants apart - threads are stamped with their
+    creator's tenant (`llamphouse.tenant`, inherited by threads runs create), and a caller sees and acts
+    only on its own; a thread it may not touch answers 404. Files follow their thread; uploads their
+    uploader. Your own policy as an `Access`.
+- **Agent permissions** (an agent file's `permissions`): `agents` (whom it may call or hand over to; what
+  `ctx.agents.list()` shows) and `files` (`none`, `read`, `read-write`), enforced by the runtime.
+- **The config store** (`llamphouse.runtime.config_store`: in-memory, Postgres): an agent's config changed
+  at runtime for every process, from their next run on (`engine.set_agent_config`, `GET` / `PUT
+  /v2/agents/{name}/config` with `if_version`); a run's config is the file's, then the store's, then its
+  thread's. Checked against the agent's Config before it is kept.
+
 ### Changed (before 2.0.0a0 was released)
 
+- A thread's `config` keeps only the values given (checked whole), so the file's and the store's still
+  apply under it.
 - Against loops, `Engine(max_runs_per_root=1000, max_depth=50)`: the runs one run started by the app may
   lead to, and how deep. There is no limit on runs per thread any more (`max_runs_per_thread`: a cap
   only if set); `max_runs_per_tree` still works, as the old name of `max_runs_per_root`.

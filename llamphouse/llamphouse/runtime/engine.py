@@ -69,6 +69,7 @@ from llamphouse.runtime.files import FileRecord, FileService, InMemoryFileStore,
 from llamphouse.runtime.sessions import RollingWindow, SessionInfo, SessionProvider
 from llamphouse.runtime.bus import Bus, MemoryBus
 from llamphouse.runtime.codec import decode, encode, jsonable
+from llamphouse.runtime.config_store import AgentConfig, ConfigStore, MemoryConfigStore
 from llamphouse.runtime.queue import JobQueue, MemoryQueue
 from llamphouse.runtime.store import EventRow, MemoryStore, Row, Rows, Store, StoreTx
 from llamphouse.runtime.tracing import REVISE, RUN, STEP, Tracing
@@ -94,6 +95,39 @@ _COPY = object()  # the default `session=` of a fork: a copy of the forking run'
 
 class Crash(BaseException):
     """The worker process dies: nothing is cleaned up, the run's lease stays until it expires."""
+
+
+FILE_ACCESS = ("none", "read", "read-write")
+
+
+@dataclass(frozen=True)
+class Permissions:
+    """What an agent instance may use - the deployment's say, enforced by the runtime (its agent file's
+    `permissions`). `agents`: the agents it may call or hand over to (None: any); `files`: none, read
+    (`get`), or read-write (`get` and `put`). Forks of itself are always allowed."""
+
+    agents: tuple[str, ...] | None = None
+    files: str = "read-write"
+
+    @classmethod
+    def parse(cls, value: "Permissions | Mapping[str, Any] | None") -> "Permissions":
+        if value is None:
+            return cls()
+        if isinstance(value, Permissions):
+            return value
+        unknown = set(value) - {"agents", "files"}
+        if unknown:
+            raise ValueError(f"permissions: unknown key(s) {sorted(unknown)} - agents, files")
+        agents = value.get("agents", "*")
+        if agents != "*" and not (isinstance(agents, (list, tuple)) and all(isinstance(a, str) for a in agents)):
+            raise ValueError(f"permissions.agents: '*' or a list of agent names, not {agents!r}")
+        files = value.get("files", "read-write")
+        if files not in FILE_ACCESS:
+            raise ValueError(f"permissions.files: one of {FILE_ACCESS}, not {files!r}")
+        return cls(agents=None if agents == "*" else tuple(agents), files=files)
+
+    def may_call(self, agent: str) -> bool:
+        return self.agents is None or agent in self.agents
 
 
 @dataclass(frozen=True)
@@ -490,6 +524,8 @@ class Engine:
         bus: Bus | None = None,
         file_store: Any = None,
         tracing_store: "BaseTracingStore | None" = None,
+        config_store: "ConfigStore | None" = None,
+        permissions: Mapping[str, "Permissions | Mapping[str, Any]"] | None = None,
     ):
         self._agents: dict[str, _Entry] = {}
         self._offered = set(capabilities)
@@ -518,6 +554,13 @@ class Engine:
         self.files = FileService(self.file_store, emit=self._system_event)
         self.tracing_store = tracing_store
         self.tracing = Tracing(tracing_store)
+        self.config_store: ConfigStore = config_store if config_store is not None else MemoryConfigStore()
+        self._config_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # agent -> (until, its store values)
+        self.config_ttl = 30.0  # seconds a process trusts its copy of an agent's stored config; changes arrive sooner
+        unknown = set(permissions or {}) - set(self._agents)
+        if unknown:
+            raise ValueError(f"permissions for unknown agent(s) {sorted(unknown)}")
+        self._permissions = {name: Permissions.parse((permissions or {}).get(name)) for name in self._agents}
         self.max_runs_per_root = max_runs_per_tree if max_runs_per_tree is not None else max_runs_per_root  # (its old name)
         self.max_depth, self.max_runs_per_thread = max_depth, max_runs_per_thread
         self._sessions = sessions if sessions is not None else RollingWindow(window)
@@ -549,10 +592,11 @@ class Engine:
     async def open(self) -> "Engine":
         """Connect, and start the workers (and, on a real clock, the sweeper)."""
         self.tracing.open()
-        for part in (self.store, self.queue, self.bus, self.file_store):
+        for part in (self.store, self.queue, self.bus, self.file_store, self.config_store):
             if hasattr(part, "open"):
                 await part.open()
         self._workers = [asyncio.create_task(self._worker()) for _ in range(self.n_workers)]
+        self._workers.append(asyncio.create_task(self._config_news()))
         if self._tick:
             self._workers.append(asyncio.create_task(self._janitor()))
         return self
@@ -573,7 +617,7 @@ class Engine:
                         self._enqueue(mine)
             except Exception:  # noqa: BLE001 - its lease expires instead
                 log.warning("could not hand back %s", rec.id, exc_info=True)
-        for part in (self.bus, self.queue, self.store, self.file_store):
+        for part in (self.bus, self.queue, self.store, self.file_store, self.config_store):
             if hasattr(part, "close"):
                 await part.close()
         self.tracing.flush()
@@ -759,9 +803,9 @@ class Engine:
           summary of an earlier thread this one continues."""
         entry = self._entry(agent)
         validated = None
-        if config is not None:
-            merged = {**entry.config.model_dump(), **config}
-            validated = entry.cls.config_class().model_validate(merged).model_dump(mode="json")
+        if config is not None:  # checked whole; kept as given: the file's and the store's still apply under it
+            merged = entry.cls.config_class().model_validate({**entry.config.model_dump(), **config})
+            validated = {k: v for k, v in merged.model_dump(mode="json").items() if k in config}
         thread_id = self._id("thread")
         async with self._tx(thread_id):
             t = _Thread(thread_id, agent, created_at=self.now, tree=thread_id, metadata=dict(metadata or {}),
@@ -823,7 +867,8 @@ class Engine:
             self._deliver(thread_id, message)
 
     async def start(self, agent: str, input: Value = None, *, thread: ThreadRef | None = None,
-                    by: Sender = Sender.service("api"), request: Request | None = None) -> RunRef:
+                    by: Sender = Sender.service("api"), request: Request | None = None,
+                    identity: Identity | None = None) -> RunRef:
         """The primitive: a run, as the API starts one - e.g. a workflow with its Input as data. On a thread
         with an active run: ThreadBusy."""
         message = as_input(input, by)
@@ -834,7 +879,7 @@ class Engine:
         message = await self._file_message(thread.id, message, by.id)
         async with self._tx(tree):
             return self._start_on(thread.id, message, request=request or Request(),
-                                  identity=Identity(subject=by.id)).ref
+                                  identity=identity or Identity(subject=by.id)).ref
 
     def _validated(self, agent: str, message: Message) -> Message:
         """For a Workflow: the input message with its data validated against Input."""
@@ -887,6 +932,53 @@ class Engine:
         """An event from an outside system."""
         async with self._tx(await self._tree(thread.id)):
             return self._append(thread.id, kind, data=data)
+
+    # ── agents' config ──────────────────────────────────────────────────────
+
+    async def _stored_config(self, agent: str) -> dict[str, Any]:
+        """The values changed at runtime for an agent (the config store's), as this process has them."""
+        cached = self._config_cache.get(agent)
+        if cached is not None and cached[0] > time.monotonic():
+            return cached[1]
+        values = (await self.config_store.get(agent)).values
+        self._config_cache[agent] = (time.monotonic() + self.config_ttl, values)
+        return values
+
+    async def _config_news(self) -> None:
+        """Changes from any process: forget this process's copy, so the next run reads the store."""
+        try:
+            async with self.bus.listen("config") as news:
+                while True:
+                    got = await news.get(None)
+                    if got is not None:
+                        self._config_cache.pop(got[1].get("agent", ""), None)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - copies still expire on their own (config_ttl)
+            log.warning("not listening for config changes", exc_info=True)
+
+    async def agent_config(self, agent: str) -> tuple[Config, AgentConfig]:
+        """An agent's config as its runs get it (the file's, with the store's changes), and what the store
+        holds for it."""
+        entry = self._entry(agent)
+        stored = await self.config_store.get(agent)
+        return entry.cls.config_class().model_validate({**entry.config.model_dump(), **stored.values}), stored
+
+    async def set_agent_config(self, agent: str, values: Mapping[str, Any], *, by: str | None = None,
+                               if_version: int | None = None) -> AgentConfig:
+        """Change an agent's config for every process, from their next run on: `values` replace what the
+        store held (`{}`: back to the file's). Checked against the agent's Config first (ValidationError);
+        ConfigConflict when `if_version` isn't the store's version."""
+        entry = self._entry(agent)
+        checked = entry.cls.config_class().model_validate({**entry.config.model_dump(), **values})
+        kept = {k: v for k, v in checked.model_dump(mode="json").items() if k in values}
+        stored = await self.config_store.set(agent, kept, by=by, if_version=if_version)
+        self._config_cache.pop(agent, None)
+        await self.bus.publish("config", {"agent": agent, "version": stored.version})
+        return stored
+
+    def permissions(self, agent: str) -> Permissions:
+        return self._permissions[agent]
 
     def _change(self, tree: _Tree, rec: RunRecord) -> dict[str, Any]:
         t = tree.threads.get(rec.thread_id)
@@ -1448,6 +1540,10 @@ class Engine:
             entry = self._agents[rec.agent]
             ctx = _Context(self, rec, entry)
             self._executing[rec.id] = ctx
+        try:
+            ctx._stored_config = await self._stored_config(rec.agent)
+        except Exception:  # noqa: BLE001 - the store is away: the file's config, rather than no run
+            log.warning("config store unavailable for %s: the file's config", rec.agent, exc_info=True)
         heartbeat = asyncio.create_task(self._heartbeat(ctx)) if self._tick else None
         # this execution's span: current while the agent runs, so the spans its code makes nest under it
         with self.tracing.span(RUN, {"run.id": rec.id, "llamphouse.run_id": rec.id, "thread.id": rec.thread_id,
@@ -1606,6 +1702,7 @@ class _Context:
         self._fresh = False  # past the recorded history: emitted events are new
         self._span: Any = None  # this execution's span, when traced
         self.lost = False  # another worker has the run now: stop, write nothing
+        self._stored_config: dict[str, Any] = {}  # the config store's values for its agent, read when it started
 
     def _tx(self) -> Any:
         """A transaction on the run's tree, on behalf of the run."""
@@ -1618,11 +1715,14 @@ class _Context:
     input = property(lambda self: self._rec.input)
     @property
     def config(self) -> Config:
-        """The thread's config for this agent, if it has one; the engine's otherwise."""
+        """The agent's config for this run: the file's, then what was changed at runtime (the config store),
+        then the thread's own (if it has one for this agent)."""
         t = self._sc.threads[self._rec.thread_id]
-        if t.config is not None and t.config_agent == self._rec.agent:
-            return self._entry.cls.config_class().model_validate(t.config)
-        return self._entry.config
+        thread = t.config if t.config is not None and t.config_agent == self._rec.agent else None
+        if not self._stored_config and not thread:
+            return self._entry.config
+        return self._entry.cls.config_class().model_validate(
+            {**self._entry.config.model_dump(), **self._stored_config, **(thread or {})})
 
     @property
     def me(self) -> AgentIdentity:
@@ -1726,13 +1826,18 @@ class _Context:
             self._rec.steps[key] = ids
         return [_ThreadHandle(self, t) for t in ids]
 
+    def _may_call(self, agent: str) -> None:
+        self._sc._entry(agent)  # a known agent
+        if not self._sc.permissions(self._rec.agent).may_call(agent):
+            raise AgentError("not_permitted", f"{self._rec.agent} may not call {agent} (its permissions.agents)")
+
     async def call(self, agent: str, *content: Content, session: SessionSeed = None,
                    detach: bool = False) -> "_ThreadHandle":
-        self._sc._entry(agent)  # a known agent (permissions, in the real runtime)
+        self._may_call(agent)
         return await self._create_thread("call", agent, content, session=session, detach=detach)
 
     async def handover(self, agent: str, *, session: SessionSeed = None) -> NoReturn:
-        self._sc._entry(agent)
+        self._may_call(agent)
         raise _Handover(agent, session)
 
     async def _create_thread(self, name: str, agent: str, content: Sequence[Content], *, session: Any,
@@ -1916,7 +2021,10 @@ class _Context:
         if kind not in self._sc._offered:
             return None
         if kind is Files:
-            return _Files(self)  # type: ignore[return-value]
+            access = self._sc.permissions(self._rec.agent).files
+            if access == "none":
+                return None
+            return _Files(self, write=access == "read-write")  # type: ignore[return-value]
         if kind is Scheduler:
             return _Scheduler(self._sc)  # type: ignore[return-value]
         return None
@@ -2454,7 +2562,9 @@ class _Agents:
         self.ctx = ctx
 
     def list(self) -> Sequence[AgentInfo]:
-        return [e.cls.describe(name) for name, e in self.ctx._sc._agents.items()]
+        """The agents this one may call (its permissions)."""
+        mine = self.ctx._sc.permissions(self.ctx._rec.agent)
+        return [e.cls.describe(name) for name, e in self.ctx._sc._agents.items() if mine.may_call(name)]
 
     def as_tools(self) -> Sequence[ToolSpec]:
         return [ToolSpec(name=i.name, description=i.description,
@@ -2463,13 +2573,15 @@ class _Agents:
 
 
 class _Files:
-    def __init__(self, ctx: _Context):
-        self.ctx = ctx
+    def __init__(self, ctx: _Context, write: bool = True):
+        self.ctx, self.write = ctx, write
 
     async def put(self, data: bytes, *, mime_type: str, name: str | None = None) -> FilePart:
         """Recorded like a step: a replay returns the same reference instead of storing again.
         No thread until a message references it."""
         ctx = self.ctx
+        if not self.write:
+            raise AgentError("not_permitted", f"{ctx._rec.agent} may read files, not store them (permissions.files)")
         key = ctx._key("files.put")
         done, part = ctx._replay(key)
         if done:

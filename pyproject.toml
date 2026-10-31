@@ -48,7 +48,8 @@ tracing = [
     "opentelemetry-exporter-otlp>=1.39,<2",
     "httpx>=0.27,<1",  # the ClickHouse tracing store
 ]
-all = ["llamphouse[postgres,redis,tracing]"]
+oidc = ["PyJWT[crypto]>=2.8,<3", "httpx>=0.27,<1"]
+all = ["llamphouse[postgres,redis,tracing,oidc]"]
 ag-ui = ["ag-ui-protocol>=1.0,<2"]
 # llamphouse.core (1.x), while it is still in the package
 v1 = [
