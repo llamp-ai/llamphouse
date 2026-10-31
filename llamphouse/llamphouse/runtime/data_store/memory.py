@@ -182,6 +182,20 @@ class MemoryStore(Store):
         out.sort(key=lambda x: x["created_at"].timestamp() if x["created_at"] else 0.0, reverse=True)
         return out[:limit]
 
+    async def list_sessions(self, *, agent: str | None = None, revising: bool | None = None,
+                            thread_metadata: dict[str, Any] | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        out = []
+        for tree, _, r in self.data.sessions.values():
+            m = r.meta
+            if (agent and m.get("agent") != agent) or (revising is not None and bool(m["revising"]) != revising):
+                continue
+            if not self._thread_ok(m["thread_id"], thread_metadata):
+                continue
+            out.append({"id": r.id, "tree_id": tree, "thread_id": m["thread_id"], "agent": m.get("agent"),
+                        "revising": bool(m["revising"]), "updated_at": m.get("updated_at"), "text": r.text})
+        out.sort(key=lambda x: (x["revising"], x["updated_at"].timestamp() if x["updated_at"] else 0.0), reverse=True)
+        return out[:limit]
+
     async def stats(self, since: datetime, *, thread_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         runs = [r.meta for _, _, r in self.data.runs.values() if self._thread_ok(r.meta["thread_id"], thread_metadata)]
         return _stats(runs, since, sum(1 for _, _, t in self.data.threads.values()

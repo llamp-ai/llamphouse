@@ -6,6 +6,8 @@
     GET  /v2/compass/runs?agent=&status=        runs across threads, newest first
     GET  /v2/compass/runs/{id}/debug            why it is where it is, its story, steps, subscriptions, trees
     GET  /v2/compass/threads/{id}/tree          the threads created from it
+    GET  /v2/compass/sessions?agent=&revising=  sessions, those being compacted first: who works on it, since when
+    GET  /v2/compass/sessions/{id}              a session: what it keeps, what its agent sees, every compaction
     GET  /v2/compass/agents[/{name}]            agents with their config, permissions, triggers and numbers
     GET  /v2/compass/traces[?agent=]            recent traces; /v2/compass/traces/{run} a run's spans
     GET  /v2/compass/schedules                  schedules and when they fire; POST .../{id}/fire: now
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import re
 import time
 import uuid
@@ -31,7 +34,9 @@ from llamphouse.sdk import RunRef, ThreadRef
 from llamphouse.sdk.vocab import RunStatus
 
 from ..auth import ANONYMOUS
-from ..codec import jsonable
+from llamphouse.sdk.wire import to_dict
+
+from ..codec import decode, jsonable
 from ..engine import TERMINAL
 from .explain import run_tree, short, steps, story, thread_tree, waits_on, why
 
@@ -121,6 +126,76 @@ def mount_api(app: Any, gw: Any) -> None:
                                              before=datetime.fromisoformat(before) if before else None)
         return jsonable(found)
 
+    # ── sessions: working memory, its compactions, and the revision at work ─────
+
+    def session_view(ses: Any, updated_at: Any = None, full: bool = False) -> dict[str, Any]:
+        """A session as Compass shows it (inside engine.reading, or decoded from the store)."""
+        provider = engine._provider(ses.agent)
+        try:
+            seen = list(provider.view(engine._info(ses)))
+        except Exception as e:  # noqa: BLE001 - a provider's view that fails is shown as such
+            seen, view_error = [], repr(e)
+        else:
+            view_error = None
+        log = [dict(e) for e in ses.log]
+        revisions, current = [], None
+        for e in log:  # each compaction: when it was asked, when it ended, what it did
+            kind = e.get("kind", "")
+            if kind == "session.revision.started":
+                current = {"asked_at": e.get("time"), "options": e.get("options"), "at_position": e.get("at"),
+                           "version_before": e.get("version"), "outcome": "working", "ended_at": None}
+                revisions.append(current)
+            elif kind.startswith("session.revision.") and current is not None:
+                current.update(outcome=kind.rsplit(".", 1)[-1], ended_at=e.get("time"), before=e.get("before"),
+                               after=e.get("after"), error=e.get("error"), version_after=e.get("version"))
+                current = None
+        working = None
+        if ses.revising:
+            working = {"since": revisions[-1]["asked_at"] if revisions else None, "options": ses.options,
+                       "worker": ses.revision_owner, "here": ses.revision_owner == engine.id,
+                       "state": "revising" if ses.revision_owner else "waiting for a worker",
+                       "due": _iso(ses.revision_due)}
+        out = {"id": ses.id, "thread": ses.thread_id, "agent": ses.agent, "provider": type(provider).__name__,
+               "version": ses.version, "revisions": ses.revisions, "revising": ses.revising, "working": working,
+               "kept": len(ses.messages), "seen": len(seen), "view_error": view_error,
+               "runs": sorted(r.id for r in ses.runs), "forked_from": ses.forked_from,
+               "updated_at": _iso(updated_at), "last": next((r for r in reversed(revisions) if r["outcome"] != "working"),
+                                                            None)}
+        if full:
+            own = lambda m: m.id in ses.inherited_own or m.sender.run in ses.runs  # noqa: E731
+            out.update(compactions=revisions, log=jsonable(log),
+                       messages=[{**to_dict(m), "own": own(m)} for m in ses.messages],
+                       view=[{**to_dict(m), "own": own(m)} for m in seen])
+        return out
+
+    @app.get(f"{P}/sessions", dependencies=auth)
+    async def sessions(agent: str | None = None, revising: bool | None = None, limit: int = 100) -> dict[str, Any]:
+        found = await engine.store.list_sessions(agent=agent, revising=revising, thread_metadata=gw.scope() or None,
+                                                 limit=min(limit, 500))
+        items = []
+        for row in found:
+            try:
+                items.append(session_view(decode(json.loads(row["text"])), row["updated_at"]))
+            except Exception:  # noqa: BLE001 - one that can't be read doesn't hide the others
+                items.append({"id": row["id"], "thread": row["thread_id"], "agent": row["agent"],
+                              "revising": row["revising"], "error": "can't be read here"})
+        working = [i for i in items if i.get("revising")]
+        return {"sessions": items, "revising": len(working),
+                "waiting_for_worker": sum(1 for i in working if (i.get("working") or {}).get("worker") is None),
+                "workers_here": engine.n_workers}
+
+    @app.get(f"{P}/sessions/{{session_id}}", dependencies=auth)
+    async def session_detail(session_id: str) -> dict[str, Any]:
+        try:
+            async with engine.reading(session_id):
+                ses = engine.sessions[session_id]
+                thread_id = ses.thread_id
+        except KeyError:
+            raise HTTPException(404, f"no session {session_id}") from None
+        await gw.known(thread_id, "thread")
+        async with engine.reading(session_id):
+            return session_view(engine.sessions[session_id], full=True)
+
     @app.get(f"{P}/runs/{{run_id}}/debug", dependencies=auth)
     async def debug(run_id: str) -> dict[str, Any]:
         await gw.known(run_id, "run")
@@ -208,7 +283,7 @@ def mount_api(app: Any, gw: Any) -> None:
             curl += f" -H 'Authorization: Bearer ${t.secret_env or 'SECRET'}'"
         elif kind == "signature":
             curl += f" -H '{t.signature.get('header', 'X-Hub-Signature-256')}: sha256=<HMAC of the body>'"
-        curl += f" -d '{__import__('json').dumps(example or {'text': 'hello'})}'"
+        curl += f" -d '{json.dumps(example or {'text': 'hello'})}'"
         return {"agent": agent_name, "name": t.name, "path": t.path, "auth": kind, "label": t.label,
                 "message": t.message, "thread_metadata": t.thread_metadata, "idempotency": t.idempotency,
                 "busy": t.busy, "curl": curl}

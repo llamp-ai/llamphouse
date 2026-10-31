@@ -13,6 +13,8 @@ const router = createRouter({
     { path: '/threads/:threadId/runs/:runId', redirect: to => `/runs/${to.params.runId}` },
     { path: '/runs', name: 'runs', component: view('RunsView') },
     { path: '/runs/:runId', name: 'run', component: view('RunDetailView') },
+    { path: '/sessions', name: 'sessions', component: view('SessionsView') },
+    { path: '/sessions/:sessionId', name: 'session', component: view('SessionDetailView') },
     { path: '/compare', name: 'compare', component: view('CompareView') },
     { path: '/traces', name: 'traces', component: view('TracesView') },
     { path: '/traces/:runId', name: 'trace-detail', component: view('TraceDetailView') },

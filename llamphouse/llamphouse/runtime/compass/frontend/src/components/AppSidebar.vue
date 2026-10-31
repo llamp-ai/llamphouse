@@ -22,6 +22,7 @@ const navItems = [
   { to: '/agents',        icon: 'nav-assistants',  label: 'Agents' },
   { to: '/threads',       icon: 'nav-threads',     label: 'Threads' },
   { to: '/runs',          icon: 'nav-runs',        label: 'Runs' },
+  { to: '/sessions',      icon: 'nav-sessions',    label: 'Sessions' },
   { to: '/traces',        icon: 'nav-traces',      label: 'Traces' },
   { to: '/triggers',      icon: 'nav-triggers',    label: 'Triggers' },
   { to: '/subscriptions', icon: 'nav-subs',        label: 'Subscriptions' },
@@ -61,6 +62,7 @@ function isActive(to: string): boolean {
           <svg v-else-if="item.icon === 'nav-compare'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
           <svg v-else-if="item.icon === 'nav-triggers'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           <svg v-else-if="item.icon === 'nav-subs'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <svg v-else-if="item.icon === 'nav-sessions'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
           <svg v-else-if="item.icon === 'nav-learn'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
           <svg v-else-if="item.icon === 'nav-dashboards'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="9" rx="1"/><rect x="13" y="3" width="9" height="9" rx="1"/><rect x="2" y="14" width="9" height="7" rx="1"/><rect x="13" y="14" width="9" height="7" rx="1"/></svg>
         </span>

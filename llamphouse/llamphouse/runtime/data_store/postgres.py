@@ -72,11 +72,12 @@ class _PostgresTx(StoreTx):
                  for o in rows.outbox])
         if rows.sessions:
             await con.executemany(
-                "insert into llamphouse_sessions (id, tree_id, version, thread_id, revising, revision_due, data) "
-                "values ($1, $2, $3, $4, $5, $6, $7::json) on conflict (id) do update set version = excluded.version, "
-                "revising = excluded.revising, revision_due = excluded.revision_due, data = excluded.data",
-                [(r.id, t, version, r.meta["thread_id"], r.meta["revising"], r.meta["revision_due"], r.text)
-                 for r in rows.sessions])
+                "insert into llamphouse_sessions (id, tree_id, version, thread_id, revising, revision_due, data, agent, "
+                "updated_at) values ($1, $2, $3, $4, $5, $6, $7::json, $8, $9) on conflict (id) do update set "
+                "version = excluded.version, revising = excluded.revising, revision_due = excluded.revision_due, "
+                "data = excluded.data, agent = excluded.agent, updated_at = excluded.updated_at",
+                [(r.id, t, version, r.meta["thread_id"], r.meta["revising"], r.meta["revision_due"], r.text,
+                  r.meta.get("agent"), r.meta.get("updated_at")) for r in rows.sessions])
 
     async def commit(self) -> None:
         try:
@@ -218,6 +219,17 @@ class PostgresStore(Store):
                 "where ($1::text is null or r.agent = $1) and ($2::text is null or r.status = $2) "
                 "and ($3::timestamptz is null or r.created_at < $3) " + self._SCOPE.replace("$THREADS", "$5") +
                 " order by r.created_at desc nulls last limit $4", agent, status, before, limit,
+                json.dumps(thread_metadata) if thread_metadata else None)
+        return [dict(r) for r in rows]
+
+    async def list_sessions(self, *, agent: str | None = None, revising: bool | None = None,
+                            thread_metadata: dict[str, Any] | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as con:
+            rows = await con.fetch(
+                "select r.id, r.tree_id, r.thread_id, r.agent, r.revising, r.updated_at, r.data::text as text "
+                "from llamphouse_sessions r where ($1::text is null or r.agent = $1) "
+                "and ($2::boolean is null or r.revising = $2) " + self._SCOPE.replace("$THREADS", "$4") +
+                " order by r.revising desc, r.updated_at desc nulls last limit $3", agent, revising, limit,
                 json.dumps(thread_metadata) if thread_metadata else None)
         return [dict(r) for r in rows]
 

@@ -170,3 +170,54 @@ async def test_tenants_see_only_their_own():
             assert (await g.post("/v2/compass/query", json={"sql": "select 1"})).status_code == 403
     finally:
         await engine.close()
+
+
+class Chatty(Agent):
+    async def run(self, ctx) -> None:
+        await ctx.send(f"heard {ctx.input.text}")
+
+
+async def test_sessions_their_compactions_and_the_revision_at_work():
+    from llamphouse.runtime.sessions import Summarizing
+
+    release = asyncio.Event()
+
+    async def summarize(messages):
+        await release.wait()  # a slow model: the revision stays at work until the test lets it finish
+        return f"summary of {len(messages)}"
+
+    engine = Engine({"chatty": Chatty}, sessions=Summarizing(summarize, max_messages=3, keep=1))
+    await engine.open()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(engine)), base_url="http://h") as c:
+            thread = (await c.post("/v2/threads", json={"agent": "chatty"})).json()["id"]
+            for text in ("one", "two"):
+                run = (await c.post(f"/v2/threads/{thread}/runs", json={"text": text})).json()
+                for _ in range(100):
+                    if (await c.get(f"/v2/runs/{run['id']}")).json()["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.02)
+            for _ in range(100):
+                listed = (await c.get("/v2/compass/sessions")).json()
+                if listed["revising"]:
+                    break
+                await asyncio.sleep(0.02)
+            (s,) = listed["sessions"]
+            assert s["agent"] == "chatty" and s["provider"] == "Summarizing" and s["revising"]
+            assert s["working"]["state"] == "revising" and s["working"]["here"]  # this process's worker has it
+            assert (await c.get("/v2/compass/sessions?revising=false")).json()["sessions"] == []
+            release.set()
+            for _ in range(100):
+                detail = (await c.get(f"/v2/compass/sessions/{s['id']}")).json()
+                if not detail["revising"]:
+                    break
+                await asyncio.sleep(0.02)
+            (done,) = detail["compactions"]
+            assert done["outcome"] == "completed" and done["before"] == 4 and done["after"] == 2  # the summary, and the one kept
+            assert done["asked_at"] and done["ended_at"]
+            assert detail["messages"][0]["parts"][0]["text"] == "summary of 3" and detail["kept"] == len(detail["messages"])
+            assert detail["last"]["outcome"] == "completed"
+            assert (await c.get("/v2/compass/sessions/nope")).status_code == 404
+    finally:
+        release.set()
+        await engine.close()

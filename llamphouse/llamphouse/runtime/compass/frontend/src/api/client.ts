@@ -155,8 +155,26 @@ const qs = (o: Record<string, any>) => {
   return s ? `?${s}` : ''
 }
 
+export interface Compaction {
+  asked_at: string | null; ended_at: string | null; options: Record<string, any>; at_position: number | null
+  version_before: number; version_after?: number; outcome: 'working' | 'completed' | 'declined' | 'failed'
+  before?: number; after?: number; error?: string
+}
+export interface SessionRow {
+  id: string; thread: string; agent: string; provider: string; version: number; revisions: number; revising: boolean
+  working: { since: string | null; options: Record<string, any>; worker: string | null; here: boolean; state: string; due: string | null } | null
+  kept: number; seen: number; view_error: string | null; runs: string[]; forked_from: string | null; updated_at: string | null
+  last: Compaction | null; error?: string
+}
+export interface SessionDetail extends SessionRow {
+  compactions: Compaction[]; log: any[]; messages: (Message & { own: boolean })[]; view: (Message & { own: boolean })[]
+}
+export interface SessionList { sessions: SessionRow[]; revising: number; waiting_for_worker: number; workers_here: number }
+
 export const v2 = {
   info: () => api<Info>(`${C}/info`),
+  sessions: (q: { agent?: string; revising?: boolean; limit?: number } = {}) => api<SessionList>(`${C}/sessions${qs(q)}`),
+  sessionDetail: (id: string) => api<SessionDetail>(`${C}/sessions/${encodeURIComponent(id)}`),
   overview: (hours = 24) => api<Overview>(`${C}/overview${qs({ hours })}`),
   lookup: (id: string) => api<{ kind: string; id: string; thread: string; runs?: string[] }>(`${C}/lookup/${encodeURIComponent(id)}`),
 

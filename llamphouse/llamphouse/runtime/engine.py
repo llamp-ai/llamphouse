@@ -449,7 +449,8 @@ class _Tree:
             text = _json(ses)
             if self.digests.get(f"session:{ses.id}") != _digest(text):
                 out.sessions.append(Row(ses.id, {"thread_id": ses.thread_id, "revising": ses.revising,
-                                                 "revision_due": ses.revision_due}, text))
+                                                 "revision_due": ses.revision_due, "agent": ses.agent,
+                                                 "updated_at": self.engine.now}, text))
         return out
 
     def written_out(self, rows: Rows) -> None:
@@ -1602,8 +1603,8 @@ class Engine:
         """A revision: a job, not a run - in the background, on the queue; one at a time per session."""
         s.revising, s.options = True, options
         s.revision_owner, s.revision_due = None, self.now + self.redeliver
-        s.log.append({"kind": "session.revision.started", "options": options, "version": s.version,
-                      "at": self.threads[s.thread_id].last_pos})
+        s.log.append({"kind": "session.revision.started", "time": self.now.isoformat(), "options": options,
+                      "version": s.version, "at": self.threads[s.thread_id].last_pos})
         self._ring(f"revision|{s.tree}|{s.id}")
 
     async def _revision(self, tree_id: str, session_id: str) -> None:
@@ -1640,8 +1641,8 @@ class Engine:
                 if s.revision_owner != self.id:
                     return "superseded"
                 s.revising, s.revision_owner, s.revision_due = False, None, None
-                s.log.append({"kind": "session.revision.failed", "options": options, "error": repr(e),
-                              "version": s.version})
+                s.log.append({"kind": "session.revision.failed", "time": self.now.isoformat(), "options": options,
+                              "error": repr(e), "version": s.version})
                 self._settle_waiters(s)
             return "failed"
         if revised is None:  # the provider declined: nothing to do
@@ -1650,7 +1651,8 @@ class Engine:
                 if s.revision_owner != self.id:
                     return "superseded"
                 s.revising, s.revision_owner, s.revision_due = False, None, None
-                s.log.append({"kind": "session.revision.declined", "options": options, "version": s.version})
+                s.log.append({"kind": "session.revision.declined", "time": self.now.isoformat(), "options": options,
+                              "version": s.version})
                 self._settle_waiters(s)
             return "declined"
         revised = list(revised)
@@ -1662,8 +1664,8 @@ class Engine:
             added = s.messages[len(snapshot):]  # what came in meanwhile survives, after the revised part
             s.messages = revised + added
             s.version, s.revisions, s.revising = s.version + 1, s.revisions + 1, False
-            s.log.append({"kind": "session.revision.completed", "options": options, "version": s.version,
-                          "before": len(snapshot), "after": len(revised)})
+            s.log.append({"kind": "session.revision.completed", "time": self.now.isoformat(), "options": options,
+                          "version": s.version, "before": len(snapshot), "after": len(revised)})
             self._settle_waiters(s)
         return "completed"
 
@@ -2398,8 +2400,8 @@ class _Session:
             s = sc._sync_session(rec)  # in order: the thread first
             entry = Message.create(ctx.sender, *content)
             s.messages.append(entry)
-            s.log.append({"kind": "session.entry.added", "message_id": entry.id, "run": rec.id,
-                          "at": sc.threads[s.thread_id].last_pos})
+            s.log.append({"kind": "session.entry.added", "time": sc.now.isoformat(), "message_id": entry.id,
+                          "run": rec.id, "at": sc.threads[s.thread_id].last_pos})
             sc._decide(s, sc._provider(s.agent).on_entry(sc._info(s), entry))
             rec.steps[key] = entry
         return entry

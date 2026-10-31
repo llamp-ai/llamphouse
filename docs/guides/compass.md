@@ -83,6 +83,20 @@ Each agent's page has:
 
 **Traces** lists recent traces by agent, when a tracing store is configured.
 
+## Sessions
+
+Each agent's working memory on a thread, those being compacted first. The list shows how many sessions are
+being compacted now and how many wait for a worker, and per session: its provider, what the agent sees next to
+what the session keeps, how many compactions it had and what the last one did (`14 → 3`).
+
+A session's page shows the compaction in flight - which worker has it, for how long, and when another worker
+takes it over if it isn't done - and every compaction so far: when it was asked and why, how long it took,
+its outcome (completed, declined, failed) and the messages before and after. Below: what the agent sees
+(`ctx.session.messages()`, the provider's view), the session as kept, and its log.
+
+A compaction (a revision) is a job on the run queue: the same worker slots that execute runs do it. "Waiting
+for a worker" means every slot is busy.
+
 ## Triggers and subscriptions
 
 **Triggers** lists every webhook and schedule of the deployment, with when each schedule fires next.
@@ -123,6 +137,9 @@ triggers and the scheduler, subscriptions. Each comes with a short piece of code
 it in your own deployment.
 
 ## The API behind it
+
+`GET /v2/compass/sessions?agent=&revising=` and `GET /v2/compass/sessions/{id}` serve the Sessions pages.
+
 
 Compass's own endpoints, behind the same auth:
 

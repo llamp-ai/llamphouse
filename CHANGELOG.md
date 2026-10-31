@@ -164,6 +164,11 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   /v2/threads/{id}/runs`, `POST /v2/runs`) answers with the run's stream (SSE), so no text delta is
   missed. `Engine.start(run_id=)` and `new_run_id()` let any caller listen before a run starts.
   The stream says when the run waits for the client (an `input_required` event) and stays open.
+- **Compass: Sessions.** Every session is listed, those being compacted first: the worker that has the
+  compaction and for how long, or that it is waiting for a worker; what the agent sees next to what is
+  kept; and each compaction (asked when and why, how long it took, its outcome, the messages before and
+  after). Backed by `GET /v2/compass/sessions[/{id}]` and `Store.list_sessions`. Sessions record their
+  agent and when they changed (Alembic revision `d3f6a7b8c9e0`), and session log entries have a time.
 - **Client tools over `/v2`:** `"tools": [...]` when starting a run declares the tools the caller runs
   itself, for that run (`ctx.client.tools`), as the adapters already did. A call is answered with a
   `tool_result` part on `/answer`.

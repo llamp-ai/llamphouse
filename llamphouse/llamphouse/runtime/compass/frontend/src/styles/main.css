@@ -469,3 +469,7 @@ textarea.input { font-family: inherit; resize: vertical; }
 .btn--danger { color: var(--error); border-color: var(--error); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .tab .muted { margin-left: 5px; font-weight: 400; }
+
+.callout--info { border-color: var(--info); background: var(--info-dim, transparent); }
+.pill--info { border-color: var(--info); color: var(--info); }
+.pill--warn { border-color: var(--warning); color: var(--warning); }

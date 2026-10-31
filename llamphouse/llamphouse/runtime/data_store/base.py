@@ -160,6 +160,13 @@ class Store(ABC):
     # ── for Compass: runs across threads, statistics, documents, read-only queries ──
 
     @abstractmethod
+    async def list_sessions(self, *, agent: str | None = None, revising: bool | None = None,
+                            thread_metadata: dict[str, Any] | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Sessions, those being revised first, then the latest changed: id, tree_id, thread_id, agent,
+        revising, updated_at and `text` (the stored session). `thread_metadata`: only sessions of threads
+        with all these labels."""
+
+    @abstractmethod
     async def list_runs(self, *, agent: str | None = None, status: str | None = None,
                         thread_metadata: dict[str, Any] | None = None, limit: int = 50,
                         before: datetime | None = None) -> list[dict[str, Any]]:
