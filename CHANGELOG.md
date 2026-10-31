@@ -129,6 +129,9 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
   `auth/`, `sessions/`, `tracing/stores/`, `triggers/`, `notifications/`, `adapters/`. The earlier module
   paths (`runtime.store`, `runtime.queue`, `runtime.bus`, `runtime.files`) still import.
 - httpx is a base dependency (deliveries).
+- **`llamphouse migrate`**: 1.x conversations as 2.0 threads (see Migrating from 1.x), on
+  `Engine.import_thread`, which writes a thread kept elsewhere with its own ids, times and history.
+  Re-runnable.
 - **Compass 2.0** (`llamphouse.runtime.compass`, at `/compass`, its API at `/v2/compass`) - to see, debug
   and learn what agents do, behind the deployment's auth and access (a tenant sees its own):
   - **Overview**: threads, runs per hour by status, who is waiting for someone (asked a question, needs
@@ -180,7 +183,24 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
 - The Assistants-style API (`/assistants`, `/threads/{id}/runs`) becomes `/v2`: create a thread,
   then append, start a run, or send to the active run - and decide in the app what a message means
   while a run is busy.
-- Data is not migrated yet: 1.x threads and runs stay in their tables; a `llamphouse migrate` follows.
+- The Assistants API stays available as an adapter (`adapters: [assistants]`), so 1.x clients keep
+  working against 2.0 agents.
+- **Data: `llamphouse migrate`** writes a 1.x database's conversations as 2.0 threads, with the same
+  thread and message ids and times, so clients that kept ids carry on and agents see what was said
+  before. The 1.x tables are only read, and they stay where they are.
+  - A thread's metadata becomes its labels.
+  - User messages come from a person (`--user-id`) and assistant messages from the agent. Text stays
+    text; other content is kept as it was. The 1.x fields go in the message metadata, under
+    `llamphouse.v1`.
+  - Each 1.x run becomes one `x-llamphouse.v1.run` event holding its status, model, times, error,
+    usage and steps. It is a record only: nothing runs again.
+  - A thread's agent is the assistant of its last run. Use `--rename OLD=NEW` to map names, and
+    `--agent` for threads without runs.
+  - `--dry-run` reports what would be written and lists runs still active in 1.x. Stop the 1.x workers
+    first, or migrate again later: a re-run adds only what is new (messages, a run's later status).
+  - `--dashboards` / `--charts` bring 1.x Compass dashboards over. Their SQL still reads the 1.x
+    tables.
+  - In code: `Engine.import_thread(id, agent, entries, metadata=, created_at=)`.
 - See `docs/llamphouse 2.0 — design notes.md` and `examples/v2`.
 
 ## [1.4.0] - TBD

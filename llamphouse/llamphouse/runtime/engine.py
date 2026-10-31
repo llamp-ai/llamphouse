@@ -995,6 +995,31 @@ class Engine:
             for rec in [r for r in self.records.values() if r.thread_id == thread.id]:
                 self._cancel(rec)
 
+    async def import_thread(self, thread_id: str, agent: str, entries: Sequence[tuple[str, str, datetime, Any]], *,
+                            metadata: Mapping[str, Any] | None = None, created_at: datetime | None = None) -> int:
+        """A thread kept elsewhere - another system, llamphouse 1.x - written with its own id, times and
+        history. `entries`, in order: (id, kind, at, a Message for kind "message", else the event's data),
+        the id stable and unique in the thread. It starts nothing, and the agent need not be loaded here.
+        Re-runnable: a thread that exists gains the entries it doesn't have yet (by id), after its own.
+        Returns how many were written."""
+        tree = await self.store.tree_of(thread_id)
+        written = 0
+        async with self._tx(tree or thread_id):
+            if tree is None:
+                self.threads[thread_id] = _Thread(thread_id, agent, created_at=created_at or self.now, tree=thread_id,
+                                                  metadata=dict(metadata or {}))
+            for entry_id, kind, at, item in entries:
+                key = f"import:{entry_id}"
+                if key in self.threads[thread_id].keys:
+                    continue
+                if kind == EventKind.MESSAGE:
+                    self._append(thread_id, EventKind.MESSAGE, message=item, key=key, at=at)
+                else:
+                    self._append(thread_id, kind, data=item, key=key, at=at)
+                written += 1
+        self._tree_ids[thread_id] = tree or thread_id
+        return written
+
     async def upload(self, data: bytes, *, mime_type: str, name: str | None = None,
                      by: Sender = Sender.person("user")) -> FilePart:
         """Upload first, reference later (POST /v2/files): the file has no thread yet and expires
@@ -1304,13 +1329,14 @@ class Engine:
         return values
 
     def _append(self, thread_id: str, kind: EventKind | str, *, run: RunRecord | None = None, to: RunRef | None = None,
-                message: Message | None = None, data: Any = None, key: str | None = None) -> ThreadEvent:
+                message: Message | None = None, data: Any = None, key: str | None = None,
+                at: datetime | None = None) -> ThreadEvent:
         t = self.threads[thread_id]
         if key is not None and key in t.keys:  # idempotent: a retried write is a no-op
             return t.keys[key]
         t.last_pos += 1  # the per-thread position, taken in the append's transaction
         ev = ThreadEvent(position=t.last_pos, kind=kind, run=run.ref if run else None, agent=run.agent if run else None,
-                         to=to, message=message, data=data, at=self.now, thread=ThreadRef(thread_id))
+                         to=to, message=message, data=data, at=at or self.now, thread=ThreadRef(thread_id))
         t.events.append(ev)
         tree = self._here()
         tree.written += 1

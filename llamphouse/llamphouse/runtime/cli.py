@@ -4,6 +4,7 @@
     llamphouse check  [--config ...] [--agents ...]       # the files, the agents, their config: before deploying
     llamphouse db upgrade [--sql] [--target v2@head]      # the Postgres schema (Alembic)
     llamphouse db current
+    llamphouse migrate [--from URL] [--agent NAME] [--rename OLD=NEW ...] [--dry-run]   # 1.x conversations -> 2.0
 
 `--config` defaults to LLAMPHOUSE_CONFIG, else ./llamphouse.yaml when it exists. `--agents` may be given
 several times; without it, the agent documents in the config file are used. The 1.x form still works:
@@ -22,7 +23,7 @@ from typing import Any
 
 from .config import LISTS, ConfigError, Deployment, component
 
-COMMANDS = ("up", "check", "db")
+COMMANDS = ("up", "check", "db", "migrate")
 
 
 def _config_path(given: str | None) -> str | None:
@@ -69,6 +70,19 @@ def parser() -> argparse.ArgumentParser:
         if name == "upgrade":
             d.add_argument("--sql", action="store_true", help="print the SQL instead of running it")
             d.add_argument("--target", default="v2@head", help="v2@head (2.0), v1@head (1.x), heads (both)")
+
+    mig = sub.add_parser("migrate", help="a 1.x database's conversations as 2.0 threads (re-runnable)")
+    mig.add_argument("--config", help="the runtime file: its data_store's database is written")
+    mig.add_argument("--database-url", default=None, help="the 2.0 database (default: as `db upgrade`)")
+    mig.add_argument("--from", dest="source", default=None, help="the 1.x database (default: the same one)")
+    mig.add_argument("--agent", default=None, help="the agent of threads without runs (default: skip them)")
+    mig.add_argument("--rename", action="append", default=[], metavar="OLD=NEW",
+                     help="a 1.x assistant id -> a 2.0 agent name; repeatable")
+    mig.add_argument("--user-id", default="user", help="who wrote the 1.x user messages (a person's id)")
+    mig.add_argument("--thread", action="append", default=[], help="only these threads; repeatable")
+    mig.add_argument("--dashboards", default=None, help="1.x Compass dashboards file (compass_dashboards.json)")
+    mig.add_argument("--charts", default=None, help="1.x Compass charts file (compass_charts.json)")
+    mig.add_argument("--dry-run", action="store_true", help="read and report, write nothing")
     return p
 
 
@@ -82,6 +96,8 @@ def main(argv: list[str] | None = None) -> None:
             up(args)
         elif args.command == "check":
             sys.exit(check(_config_path(args.config), args.agents))
+        elif args.command == "migrate":
+            sys.exit(migrate(args))
         else:
             db(args)
     except ConfigError as e:
@@ -128,9 +144,7 @@ def check(config: str | None, agents: list[str]) -> int:
     return 0
 
 
-def db(args: argparse.Namespace) -> None:
-    from . import migrations
-
+def _database_url(args: argparse.Namespace) -> str:
     url = args.database_url
     if url is None and _config_path(args.config):
         found = Deployment.load(_config_path(args.config))
@@ -143,6 +157,13 @@ def db(args: argparse.Namespace) -> None:
     if not url:
         raise ConfigError("no database: --database-url, a runtime file with a postgres data_store, "
                           "or LLAMPHOUSE_DATABASE_URL")
+    return url
+
+
+def db(args: argparse.Namespace) -> None:
+    from . import migrations
+
+    url = _database_url(args)
     logging.basicConfig(level="INFO", format="%(message)s")
     if args.db_command == "upgrade":
         if args.sql:
@@ -152,3 +173,51 @@ def db(args: argparse.Namespace) -> None:
             print("at", ", ".join(asyncio.run(migrations.current(url))) or "nothing")
     else:
         print(", ".join(asyncio.run(migrations.current(url))) or "not set up (llamphouse db upgrade)")
+
+
+def migrate(args: argparse.Namespace) -> int:
+    """1.x conversations into the 2.0 tables: the schema brought up first, the 1.x tables only read."""
+    from .migrations.from_v1 import migrate as run
+
+    url = _asyncpg_dsn(_database_url(args))
+    renames = {}
+    for item in args.rename:
+        old, sep, new = item.partition("=")
+        if not sep or not old or not new:
+            raise ConfigError(f"--rename {item!r}: give OLD=NEW")
+        renames[old] = new
+
+    async def go() -> int:
+        import asyncpg
+
+        from .data_store.postgres import PostgresStore
+        from .engine import Engine
+
+        store = PostgresStore(url, min_size=1, max_size=2, migrate=not args.dry_run)
+        engine = Engine({}, workers=0, store=store)
+        source = await asyncpg.connect(_asyncpg_dsn(args.source or url))
+        await store.open()
+        try:
+            report = await run(source, engine, agents=renames, default_agent=args.agent, user_id=args.user_id,
+                               threads=args.thread, dry_run=args.dry_run, dashboards=args.dashboards,
+                               charts=args.charts,
+                               progress=lambda done, total: print(f"\r{done}/{total} threads", end="", file=sys.stderr))
+        except LookupError as e:
+            print(f"llamphouse: {e}", file=sys.stderr)
+            return 1
+        finally:
+            await source.close()
+            await store.close()
+        print(file=sys.stderr)
+        for line in report.lines(args.dry_run):
+            print(line)
+        print("dry run: nothing was written" if args.dry_run else "done (re-run to pick up what 1.x writes since)")
+        return 0
+
+    return asyncio.run(go())
+
+
+def _asyncpg_dsn(url: str) -> str:
+    """A SQLAlchemy URL (postgresql+asyncpg://, as 1.x's DATABASE_URL) as asyncpg takes it."""
+    scheme, sep, rest = url.partition("://")
+    return f"postgresql://{rest}" if sep and scheme.startswith("postgresql+") else url
