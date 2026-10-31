@@ -15,7 +15,9 @@ A2A's context is a thread, a task is a run:
 - The task's artifacts are the `ArtifactPart`s its run wrote; its history, the messages to and from the run;
   `status.message`, what the agent asked (input-required) or said last.
 
-Push notifications and the extended card are not supported (their errors). Parts the protocol doesn't have
+Push notification configs are subscriptions to the task (`llamphouse.runtime.notifications`): the workers
+POST a StreamResponse (`statusUpdate`) on every status change, the config's token in
+`X-A2A-Notification-Token` and its authentication in `Authorization`. The extended card is not supported. Parts the protocol doesn't have
 travel as data with a `application/vnd.llamphouse.<kind>+json` media type. An empty `A2A-Version` is taken as
 1.0 (the spec says 0.3; v1.0 method names are unambiguous); another version is refused (-32009).
 """
@@ -35,7 +37,7 @@ from llamphouse.sdk.vocab import EventKind, RunStatus, SenderKind
 
 from ..engine import TERMINAL
 from ..gateway import INTERRUPTED
-from . import Adapter
+from .base import Adapter
 from ._common import b64, describe, file_url, known_part, unb64, unknown_part
 
 VERSION = "1.0"
@@ -93,7 +95,7 @@ class A2AAdapter(Adapter):
                 "version": d["version"],
                 "supportedInterfaces": [{"url": f"{base(request)}{adapter.prefix}/{agent}", "protocolBinding": "JSONRPC",
                                          "protocolVersion": VERSION}],
-                "capabilities": {"streaming": True, "pushNotifications": False, "extendedAgentCard": False,
+                "capabilities": {"streaming": True, "pushNotifications": True, "extendedAgentCard": False,
                                  "extensions": list(a2a.get("extensions") or [])},
                 "defaultInputModes": list(a2a.get("input_modes") or ["text/plain", "application/json"]),
                 "defaultOutputModes": list(a2a.get("output_modes") or ["text/plain", "application/json"]),
@@ -353,10 +355,50 @@ class A2AAdapter(Adapter):
                 return await list_tasks(agent, params, request)
             if method in ("CreateTaskPushNotificationConfig", "GetTaskPushNotificationConfig",
                           "ListTaskPushNotificationConfigs", "DeleteTaskPushNotificationConfig"):
-                raise RpcError(NO_PUSH, "push notifications are not supported")
+                return await push(agent, method, params)
             if method == "GetExtendedAgentCard":
                 raise RpcError(NO_EXTENDED_CARD, "no extended agent card")
             raise RpcError(NO_METHOD, f"method {method!r} not found")
+
+        async def push(agent: str, method: str, params: dict[str, Any]) -> Any:
+            """Push notification configs: subscriptions to a task's status (format a2a), on the outbox."""
+            from ..notifications import Subscription
+
+            task_id = str(params.get("taskId") or "")
+            await run_of_task(task_id, agent, "write" if method.startswith(("Create", "Delete")) else "read")
+            mine = [s for s in map(Subscription.from_dict, await engine.store.subscriptions())
+                    if s.format == "a2a" and s.filter.get("run") == task_id and s.owner == gw.who().subject]
+
+            def config(s: Any) -> dict[str, Any]:
+                return {"id": s.id, "taskId": task_id, **s.meta}
+
+            if method == "CreateTaskPushNotificationConfig":
+                if not params.get("url"):
+                    raise RpcError(INVALID_PARAMS, "url is required")
+                headers, meta = {}, {"url": params["url"]}
+                if params.get("token"):
+                    headers["X-A2A-Notification-Token"] = meta["token"] = str(params["token"])
+                auth = params.get("authentication") or {}
+                if auth.get("scheme"):
+                    headers["Authorization"] = f"{auth['scheme']} {auth.get('credentials', '')}".strip()
+                    meta["authentication"] = {"scheme": auth["scheme"], **({"credentials": auth["credentials"]}
+                                                                           if auth.get("credentials") else {})}
+                try:
+                    sub = Subscription(url=str(params["url"]), filter={"run": task_id}, format="a2a", headers=headers,
+                                       owner=gw.who().subject, meta=meta,
+                                       **({"id": str(params["id"])} if params.get("id") else {}))
+                except ValueError as e:
+                    raise RpcError(INVALID_PARAMS, str(e)) from None
+                return config(await engine.subscribe(sub))
+            if method == "ListTaskPushNotificationConfigs":
+                return {"configs": [config(s) for s in mine], "nextPageToken": ""}
+            found = next((s for s in mine if s.id == params.get("id")), None)
+            if found is None:
+                raise RpcError(TASK_NOT_FOUND, f"no push notification config {params.get('id')} for task {task_id}")
+            if method == "GetTaskPushNotificationConfig":
+                return config(found)
+            await engine.unsubscribe(found.id)
+            return {}
 
         async def list_tasks(agent: str, params: dict[str, Any], request: Request) -> dict[str, Any]:
             size = max(1, min(int(params.get("pageSize") or 50), 100))

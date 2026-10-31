@@ -41,7 +41,7 @@ from llamphouse.sdk.vocab import EventKind, RunStatus, SenderKind
 from ..codec import jsonable
 from ..engine import CLIENT_TOOLS, INPUT_ANSWERED, TERMINAL
 from ..gateway import INTERRUPTED
-from . import Adapter
+from .base import Adapter
 from ._common import describe
 
 STATUS = {RunStatus.QUEUED: "queued", RunStatus.RUNNING: "in_progress", RunStatus.WAITING: "in_progress",

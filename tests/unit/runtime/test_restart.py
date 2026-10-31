@@ -7,7 +7,7 @@ from collections import Counter
 import pytest
 from pydantic import BaseModel
 
-from llamphouse.runtime.store import MemoryStore, PostgresStore
+from llamphouse.runtime.data_store import MemoryStore, PostgresStore
 from llamphouse.sdk import Agent, RunStatus, Sender, step
 from llamphouse.sdk.testing import Scenario
 

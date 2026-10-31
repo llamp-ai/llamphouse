@@ -23,7 +23,7 @@ from typing import Optional
 
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
-from .base_tracing_store import BaseTracingStore
+from .base import BaseTracingStore
 from ._utils import span_to_dict, span_to_trace_row
 
 logger = logging.getLogger("llamphouse.tracing.postgres")

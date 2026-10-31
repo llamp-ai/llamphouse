@@ -1,6 +1,5 @@
-from .base import BaseFileStore, FileAccessError, FileNotFound, FileRecord, FileUnavailable, file_id
-from .memory import InMemoryFileStore
-from .service import FileService
+"""Moved: `llamphouse.runtime.file_store` (kept so earlier imports and stored references still work)."""
 
-__all__ = ["BaseFileStore", "InMemoryFileStore", "FileService", "FileRecord", "FileNotFound", "FileAccessError",
-           "FileUnavailable", "file_id"]
+from ..file_store import *  # noqa: F401,F403
+from ..file_store import (BaseFileStore, FileAccessError, FileNotFound, FileRecord, FileService,  # noqa: F401
+                          FileUnavailable, InMemoryFileStore, file_id)

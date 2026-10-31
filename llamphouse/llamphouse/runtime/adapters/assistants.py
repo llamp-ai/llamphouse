@@ -36,7 +36,7 @@ from llamphouse.sdk.thread import Request as RunRequest
 from llamphouse.sdk.vocab import RunStatus, SenderKind
 
 from ..engine import CLIENT_TOOLS, TERMINAL
-from . import Adapter
+from .base import Adapter
 from ..codec import jsonable
 from ._common import describe
 

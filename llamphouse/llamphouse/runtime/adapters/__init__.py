@@ -9,31 +9,15 @@
 
 Every adapter exposes `agents` ("*" or a list of names) under its `prefix`, behind the deployment's auth and
 access (`llamphouse.runtime.gateway`). Several instances of one kind may be mounted, each with its own prefix.
+
+    base.py         Adapter
+    responses.py    ResponsesAdapter
+    assistants.py   AssistantsAdapter
+    a2a.py          A2AAdapter
+    ag_ui.py        AgUiAdapter
+    _common.py      what they share: an agent's description, parts without a protocol kind
 """
 
-from __future__ import annotations
-
-from abc import ABC, abstractmethod
-from typing import Any, Sequence
-
-
-class Adapter(ABC):
-    """A protocol at the edge. `mount(app, gateway)` adds its routes to the FastAPI app."""
-
-    kind = "adapter"
-
-    def __init__(self, prefix: str = "", agents: str | Sequence[str] = "*"):
-        self.prefix = "/" + prefix.strip("/") if prefix.strip("/") else ""
-        self.agents = None if agents == "*" else list(agents)
-
-    def exposes(self, engine: Any, agent: str) -> bool:
-        return agent in engine._agents and (self.agents is None or agent in self.agents)
-
-    def exposed(self, engine: Any) -> list[str]:
-        return [a for a in engine._agents if self.exposes(engine, a)]
-
-    @abstractmethod
-    def mount(self, app: Any, gateway: Any) -> None: ...
-
+from .base import Adapter
 
 __all__ = ["Adapter"]

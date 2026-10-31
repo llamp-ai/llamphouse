@@ -31,7 +31,7 @@ from llamphouse.sdk.vocab import EventKind, RunStatus, SenderKind
 from .._extras import need
 from ..codec import jsonable
 from ..engine import CLIENT_TOOLS, TERMINAL
-from . import Adapter
+from .base import Adapter
 
 METADATA_KEY = "ag_ui"
 THREAD_KEY = "ag_ui.thread_id"

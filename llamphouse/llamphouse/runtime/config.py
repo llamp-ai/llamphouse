@@ -65,14 +65,14 @@ API_VERSION = "llamphouse.io/v1alpha1"
 
 # kind -> name -> "module:Class": swap any of them by name, or give your own by import path
 REGISTRY: dict[str, dict[str, str]] = {
-    "data_store": {"in_memory": "llamphouse.runtime.store:MemoryStore",
-                   "postgres": "llamphouse.runtime.store:PostgresStore"},
-    "run_queue": {"in_memory": "llamphouse.runtime.queue:MemoryQueue",
-                  "redis": "llamphouse.runtime.queue:RedisQueue"},
-    "event_queue": {"in_memory": "llamphouse.runtime.bus:MemoryBus",
-                    "redis": "llamphouse.runtime.bus:RedisBus"},
-    "file_store": {"in_memory": "llamphouse.runtime.files:InMemoryFileStore",
-                   "postgres": "llamphouse.runtime.files.postgres:PostgresFileStore"},
+    "data_store": {"in_memory": "llamphouse.runtime.data_store:MemoryStore",
+                   "postgres": "llamphouse.runtime.data_store:PostgresStore"},
+    "run_queue": {"in_memory": "llamphouse.runtime.run_queue:MemoryQueue",
+                  "redis": "llamphouse.runtime.run_queue:RedisQueue"},
+    "event_queue": {"in_memory": "llamphouse.runtime.event_queue:MemoryBus",
+                    "redis": "llamphouse.runtime.event_queue:RedisBus"},
+    "file_store": {"in_memory": "llamphouse.runtime.file_store:InMemoryFileStore",
+                   "postgres": "llamphouse.runtime.file_store.postgres:PostgresFileStore"},
     "tracing": {"in_memory": "llamphouse.runtime.tracing.stores:InMemoryTracingStore",
                 "postgres": "llamphouse.runtime.tracing.stores:PostgresTracingStore",
                 "clickhouse": "llamphouse.runtime.tracing.stores:ClickHouseTracingStore"},
@@ -84,6 +84,8 @@ REGISTRY: dict[str, dict[str, str]] = {
              "oidc": "llamphouse.runtime.auth:OidcAuth"},
     "access": {"open": "llamphouse.runtime.auth:Access",
                "tenant": "llamphouse.runtime.auth:TenantAccess"},
+    "triggers": {"webhook": "llamphouse.runtime.triggers:WebhookTrigger",
+                 "schedule": "llamphouse.runtime.triggers:ScheduleTrigger"},
     "adapters": {"a2a": "llamphouse.runtime.adapters.a2a:A2AAdapter",
                  "assistants": "llamphouse.runtime.adapters.assistants:AssistantsAdapter",
                  "responses": "llamphouse.runtime.adapters.responses:ResponsesAdapter",
@@ -92,7 +94,7 @@ REGISTRY: dict[str, dict[str, str]] = {
 LISTS = {"auth", "adapters"}  # kinds given as a list of entries
 
 ENGINE_OPTIONS = {"workers", "lease_ttl", "redeliver", "window", "upload_ttl", "max_runs_per_root", "max_depth",
-                  "max_runs_per_thread", "tick", "cache_ttl"}
+                  "max_runs_per_thread", "tick", "cache_ttl", "delivery_attempts"}
 
 
 class ConfigError(ValueError):
@@ -218,7 +220,7 @@ class AgentSpec:
     env: dict[str, str] = field(default_factory=dict)
     secrets: dict[str, str] = field(default_factory=dict)
     pool: str = "shared"
-    triggers: list[Any] = field(default_factory=list)
+    triggers: list[Any] = field(default_factory=list)  # WebhookTrigger, ScheduleTrigger, your own
     permissions: dict[str, Any] = field(default_factory=dict)
     publish: dict[str, Any] = field(default_factory=dict)
     execution: dict[str, Any] = field(default_factory=dict)
@@ -342,6 +344,18 @@ class Deployment:
         return [component("adapters", entry, f"{self.runtime.source}: adapters[{i}]")
                 for i, entry in enumerate(self.runtime.components.get("adapters") or [])]
 
+    def webhooks(self) -> list[tuple[str, Any]]:
+        """(agent, trigger) for every trigger that is mounted on the API (webhooks): paths checked unique."""
+        found, paths = [], {}
+        for name, spec in self.agents.items():
+            for t in spec.triggers:
+                if hasattr(t, "mount"):
+                    if t.path in paths:
+                        raise ConfigError(f"{spec.source}: webhook path {t.path} is {paths[t.path]}'s too")
+                    paths[t.path] = name
+                    found.append((name, t))
+        return found
+
     def access(self) -> Any:
         from .auth import Access
 
@@ -404,6 +418,11 @@ class Deployment:
                                       f"{unknown}")
         if permissions:
             options.setdefault("permissions", permissions)
+        schedules = {name: [t for t in spec.triggers if getattr(t, "kind", None) == "schedule"]
+                     for name, spec in self.agents.items()}
+        schedules = {name: found for name, found in schedules.items() if found}
+        if schedules:
+            options.setdefault("schedules", schedules)
         agents = {}
         for name, spec in self.agents.items():
             config_cls = spec.cls.config_class() if hasattr(spec.cls, "config_class") else None
@@ -498,7 +517,9 @@ def _agent(doc: dict, path: Path, definitions: Mapping[str, tuple[dict, Path]]) 
         display_name=spec.get("display_name"), session=provider,
         env={k: str(v) for k, v in expand(dict(spec.get("env") or {}), f"{where}.env").items()},
         secrets=dict(spec.get("secrets") or {}), pool=str(spec.get("pool") or definition.get("pool") or "shared"),
-        triggers=list(spec.get("triggers") or []), permissions=dict(spec.get("permissions") or {}),
+        triggers=[component("triggers", t, f"{where}.triggers[{i}]", base=base)
+                  for i, t in enumerate(spec.get("triggers") or [])],
+        permissions=dict(spec.get("permissions") or {}),
         publish=dict(spec.get("publish") or {}), execution=execution, source=str(path))
 
 

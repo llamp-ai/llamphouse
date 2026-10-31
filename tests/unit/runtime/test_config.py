@@ -13,10 +13,10 @@ import pytest
 
 from llamphouse.runtime.cli import main as cli
 from llamphouse.runtime.config import ConfigError, Deployment
-from llamphouse.runtime.queue import MemoryQueue
+from llamphouse.runtime.run_queue import MemoryQueue
 from llamphouse.runtime.server import build
 from llamphouse.runtime.sessions import RollingWindow, Summarizing
-from llamphouse.runtime.store import MemoryStore
+from llamphouse.runtime.data_store import MemoryStore
 from llamphouse.sdk import Sender
 
 HERE = Path(__file__).parent / "deploy"
@@ -135,7 +135,7 @@ def test_a_python_mapping_and_roles(tmp_path):
     for role in ("api", "worker"):  # in memory, nothing would ever reach the other processes
         with pytest.raises(ConfigError, match="shares work"):
             build("hr_agents:AGENTS", role=role)
-    from llamphouse.runtime.bus import MemoryBus
+    from llamphouse.runtime.event_queue import MemoryBus
 
     shared = {"store": MemoryStore(), "queue": MemoryQueue(), "bus": MemoryBus()}
     with pytest.raises(ConfigError):  # in-memory ones are never shared, given or not
@@ -161,7 +161,12 @@ def test_check_says_what_there_is(tmp_path, capsys, monkeypatch):
 def test_db_upgrade_and_current(capsys):
     cli(["db", "upgrade", "--database-url", POSTGRES])
     cli(["db", "current", "--database-url", POSTGRES])
-    assert "f8b2d3e4a5c6" in capsys.readouterr().out
+    from alembic.script import ScriptDirectory
+
+    from llamphouse.runtime import migrations
+
+    v2_head = ScriptDirectory.from_config(migrations.config()).revision_map.get_current_head("v2")
+    assert v2_head in capsys.readouterr().out
     cli(["db", "upgrade", "--database-url", POSTGRES, "--sql"])
     assert "llamphouse_runs" in capsys.readouterr().out
 

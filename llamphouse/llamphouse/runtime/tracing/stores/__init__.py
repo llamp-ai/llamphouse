@@ -1,4 +1,9 @@
-"""The 2.0 runtime's tracing stores.
+"""The 2.0 runtime's tracing stores - where spans go, and are read back from.
+
+    base.py         BaseTracingStore
+    memory.py       InMemoryTracingStore - this process's spans
+    postgres.py     PostgresTracingStore - the llamphouse_traces table (psycopg2)
+    clickhouse.py   ClickHouseTracingStore - what an OpenTelemetry Collector writes to ClickHouse
 
 Tracing stores bridge the gap between the OpenTelemetry SDK and the
 Compass dashboard's trace viewer.  Each store has two responsibilities:
@@ -35,10 +40,10 @@ from __future__ import annotations
 import logging
 import os
 
-from .base_tracing_store import BaseTracingStore
-from .in_memory_tracing_store import InMemoryTracingStore
-from .postgres_tracing_store import PostgresTracingStore
-from .clickhouse_tracing_store import ClickHouseTracingStore
+from .base import BaseTracingStore
+from .memory import InMemoryTracingStore
+from .postgres import PostgresTracingStore
+from .clickhouse import ClickHouseTracingStore
 
 logger = logging.getLogger("llamphouse.tracing")
 

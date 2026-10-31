@@ -67,7 +67,7 @@ async def test_every_agent_has_a_card(a2a):
     assert card["name"] == "writer" and card["description"] == "Writes a short report."
     assert card["supportedInterfaces"] == [{"url": "http://h/a2a/writer", "protocolBinding": "JSONRPC",
                                             "protocolVersion": "1.0"}]
-    assert card["capabilities"]["streaming"] and not card["capabilities"]["pushNotifications"]
+    assert card["capabilities"]["streaming"] and card["capabilities"]["pushNotifications"]
     assert card["skills"][0]["id"] == "writer" and card["defaultInputModes"]
     assert (await c.get("/a2a/nobody/.well-known/agent-card.json")).status_code == 404
 
@@ -114,7 +114,8 @@ async def test_errors_are_a2a_errors(a2a):
     _, c = a2a
     assert (await c.post("/a2a/writer", json=rpc("GetTask", {"id": "nope"}))).json()["error"]["code"] == -32001
     assert (await c.post("/a2a/writer", json=rpc("Nope", {}))).json()["error"]["code"] == -32601
-    assert (await c.post("/a2a/writer", json=rpc("CreateTaskPushNotificationConfig", {}))).json()["error"]["code"] == -32003
+    assert (await c.post("/a2a/writer", json=rpc("CreateTaskPushNotificationConfig", {"taskId": "nope",
+                                                                                     "url": "https://x"}))).json()["error"]["code"] == -32001
     assert (await c.post("/a2a/writer", json=rpc("GetExtendedAgentCard", {}))).json()["error"]["code"] == -32007
     old = await c.post("/a2a/writer", json=rpc("SendMessage", {"message": msg("x")}), headers={"A2A-Version": "0.3"})
     assert old.json()["error"]["code"] == -32009

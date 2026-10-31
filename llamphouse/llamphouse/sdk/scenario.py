@@ -25,12 +25,12 @@ import os
 from datetime import timedelta
 from typing import Any
 
-from llamphouse.runtime.bus import MemoryBus
+from llamphouse.runtime.event_queue import MemoryBus
 from llamphouse.runtime.config_store import MemoryConfigStore
 from llamphouse.runtime.engine import EPOCH, Crash, Engine, RunRecord, SessionRecord
-from llamphouse.runtime.files import FileRecord
-from llamphouse.runtime.queue import MemoryQueue
-from llamphouse.runtime.store import MemoryStore
+from llamphouse.runtime.file_store import FileRecord
+from llamphouse.runtime.run_queue import MemoryQueue
+from llamphouse.runtime.data_store import MemoryStore
 
 __all__ = ["Scenario", "Crash", "RunRecord", "SessionRecord", "FileRecord"]
 
@@ -44,7 +44,7 @@ class Scenario(Engine):
         self._pending: list[asyncio.Future] = []
         self._empty_first = False
         if "store" not in options and os.environ.get("LLAMPHOUSE_SCENARIO_STORE") == "postgres":
-            from llamphouse.runtime.store import PostgresStore
+            from llamphouse.runtime.data_store import PostgresStore
 
             options["store"] = PostgresStore(os.environ["LLAMPHOUSE_TEST_POSTGRES"])
             self._empty_first = True
@@ -61,18 +61,20 @@ class Scenario(Engine):
                            **{**options, "file_store": self.file_store})
             other._id = self._id  # type: ignore[method-assign]
             other.errors, other._crashes, other.system_events = self.errors, self._crashes, self.system_events
-            other.scheduled = self.scheduled
             self._worker_side = other
 
     def _id(self, prefix: str) -> str:
         return f"{prefix}-{next(self._counter)}"
 
     async def open(self) -> "Scenario":
-        await super().open()
-        if self._empty_first:
+        if self._empty_first:  # before the engine registers anything (its schedules)
+            await self.store.open()
             async with self.store.pool.acquire() as con:
                 await con.execute("truncate llamphouse_trees, llamphouse_threads, llamphouse_events, llamphouse_runs, "
-                                  "llamphouse_sessions, llamphouse_run_events")
+                                  "llamphouse_sessions, llamphouse_run_events, llamphouse_agent_config, "
+                                  "llamphouse_claims, llamphouse_schedules, llamphouse_subscriptions, "
+                                  "llamphouse_outbox")
+        await super().open()
         if self._worker_side is not None:
             await self._worker_side.open()
         await self._load_all()

@@ -16,7 +16,7 @@ from typing import Optional
 
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
-from .base_tracing_store import BaseTracingStore
+from .base import BaseTracingStore
 from ._utils import ROOT_SPANS, span_to_dict, span_to_trace_row
 
 

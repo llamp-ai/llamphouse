@@ -20,7 +20,7 @@ import logging
 import re
 from typing import Optional
 
-from .base_tracing_store import BaseTracingStore
+from .base import BaseTracingStore
 
 logger = logging.getLogger("llamphouse.tracing.clickhouse")
 

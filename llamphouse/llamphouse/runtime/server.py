@@ -27,11 +27,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable, Mapping
 
-from .bus import MemoryBus
+from .event_queue import MemoryBus
 from .config import ConfigError, Deployment
 from .engine import Engine
-from .queue import MemoryQueue
-from .store import MemoryStore
+from .run_queue import MemoryQueue
+from .data_store import MemoryStore
 from .tracing import shutdown as shutdown_tracing, store_from_env
 
 ROLES = ("all", "api", "compass", "worker")
@@ -68,16 +68,16 @@ def build(agents: Mapping[str, Any] | Deployment | str | Iterable[str] | None = 
     redis_url = redis_url or (None if "run_queue" in declared else env.get("LLAMPHOUSE_REDIS_URL"))
     overrides = dict(engine_options)
     if database_url:
-        from .files.postgres import PostgresFileStore
-        from .store import PostgresStore
+        from .file_store.postgres import PostgresFileStore
+        from .data_store import PostgresStore
 
         overrides.setdefault("store", PostgresStore(database_url))
         if "file_store" not in declared:
             overrides.setdefault("file_store", PostgresFileStore(
                 dsn=database_url, upload_ttl=overrides.get("upload_ttl", found.runtime.engine.get("upload_ttl", 3600))))
     if redis_url:
-        from .bus import RedisBus
-        from .queue import RedisQueue
+        from .event_queue import RedisBus
+        from .run_queue import RedisQueue
 
         overrides.setdefault("queue", RedisQueue(redis_url))
         if "event_queue" not in declared:
@@ -110,6 +110,8 @@ def app(agents: Any = None, *, role: str = "all", api_key: str | None = None, co
     if found is not None:
         api = create_app(engine, auth=found.authenticator(api_key=key), access=found.access(), compass=compass,
                          adapters=found.adapters())
+        for agent, trigger in found.webhooks():  # outside /v2 and its auth: each checks its own secret
+            trigger.mount(api, engine, agent)
     else:
         api = create_app(engine, api_key=key, compass=compass)
 

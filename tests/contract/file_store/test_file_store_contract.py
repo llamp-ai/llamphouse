@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from llamphouse.runtime.files import (FileAccessError, FileNotFound, FileService, FileUnavailable, InMemoryFileStore,
+from llamphouse.runtime.file_store import (FileAccessError, FileNotFound, FileService, FileUnavailable, InMemoryFileStore,
                                       file_id)
 
 
@@ -27,7 +27,7 @@ async def env(request):
     if request.param == "memory":
         yield InMemoryFileStore(upload_ttl=3600, clock=clock), clock
         return
-    from llamphouse.runtime.files.postgres import PostgresFileStore
+    from llamphouse.runtime.file_store.postgres import PostgresFileStore
 
     store = PostgresFileStore(dsn=POSTGRES, upload_ttl=3600, clock=clock)
     await store.open()

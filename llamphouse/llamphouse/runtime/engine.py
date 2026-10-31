@@ -65,13 +65,13 @@ from llamphouse.sdk.events import (AGENT_EVENTS, AgentError, Event, MessageCompl
 from llamphouse.sdk.thread import (AuthRequest, Filter, Identity, InputRequest, NoActiveRun, Request, SessionView, StateConflict,
                      ThreadBusy, ThreadClosed, ThreadEvent, ToolSpec)
 from llamphouse.runtime.events import SystemEvent
-from llamphouse.runtime.files import FileRecord, FileService, InMemoryFileStore, file_id  # the runtime's own
+from llamphouse.runtime.file_store import FileRecord, FileService, InMemoryFileStore, file_id  # the runtime's own
 from llamphouse.runtime.sessions import RollingWindow, SessionInfo, SessionProvider
-from llamphouse.runtime.bus import Bus, MemoryBus
+from llamphouse.runtime.event_queue import Bus, MemoryBus
 from llamphouse.runtime.codec import decode, encode, jsonable
 from llamphouse.runtime.config_store import AgentConfig, ConfigStore, MemoryConfigStore
-from llamphouse.runtime.queue import JobQueue, MemoryQueue
-from llamphouse.runtime.store import EventRow, MemoryStore, Row, Rows, Store, StoreTx
+from llamphouse.runtime.run_queue import JobQueue, MemoryQueue
+from llamphouse.runtime.data_store import EventRow, MemoryStore, Row, Rows, Store, StoreTx
 from llamphouse.runtime.tracing import REVISE, RUN, STEP, Tracing
 
 if TYPE_CHECKING:
@@ -527,6 +527,9 @@ class Engine:
         tracing_store: "BaseTracingStore | None" = None,
         config_store: "ConfigStore | None" = None,
         permissions: Mapping[str, "Permissions | Mapping[str, Any]"] | None = None,
+        schedules: Mapping[str, Sequence[Any]] | None = None,
+        delivery_attempts: int = 8,
+        delivery_client: Any = None,
     ):
         self._agents: dict[str, _Entry] = {}
         self._offered = set(capabilities)
@@ -562,6 +565,13 @@ class Engine:
         if unknown:
             raise ValueError(f"permissions for unknown agent(s) {sorted(unknown)}")
         self._permissions = {name: Permissions.parse((permissions or {}).get(name)) for name in self._agents}
+        unknown = set(schedules or {}) - set(self._agents)
+        if unknown:
+            raise ValueError(f"schedules for unknown agent(s) {sorted(unknown)}")
+        self._schedules = {name: list(found) for name, found in (schedules or {}).items()}  # ScheduleTriggers
+        self.delivery_attempts, self._delivery_client = delivery_attempts, delivery_client
+        self._subs: list[Any] | None = None  # this process's copy of the subscriptions
+        self._subs_until = 0.0
         self.max_runs_per_root = max_runs_per_tree if max_runs_per_tree is not None else max_runs_per_root  # (its old name)
         self.max_depth, self.max_runs_per_thread = max_depth, max_runs_per_thread
         self._sessions = sessions if sessions is not None else RollingWindow(window)
@@ -569,7 +579,6 @@ class Engine:
         self._trees: dict[str, _Tree] = {}  # this process's copies
         self._tree_ids: dict[str, str] = {}  # thread, run or session -> its tree
         self._executing: dict[str, _Context] = {}  # runs this process executes right now
-        self.scheduled: list[dict[str, Any]] = []
         self.errors: list[BaseException] = []
         self._workers: list[asyncio.Task] = []
         self._ids = itertools.count(1)
@@ -596,6 +605,7 @@ class Engine:
         for part in (self.store, self.queue, self.bus, self.file_store, self.config_store):
             if hasattr(part, "open"):
                 await part.open()
+        await self._register_schedules()
         self._workers = [asyncio.create_task(self._worker()) for _ in range(self.n_workers)]
         self._workers.append(asyncio.create_task(self._config_news()))
         if self._tick:
@@ -682,6 +692,7 @@ class Engine:
                 tree.rings, tree.notes = [], {}
                 try:
                     rows = tree.rows()
+                    await self._outbox(tree, rows)
                     if rows:
                         tree.version += 1
                         await stx.write(rows, tree.version, tree.written)
@@ -699,6 +710,51 @@ class Engine:
                     await self.bus.publish(f"thread:{thread_id}", {"position": position})
                 for r in changed:
                     await self.bus.publish("runs", self._change(tree, tree.records[r.id]))
+
+    async def _outbox(self, tree: _Tree, rows: Rows) -> None:
+        """Deliveries for the subscriptions that hear about these status changes: written with them."""
+        changed = [r for r in rows.runs if tree.statuses.get(r.id) != r.meta["status"]]
+        if not changed:
+            return
+        subscriptions = await self._subscriptions()
+        if not subscriptions:
+            return
+        now = self.now
+        for r in changed:
+            change = self._change(tree, tree.records[r.id])
+            for sub in subscriptions:
+                if sub.matches(change):
+                    delivery = f"dlv_{uuid.uuid4().hex[:16]}"
+                    rows.outbox.append({"id": delivery, "subscription_id": sub.id, "next_at": now, "created_at": now,
+                                        "payload": sub.payload(change, delivery, now)})
+
+    async def _subscriptions(self) -> list[Any]:
+        from .notifications import Subscription
+
+        if self._subs is None or time.monotonic() > self._subs_until:
+            self._subs = [Subscription.from_dict(d) for d in await self.store.subscriptions()]
+            self._subs_until = time.monotonic() + 10.0
+        return self._subs
+
+    async def subscribe(self, subscription: Any) -> Any:
+        """Someone outside hears about runs from now on (`llamphouse.runtime.notifications`)."""
+        if subscription.created_at is None:
+            subscription.created_at = self.now.isoformat()
+        await self.store.put_subscription(subscription.to_dict())
+        self._subs = None
+        await self.bus.publish("subscriptions", {"id": subscription.id})
+        return subscription
+
+    async def unsubscribe(self, subscription_id: str) -> None:
+        await self.store.delete_subscription(subscription_id)
+        self._subs = None
+        await self.bus.publish("subscriptions", {"id": subscription_id})
+
+    async def deliver(self) -> int:
+        """One round of the outbox (the workers do this every tick): how many arrived."""
+        from .notifications import deliver_due
+
+        return await deliver_due(self.store, self.now, attempts=self.delivery_attempts, client=self._delivery_client)
 
     async def _abandon(self, tree: _Tree, stx: StoreTx) -> None:
         """This copy went its own way from the store: dropped. Runs executing on it stop."""
@@ -741,6 +797,7 @@ class Engine:
             try:
                 if self.n_workers:
                     await self._sweep()
+                    await self.deliver()
                 self._evict()
             except asyncio.CancelledError:
                 raise
@@ -748,6 +805,10 @@ class Engine:
                 log.warning("sweep failed", exc_info=True)
 
     async def _sweep(self) -> int:
+        await self._fire_due()
+        return await self._sweep_runs()
+
+    async def _sweep_runs(self) -> int:
         """Ring what is due: runs whose sleep or timeout ended, runs whose lease expired (their worker
         died: they replay elsewhere), queued runs nobody took, revisions to try again. Returns how many
         runs were taken back from expired leases."""
@@ -954,6 +1015,83 @@ class Engine:
         async with self._tx(await self._tree(thread.id)):
             return self._append(thread.id, kind, data=data)
 
+    # ── triggers and schedules ──────────────────────────────────────────────
+
+    async def _register_schedules(self) -> None:
+        """The agent files' schedules into the store: a changed one starts over, a removed one goes."""
+        current = {}
+        for agent, triggers in self._schedules.items():
+            for i, trigger in enumerate(triggers):
+                row = trigger.row(agent, i, self.now)
+                current[row["id"]] = row
+                await self.store.put_schedule(row)
+        for row in await self.store.schedules("trigger:"):
+            if row["agent"] in self._agents and row["id"] not in current:
+                await self.store.delete_schedule(row["id"])
+
+    async def fire(self, agent: str, message: Message, *, label: str | None = None,
+                   thread_metadata: Mapping[str, Any] | None = None, busy: str = "send",
+                   identity: Identity | None = None, request: Request | None = None) -> dict[str, Any]:
+        """A run of the agent for a trigger: on the thread of `label` (the same one every time - made once,
+        whichever process comes first), or a new one. When that thread's run is busy, `busy` says what
+        happens: `send` the message to it, `skip` it, or `reject` it (ThreadBusy). What happened:
+        {"thread", "run", "action": started | sent | skipped}."""
+        from .triggers.base import LABEL_KEY
+
+        thread = None
+        if label is not None:
+            claim = f"label:{agent}:{label}"
+            for _ in range(100):
+                found = await self.store.claim(claim, "pending")
+                if found is None:  # this process makes it
+                    try:
+                        thread = await self.thread(agent, metadata={**(thread_metadata or {}), LABEL_KEY: label})
+                    except BaseException:
+                        await self.store.release_claim(claim)
+                        raise
+                    await self.store.set_claim(claim, thread.id)
+                    break
+                if found != "pending":
+                    thread = ThreadRef(found)
+                    break
+                await asyncio.sleep(0.02)  # another process is making it
+            if thread is None:
+                raise StoreUnavailable(f"the thread for {claim} was being made, and never was")
+        else:
+            thread = await self.thread(agent, metadata=dict(thread_metadata or {}))
+        try:
+            run = await self.start(agent, message, thread=thread, by=message.sender, request=request, identity=identity)
+            return {"thread": thread.id, "run": run.id, "action": "started"}
+        except ThreadBusy as e:
+            if busy == "send":
+                await self.send_to_run(RunRef(e.run_id), *message.parts, by=message.sender)
+                return {"thread": thread.id, "run": e.run_id, "action": "sent"}
+            if busy == "skip":
+                return {"thread": thread.id, "run": e.run_id, "action": "skipped"}
+            raise
+
+    async def _fire_due(self) -> int:
+        """Schedules whose time came: each moved on (or gone, when it was once) - by exactly one process -
+        and fired. A fire missed while no worker ran happens once, now."""
+        from .triggers.schedule import message_of, next_time
+
+        fired = 0
+        for row in await self.store.due_schedules(self.now):
+            if row["agent"] not in self._agents:
+                continue  # another deployment's agent
+            data = row["data"]
+            if not await self.store.advance_schedule(row["id"], row["next_at"], next_time(data, self.now)):
+                continue  # another process fired it
+            metadata = {"llamphouse.tenant": data["tenant"]} if data.get("tenant") else {}
+            try:
+                await self.fire(row["agent"], message_of(data), label=data.get("label"), thread_metadata=metadata,
+                                busy=data.get("busy") or "skip",
+                                identity=Identity(subject=f"trigger:{data.get('name')}"))
+                fired += 1
+            except Exception:  # noqa: BLE001 - the next one comes on time
+                log.warning("schedule %s could not fire", row["id"], exc_info=True)
+        return fired
+
     # ── agents' config ──────────────────────────────────────────────────────
 
     async def _stored_config(self, agent: str) -> dict[str, Any]:
@@ -968,10 +1106,14 @@ class Engine:
     async def _config_news(self) -> None:
         """Changes from any process: forget this process's copy, so the next run reads the store."""
         try:
-            async with self.bus.listen("config") as news:
+            async with self.bus.listen("config", "subscriptions") as news:
                 while True:
                     got = await news.get(None)
-                    if got is not None:
+                    if got is None:
+                        continue
+                    if got[0] == "subscriptions":
+                        self._subs = None
+                    else:
                         self._config_cache.pop(got[1].get("agent", ""), None)
         except asyncio.CancelledError:
             raise
@@ -2047,7 +2189,7 @@ class _Context:
                 return None
             return _Files(self, write=access == "read-write")  # type: ignore[return-value]
         if kind is Scheduler:
-            return _Scheduler(self._sc)  # type: ignore[return-value]
+            return _Scheduler(self)  # type: ignore[return-value]
         return None
 
 
@@ -2639,14 +2781,41 @@ class _Files:
 
 
 class _Scheduler:
-    def __init__(self, sc: Engine):
-        self.sc = sc
+    """Runs later: `schedule(agent, at=..., delay=..., key=..., **data)` starts a run of that agent then, on a
+    new thread, with `data` as its input (a DataPart). Kept by the store: it happens even if this process is
+    gone. `key` names it (the same key again replaces it; `cancel(key)` drops it). Recorded like a step: a
+    replay doesn't schedule twice."""
+
+    def __init__(self, ctx: _Context):
+        self.ctx = ctx
 
     async def schedule(self, job: str, *, at: datetime | None = None, delay: float | None = None,
                        key: str | None = None, **kwargs: Any) -> str:
-        key = key or self.sc._id("job")
-        self.sc.scheduled.append({"job": job, "at": at, "delay": delay, "key": key, "kwargs": kwargs})
+        ctx = self.ctx
+        step = ctx._key("scheduler.schedule")
+        done, value = ctx._replay(step)
+        if done:
+            return value
+        ctx._may_call(job)
+        key = key or uuid.uuid4().hex[:16]
+        when = at if at is not None else ctx._sc.now + timedelta(seconds=delay or 0)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        data = {"kind": "once", "at": when.isoformat(), "input": {"data": jsonable(kwargs)}, "label": None,
+                "busy": "skip", "name": f"job:{key}", "scheduled_by": ctx._rec.id}
+        definition = hashlib.blake2b(json.dumps(data, sort_keys=True).encode(), digest_size=8).hexdigest()
+        await ctx._sc.store.put_schedule({"id": f"job:{key}", "agent": job, "definition": definition,
+                                          "next_at": when, "data": data})
+        async with ctx._tx():
+            ctx._rec.steps[step] = key
         return key
 
     async def cancel(self, key: str) -> None:
-        self.sc.scheduled = [j for j in self.sc.scheduled if j["key"] != key]
+        ctx = self.ctx
+        step = ctx._key("scheduler.cancel")
+        done, _ = ctx._replay(step)
+        if done:
+            return
+        await ctx._sc.store.delete_schedule(f"job:{key}")
+        async with ctx._tx():
+            ctx._rec.steps[step] = True

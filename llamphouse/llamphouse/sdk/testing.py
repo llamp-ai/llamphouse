@@ -712,12 +712,12 @@ class FakeAgents:
 
 
 class FakeFiles:
-    """The Files capability on an in-memory file store (llamphouse.runtime.files)."""
+    """The Files capability on an in-memory file store (llamphouse.runtime.file_store)."""
 
     capability = Files
 
     def __init__(self, store: Any = None) -> None:
-        from llamphouse.runtime.files import InMemoryFileStore  # the runtime's own in-memory store
+        from llamphouse.runtime.file_store import InMemoryFileStore  # the runtime's own in-memory store
 
         self.store = store if store is not None else InMemoryFileStore()
         self.run_id, self.thread_id = "run-1", "thread-1"
@@ -729,7 +729,7 @@ class FakeFiles:
         return await self.store.put(data, mime_type=mime_type, name=name, created_by=self.run_id)
 
     async def get(self, part: FilePart) -> bytes:
-        from llamphouse.runtime.files import file_id
+        from llamphouse.runtime.file_store import file_id
 
         if part.data is not None:
             return part.data
@@ -738,7 +738,7 @@ class FakeFiles:
     async def save(self, part: FilePart) -> FilePart:
         """What the runtime does before writing a message: bytes handed in are stored (owned by the
         thread), references to the file store are claimed by the thread."""
-        from llamphouse.runtime.files import file_id
+        from llamphouse.runtime.file_store import file_id
 
         if part.data is not None:
             stored = await self.store.put(part.data, mime_type=part.mime_type, name=part.name,

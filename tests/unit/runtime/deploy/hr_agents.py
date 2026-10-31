@@ -21,7 +21,7 @@ def summarize(older) -> str:
 
 class Shout:  # a custom component: a file store that is the in-memory one, by another name
     def __new__(cls, **kwargs):
-        from llamphouse.runtime.files import InMemoryFileStore
+        from llamphouse.runtime.file_store import InMemoryFileStore
 
         return InMemoryFileStore(**kwargs)
 

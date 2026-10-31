@@ -27,6 +27,11 @@
     GET  /v2/agents/{name}/config                                                  its config: as runs get it, what was changed
     PUT  /v2/agents/{name}/config            {"values": {...}, "if_version": n}    change it for every process
     GET  /v2/stream/runs?agent=&metadata.<key>=<value>                            every run's status changes, live (SSE)
+    POST /v2/subscriptions                   {"url", "filter", "secret", "headers"} a URL hears about runs (POSTs)
+    GET  /v2/subscriptions                                                         the caller's subscriptions
+    DELETE /v2/subscriptions/{id}
+    GET  /v2/subscriptions/{id}/deliveries                                         what was sent, what failed
+    POST /v2/subscriptions/{id}/deliveries/{delivery}/retry
 
 A message in a request: {"text": "..."} or {"parts": [<part>, ...]} or {"data": {...}}, with an optional
 "sender": {"kind": "person", "id": "an", "name": "An"} (a person "user" by default). Parts, messages and
@@ -60,7 +65,7 @@ from .codec import jsonable
 from .config_store import ConfigConflict
 from .engine import TERMINAL, Engine, StoreUnavailable
 from .gateway import Gateway
-from .files import FileNotFound
+from .file_store import FileNotFound
 
 KEEP_ALIVE = 15.0  # seconds without news before a stream says it's still there
 
@@ -414,6 +419,66 @@ def create_app(engine: Engine, *, api_key: str | None = None, compass: bool = Tr
         except ConfigConflict as e:
             return JSONResponse({"error": "config_conflict", "detail": str(e)}, status_code=409)
         return await agent_config(name)
+
+    # ── subscriptions ───────────────────────────────────────────────────────
+
+    def own(sub: Any) -> bool:
+        who = gw.who()
+        return who is ANONYMOUS or sub.owner == who.subject
+
+    async def subscription_of(subscription_id: str) -> Any:
+        from .notifications import Subscription
+
+        for data in await engine.store.subscriptions():
+            if data["id"] == subscription_id:
+                sub = Subscription.from_dict(data)
+                if own(sub):
+                    return sub
+        raise HTTPException(404, f"no subscription {subscription_id}")
+
+    @app.post("/v2/subscriptions", dependencies=deps, status_code=201)
+    async def subscribe(body: dict[str, Any]) -> Any:
+        from .notifications import Subscription
+
+        flt = dict(body.get("filter") or {})
+        flt["metadata"] = gw.scope(flt.get("metadata"))  # only what the caller may see
+        if not flt["metadata"]:
+            flt.pop("metadata")
+        try:
+            sub = Subscription(url=str(body.get("url", "")), filter=flt, secret=body.get("secret"),
+                               headers=dict(body.get("headers") or {}), owner=gw.who().subject)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(422, str(e)) from None
+        if flt.get("thread"):
+            await known(flt["thread"], "thread")
+        if flt.get("run"):
+            await known(flt["run"], "run")
+        return (await engine.subscribe(sub)).public()
+
+    @app.get("/v2/subscriptions", dependencies=deps)
+    async def subscriptions() -> list[dict[str, Any]]:
+        from .notifications import Subscription
+
+        return [s.public() for s in map(Subscription.from_dict, await engine.store.subscriptions()) if own(s)]
+
+    @app.delete("/v2/subscriptions/{subscription_id}", dependencies=deps)
+    async def unsubscribe(subscription_id: str) -> dict[str, Any]:
+        await subscription_of(subscription_id)
+        await engine.unsubscribe(subscription_id)
+        return {"id": subscription_id, "deleted": True}
+
+    @app.get("/v2/subscriptions/{subscription_id}/deliveries", dependencies=deps)
+    async def deliveries(subscription_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        await subscription_of(subscription_id)
+        return [jsonable({k: v for k, v in d.items()}) for d in await engine.store.deliveries(subscription_id,
+                                                                                             limit=limit)]
+
+    @app.post("/v2/subscriptions/{subscription_id}/deliveries/{delivery_id}/retry", dependencies=deps)
+    async def retry(subscription_id: str, delivery_id: str) -> dict[str, Any]:
+        await subscription_of(subscription_id)
+        if not await engine.store.retry_delivery(delivery_id, engine.now):
+            raise HTTPException(404, f"no undelivered delivery {delivery_id}")
+        return {"id": delivery_id, "retrying": True}
 
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, Any]:

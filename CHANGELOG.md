@@ -105,6 +105,31 @@ Pin it by version (`llamphouse==2.0.0a0`) or commit.
 - `engine.bind(thread, agent)` (a thread that has had no run goes to another agent) and
   `engine.set_thread_metadata(thread, ...)`.
 
+- **Triggers** (an agent file's `triggers:`, `llamphouse.runtime.triggers`):
+  - `webhook`: POST to a path starts a run - a bearer secret, an HMAC signature of the body, or `public:
+    true`; the payload mapped to the input's text, the thread (`thread: {label: $.order.id}`: one thread per
+    order) and its labels; `idempotency: {key: $.event_id}` (the same event again: the first answer, 200);
+    `busy: send | skip | reject` when the thread's run is busy.
+  - `schedule`: `cron` (with `timezone`), `every`, or once `at`; on a labelled thread or a new one; kept by
+    the store and fired once by whichever worker sees it due first; a fire missed while nothing ran happens
+    once when one runs again.
+  - `engine.fire(agent, message, label=, busy=)`: the primitive both use; a label's thread is made once,
+    whichever process comes first.
+- **The Scheduler capability**: `ctx.require(Scheduler).schedule(agent, at= | delay=, key=, **data)` - a
+  run of that agent later, kept by the store; `cancel(key)`; recorded like a step.
+- **External subscribers** (`llamphouse.runtime.notifications`): `POST /v2/subscriptions` (a URL, a filter -
+  agent, thread, run, statuses, labels - an HMAC secret, headers); every matching run status change is
+  written to an outbox in the same transaction and POSTed by the workers, again with backoff until 2xx,
+  dead after `delivery_attempts` (retry over the API); scoped to what the subscriber may see. A2A push
+  notification configs are subscriptions in the A2A format (the agent card now says push notifications).
+- **Store primitives**: claims (a key taken once), schedules, subscriptions and the outbox - in memory and
+  in Postgres (Alembic revisions).
+- **One folder per component**, named after the runtime file's keys, each with `base.py` and one module
+  per implementation: `data_store/`, `run_queue/`, `event_queue/`, `file_store/`, `config_store/`,
+  `auth/`, `sessions/`, `tracing/stores/`, `triggers/`, `notifications/`, `adapters/`. The earlier module
+  paths (`runtime.store`, `runtime.queue`, `runtime.bus`, `runtime.files`) still import.
+- httpx is a base dependency (deliveries).
+
 ### Changed (before 2.0.0a0 was released)
 
 - A thread's `config` keeps only the values given (checked whole), so the file's and the store's still
