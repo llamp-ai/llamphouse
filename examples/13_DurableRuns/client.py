@@ -33,6 +33,15 @@ async def until_it_needs_someone(http: httpx.AsyncClient, run_id: str, seen: int
         await asyncio.sleep(0.5)
 
 
+async def refused(response: httpx.Response) -> None:
+    """Stop at the first error, saying what the server said (and which server this client needs)."""
+    if response.status_code >= 400:
+        await response.aread()
+        raise SystemExit(f"{response.request.method} {response.request.url.path}: {response.status_code} "
+                         f"{response.text}\nIs this example's server running at {URL}? "
+                         "(llamphouse up --memory --agents agents.yaml, in examples/13_DurableRuns)")
+
+
 async def main() -> None:
     args = argparse.ArgumentParser()
     args.add_argument("--yes", action="store_true")
@@ -41,7 +50,7 @@ async def main() -> None:
     args.add_argument("--thread")
     opts = args.parse_args()
 
-    async with httpx.AsyncClient(base_url=URL, timeout=30) as http:
+    async with httpx.AsyncClient(base_url=URL, timeout=30, event_hooks={"response": [refused]}) as http:
         if opts.thread:
             thread = (await http.get(f"/v2/threads/{opts.thread}")).json()
             run_id = thread["runs"][-1]
